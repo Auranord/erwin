@@ -276,7 +276,8 @@
           .map((item) => {
             const label = item.title || item.youtube_id;
             const status = item.status;
-            return `<div class="list-item"><span>${label} (${item.playlist_name})</span><span class="badge">${status}</span></div>`;
+            const details = item.error ? ` - ${item.error}` : "";
+            return `<div class="list-item"><span>${label} (${item.playlist_name})${details}</span><span class="badge">${status}</span></div>`;
           })
           .join("");
       }

@@ -63,6 +63,15 @@ docker compose up --build
 - Docker: `docker compose logs -f erwin`
 - Local file: `./data/logs/erwin.log`
 
+## YouTube download troubleshooting
+
+Some videos require authenticated requests to download. If downloads fail with 403 errors, provide a cookie header:
+
+1. Export your YouTube cookies to a text file (one-line `Cookie:` header value).
+2. Set either:
+   - `ERWIN_YTDL_COOKIE_FILE=./data/youtube.cookie`
+   - or `ERWIN_YTDL_COOKIE=YOUR_COOKIE_HEADER_VALUE`
+
 ## License
 
 TBD.

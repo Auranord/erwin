@@ -23,6 +23,8 @@ const DB_URL = process.env.DB_URL || "./data/erwin.sqlite";
 const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
 const LOG_DIR = process.env.ERWIN_LOG_DIR || "./data/logs";
 const LOG_FILE = path.join(LOG_DIR, "erwin.log");
+const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "";
+const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -254,7 +256,24 @@ initDb();
 
 async function downloadTrackAudio(track) {
   const outputPath = path.join(AUDIO_DIR, `${track.id}.mp3`);
-  const info = await ytdl.getInfo(track.youtube_id);
+  let cookieHeader = YTDL_COOKIE;
+  if (!cookieHeader && YTDL_COOKIE_FILE) {
+    try {
+      cookieHeader = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim();
+    } catch (error) {
+      log("error", "failed to read cookie file", { error: String(error?.message || error) });
+    }
+  }
+  const requestOptions = cookieHeader
+    ? {
+        headers: {
+          cookie: cookieHeader,
+          "user-agent":
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+      }
+    : undefined;
+  const info = await ytdl.getInfo(track.youtube_id, requestOptions ? { requestOptions } : undefined);
   const title = info.videoDetails?.title || null;
   const channel = info.videoDetails?.author?.name || null;
   const thumbnail = info.videoDetails?.thumbnails?.slice(-1)[0]?.url || null;
@@ -265,7 +284,8 @@ async function downloadTrackAudio(track) {
   await new Promise((resolve, reject) => {
     const stream = ytdl.downloadFromInfo(info, {
       quality: "highestaudio",
-      filter: "audioonly"
+      filter: "audioonly",
+      ...(requestOptions ? { requestOptions } : {})
     });
     const fileStream = fs.createWriteStream(outputPath);
     stream.pipe(fileStream);
@@ -312,14 +332,30 @@ async function downloadWorker() {
     console.log(`Download ready for track ${pending.track_id}.`);
   } catch (error) {
     console.error(`Download failed for track ${pending.track_id}:`, error);
+    const statusCode = error?.statusCode || error?.status;
+    const isBlocked = statusCode === 403;
     const backoffMinutes = Math.min(30, 2 ** Math.min(5, (pending.attempts || 0) + 1));
-    const retryAfter = new Date(Date.now() + backoffMinutes * 60 * 1000).toISOString();
+    const retryAfter = isBlocked
+      ? null
+      : new Date(Date.now() + backoffMinutes * 60 * 1000).toISOString();
     db.prepare(
       "UPDATE tracks SET download_status = 'failed', download_error = ? WHERE id = ?"
     ).run(String(error?.message || error), pending.track_id);
     db.prepare(
-      "UPDATE download_queue SET status = 'failed', error = ?, retry_after = ?, updated_at = ? WHERE id = ?"
-    ).run(String(error?.message || error), retryAfter, new Date().toISOString(), pending.queue_id);
+      "UPDATE download_queue SET status = ?, error = ?, retry_after = ?, updated_at = ? WHERE id = ?"
+    ).run(
+      isBlocked ? "blocked" : "failed",
+      String(error?.message || error),
+      retryAfter,
+      new Date().toISOString(),
+      pending.queue_id
+    );
+    if (isBlocked) {
+      log("error", "download blocked", {
+        trackId: pending.track_id,
+        note: "Set ERWIN_YTDL_COOKIE_FILE or ERWIN_YTDL_COOKIE to enable authenticated downloads."
+      });
+    }
   }
 }
 
@@ -624,7 +660,7 @@ app.get("/api/playlists", requireAuth, (req, res) => {
 app.get("/api/downloads", requireAuth, (req, res) => {
   const downloads = db
     .prepare(
-      "SELECT download_queue.id, download_queue.status, download_queue.error, download_queue.created_at, playlists.name as playlist_name, tracks.title, tracks.youtube_id FROM download_queue JOIN playlists ON playlists.id = download_queue.playlist_id JOIN tracks ON tracks.id = download_queue.track_id ORDER BY download_queue.created_at DESC"
+      "SELECT download_queue.id, download_queue.status, download_queue.error, download_queue.retry_after, download_queue.attempts, download_queue.created_at, playlists.name as playlist_name, tracks.title, tracks.youtube_id FROM download_queue JOIN playlists ON playlists.id = download_queue.playlist_id JOIN tracks ON tracks.id = download_queue.track_id ORDER BY download_queue.created_at DESC"
     )
     .all();
   res.json(downloads);
