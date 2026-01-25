@@ -40,6 +40,23 @@ For a wide architecture overview and a delivery plan, see [docs/architecture-pla
 - Add Docker Compose, `.env.example`, and persistent volumes.
 - Build the tabbed dashboard and the stream player view.
 
+## Quickstart (local)
+
+1. Copy `.env.example` to `.env` and adjust credentials.
+2. Install dependencies and start the server:
+   ```bash
+   npm install
+   npm start
+   ```
+3. Visit `http://localhost:3000/login` and use the seeded admin credentials.
+
+## Docker (local)
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
 ## License
 
 TBD.
