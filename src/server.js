@@ -232,12 +232,19 @@ app.post("/api/auth/logout", (req, res) => {
 
 app.get("/api/state", requireAuth, (req, res) => {
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  const currentTrack = playState?.current_track_id
+    ? db
+        .prepare(
+          "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail FROM tracks WHERE id = ?"
+        )
+        .get(playState.current_track_id)
+    : null;
   const queue = db
     .prepare(
       "SELECT queue.id, queue.track_id, queue.source, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.created_at ASC"
     )
     .all();
-  res.json({ playState, queue });
+  res.json({ playState, currentTrack, queue });
 });
 
 app.post("/api/session/start", requireAuth, requireRole("admin", "mod"), (req, res) => {

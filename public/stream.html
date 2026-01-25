@@ -15,18 +15,24 @@
       <section class="card">
         <h2>Now Playing</h2>
         <div id="stream-track" class="list-item">Waiting for session start...</div>
+        <div id="player"></div>
         <p class="notice">Use Control audio via OBS to isolate music audio.</p>
       </section>
     </main>
+    <script src="/assets/player.js"></script>
     <script>
       const trackEl = document.getElementById("stream-track");
+      const player = window.ErwinPlayer.createPlayer({
+        elementId: "player",
+        statusEl: trackEl,
+        mode: "stream"
+      });
+
       async function refresh() {
         const response = await fetch("/api/state");
         if (!response.ok) return;
-        const { playState } = await response.json();
-        trackEl.textContent = playState?.current_track_id
-          ? `Track ID: ${playState.current_track_id}`
-          : "Waiting for session start...";
+        const { playState, currentTrack } = await response.json();
+        player.setState({ playState, currentTrack });
       }
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.addEventListener("message", (event) => {
