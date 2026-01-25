@@ -50,6 +50,24 @@ function log(level, message, meta = {}) {
   fs.appendFile(LOG_FILE, `${line}\n`, () => {});
 }
 
+function cookieHeaderFromJson(jsonText) {
+  try {
+    const parsed = JSON.parse(jsonText);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    const pairs = parsed
+      .filter((entry) => entry?.name && typeof entry?.value === "string")
+      .map((entry) => `${entry.name}=${entry.value}`);
+    if (pairs.length === 0) {
+      return null;
+    }
+    return pairs.join("; ");
+  } catch {
+    return null;
+  }
+}
+
 app.use(cookieParser());
 app.use(express.json());
 app.use(
@@ -97,7 +115,8 @@ async function getYouTubeClient() {
       let cookieHeader = YTDL_COOKIE;
       if (!cookieHeader && YTDL_COOKIE_FILE) {
         try {
-          cookieHeader = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim();
+          const rawCookie = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim();
+          cookieHeader = cookieHeaderFromJson(rawCookie) || rawCookie;
         } catch (error) {
           log("warn", "cookie file not found", { error: String(error?.message || error) });
         }
