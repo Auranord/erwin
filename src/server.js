@@ -8,7 +8,8 @@ import Database from "better-sqlite3";
 import { WebSocketServer } from "ws";
 import fs from "fs";
 import { promises as fsPromises } from "fs";
-import ytdl from "@distube/ytdl-core";
+import { Innertube, UniversalCache } from "youtubei.js";
+import { pipeline } from "stream/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -23,7 +24,7 @@ const DB_URL = process.env.DB_URL || "./data/erwin.sqlite";
 const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
 const LOG_DIR = process.env.ERWIN_LOG_DIR || "./data/logs";
 const LOG_FILE = path.join(LOG_DIR, "erwin.log");
-const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "";
+const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtube.cookie";
 const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 
 const app = express();
@@ -78,6 +79,7 @@ app.use((req, res, next) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+let youtubeClientPromise;
 
 function broadcast(event, payload) {
   const message = JSON.stringify({ event, payload });
@@ -87,6 +89,28 @@ function broadcast(event, payload) {
     }
   });
   log("info", "broadcast", { event });
+}
+
+async function getYouTubeClient() {
+  if (!youtubeClientPromise) {
+    youtubeClientPromise = (async () => {
+      let cookieHeader = YTDL_COOKIE;
+      if (!cookieHeader && YTDL_COOKIE_FILE) {
+        try {
+          cookieHeader = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim();
+        } catch (error) {
+          log("warn", "cookie file not found", { error: String(error?.message || error) });
+        }
+      }
+      const client = await Innertube.create({
+        cache: new UniversalCache(false),
+        cookie: cookieHeader || undefined
+      });
+      log("info", "youtube client initialized", { hasCookie: Boolean(cookieHeader) });
+      return client;
+    })();
+  }
+  return youtubeClientPromise;
 }
 
 function initDb() {
@@ -256,43 +280,16 @@ initDb();
 
 async function downloadTrackAudio(track) {
   const outputPath = path.join(AUDIO_DIR, `${track.id}.mp3`);
-  let cookieHeader = YTDL_COOKIE;
-  if (!cookieHeader && YTDL_COOKIE_FILE) {
-    try {
-      cookieHeader = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim();
-    } catch (error) {
-      log("error", "failed to read cookie file", { error: String(error?.message || error) });
-    }
-  }
-  const requestOptions = cookieHeader
-    ? {
-        headers: {
-          cookie: cookieHeader,
-          "user-agent":
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-      }
-    : undefined;
-  const info = await ytdl.getInfo(track.youtube_id, requestOptions ? { requestOptions } : undefined);
-  const title = info.videoDetails?.title || null;
-  const channel = info.videoDetails?.author?.name || null;
-  const thumbnail = info.videoDetails?.thumbnails?.slice(-1)[0]?.url || null;
-  const durationSec = info.videoDetails?.lengthSeconds
-    ? Number(info.videoDetails.lengthSeconds)
-    : null;
+  const client = await getYouTubeClient();
+  const info = await client.getInfo(track.youtube_id);
+  const basic = info?.basic_info || {};
+  const title = basic.title || null;
+  const channel = basic.author?.name || null;
+  const thumbnail = basic.thumbnail?.[basic.thumbnail.length - 1]?.url || null;
+  const durationSec = basic.duration ? Number(basic.duration) : null;
 
-  await new Promise((resolve, reject) => {
-    const stream = ytdl.downloadFromInfo(info, {
-      quality: "highestaudio",
-      filter: "audioonly",
-      ...(requestOptions ? { requestOptions } : {})
-    });
-    const fileStream = fs.createWriteStream(outputPath);
-    stream.pipe(fileStream);
-    stream.on("error", reject);
-    fileStream.on("finish", resolve);
-    fileStream.on("error", reject);
-  });
+  const stream = await info.download({ type: "audio", quality: "best" });
+  await pipeline(stream, fs.createWriteStream(outputPath));
 
   const now = new Date().toISOString();
   db.prepare(
@@ -333,7 +330,7 @@ async function downloadWorker() {
   } catch (error) {
     console.error(`Download failed for track ${pending.track_id}:`, error);
     const statusCode = error?.statusCode || error?.status;
-    const isBlocked = statusCode === 403;
+    const isBlocked = statusCode === 403 || String(error?.message || "").includes("403");
     const backoffMinutes = Math.min(30, 2 ** Math.min(5, (pending.attempts || 0) + 1));
     const retryAfter = isBlocked
       ? null
