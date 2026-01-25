@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Dashboard</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Erwin Dashboard</h1>
+      <p>Manage playlists, control playback, and monitor vote rounds.</p>
+      <nav class="tabs" aria-label="Dashboard tabs">
+        <a class="tab-link active" href="#" data-tab="player">Music Player Dashboard</a>
+        <a class="tab-link" href="#" data-tab="playlists">Playlist Editor</a>
+        <a class="tab-link" href="#" data-tab="chat">Live Chat Feed</a>
+        <a class="tab-link" href="#" data-tab="settings">Settings</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="tab-panel active" data-tab-panel="player">
+        <div class="grid two">
+          <div class="card">
+            <h2>Music Player Dashboard</h2>
+            <div class="section-title">Now Playing</div>
+            <div id="now-playing" class="list-item">No track loaded yet.</div>
+            <div class="section-title" style="margin-top: 16px;">Queue</div>
+            <div id="queue" class="list">
+              <div class="list-item">Queue is empty.</div>
+            </div>
+            <div class="section-title" style="margin-top: 16px;">Admin Controls</div>
+            <div class="grid">
+              <button id="start-session">Start Playback</button>
+              <button id="stop-session" class="secondary">Stop Playback</button>
+              <button id="skip-track" class="ghost">Skip Track</button>
+            </div>
+            <div class="grid">
+              <button id="open-stream" class="secondary">Open Stream Player</button>
+            </div>
+            <p class="notice">Stream player view: <code>/player/stream</code></p>
+          </div>
+
+          <div class="card">
+            <h2>Voting</h2>
+            <p class="notice">Voting rounds are managed by the bot service. This panel mirrors active rounds.</p>
+            <div class="list">
+              <div class="list-item">
+                <span>Vote status</span>
+                <span class="badge" id="vote-status">Idle</span>
+              </div>
+              <div class="list-item">
+                <span>Vote window</span>
+                <span id="vote-window">--</span>
+              </div>
+            </div>
+            <p class="notice">Chat command: <code>!vote 1..5</code> near track end.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="playlists">
+        <div class="grid two">
+          <div class="card">
+            <h2>Playlist Editor</h2>
+            <div class="section-title">Create Playlist</div>
+            <form id="playlist-form" class="grid">
+              <div>
+                <label for="playlist-name">Playlist name</label>
+                <input id="playlist-name" name="playlist-name" required />
+              </div>
+              <button type="submit">Create Playlist</button>
+            </form>
+
+            <div class="section-title" style="margin-top: 16px;">Playlists</div>
+            <div id="playlists" class="list">
+              <div class="list-item">No playlists yet.</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Track Management</h2>
+            <form id="track-form" class="grid">
+              <div>
+                <label for="track-playlist">Playlist</label>
+                <select id="track-playlist" name="track-playlist"></select>
+              </div>
+              <div>
+                <label for="track-url">YouTube URL or ID</label>
+                <input id="track-url" name="track-url" placeholder="https://youtu.be/..." />
+              </div>
+              <button type="submit">Add Track</button>
+            </form>
+
+            <div class="section-title" style="margin-top: 16px;">Tracks</div>
+            <div id="tracks" class="list">
+              <div class="list-item">Select a playlist to view tracks.</div>
+            </div>
+            <p class="notice">Editing playlists while playing keeps the current track and only affects upcoming queue entries.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="chat">
+        <div class="grid two">
+          <div class="card">
+            <h2>Live Chat Feed</h2>
+            <p class="notice">Hook up the Twitch IRC module to populate real-time chat messages.</p>
+            <div class="list">
+              <div class="list-item">
+                <span class="badge">System</span>
+                <span>Erwin is standing by.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="settings">
+        <div class="grid two">
+          <div class="card">
+            <h2>Settings Snapshot</h2>
+            <div class="list">
+              <div class="list-item">
+                <span>Vote options</span>
+                <span>5 default</span>
+              </div>
+              <div class="list-item">
+                <span>Vote duration</span>
+                <span>30 seconds</span>
+              </div>
+              <div class="list-item">
+                <span>Vote lead time</span>
+                <span>20 seconds</span>
+              </div>
+            </div>
+            <p class="notice">Adjust settings via the API to persist configuration.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span class="status-pill"><span></span> Connected</span>
+      <span style="margin-left: 12px;">Need audio in OBS? Use <code>/player/stream</code>.</span>
+      <button id="logout" class="secondary" style="float: right;">Logout</button>
+    </footer>
+
+    <script>
+      const nowPlaying = document.getElementById("now-playing");
+      const queueEl = document.getElementById("queue");
+      const playlistsEl = document.getElementById("playlists");
+      const tracksEl = document.getElementById("tracks");
+      const trackPlaylist = document.getElementById("track-playlist");
+      const playlistForm = document.getElementById("playlist-form");
+      const trackForm = document.getElementById("track-form");
+      let playlistsCache = [];
+      let selectedPlaylistId = null;
+
+      document.querySelectorAll(".tab-link").forEach((link) => {
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          const target = link.dataset.tab;
+          document.querySelectorAll(".tab-link").forEach((tab) => {
+            tab.classList.toggle("active", tab.dataset.tab === target);
+          });
+          document.querySelectorAll(".tab-panel").forEach((panel) => {
+            panel.classList.toggle("active", panel.dataset.tabPanel === target);
+          });
+        });
+      });
+
+      function renderTracks() {
+        if (!selectedPlaylistId) {
+          tracksEl.innerHTML = '<div class="list-item">Select a playlist to view tracks.</div>';
+          return;
+        }
+        const playlist = playlistsCache.find((item) => item.id === selectedPlaylistId);
+        if (!playlist || playlist.tracks.length === 0) {
+          tracksEl.innerHTML = '<div class="list-item">No tracks in this playlist yet.</div>';
+          return;
+        }
+        tracksEl.innerHTML = playlist.tracks
+          .map(
+            (track, index) =>
+              `<div class="list-item" data-track-id="${track.id}">
+                <div>
+                  <div>${track.title || track.youtube_id}</div>
+                  <div class="notice">${track.url}</div>
+                </div>
+                <div class="actions">
+                  <button class="secondary" data-action="up" ${index === 0 ? "disabled" : ""}>Up</button>
+                  <button class="secondary" data-action="down" ${index === playlist.tracks.length - 1 ? "disabled" : ""}>Down</button>
+                  <button class="ghost" data-action="remove">Remove</button>
+                </div>
+              </div>`
+          )
+          .join("");
+      }
+
+      async function fetchState() {
+        const response = await fetch("/api/state");
+        if (!response.ok) return;
+        const { playState, queue } = await response.json();
+        if (playState?.current_track_id) {
+          nowPlaying.textContent = `Track ID: ${playState.current_track_id}`;
+        } else {
+          nowPlaying.textContent = "No track loaded yet.";
+        }
+        if (!queue || queue.length === 0) {
+          queueEl.innerHTML = '<div class="list-item">Queue is empty.</div>';
+        } else {
+          queueEl.innerHTML = queue
+            .map(
+              (item) =>
+                `<div class="list-item"><span>${item.title || item.track_id}</span><span class="badge">${item.source}</span></div>`
+            )
+            .join("");
+        }
+      }
+
+      async function fetchPlaylists() {
+        const response = await fetch("/api/playlists");
+        if (!response.ok) return;
+        playlistsCache = await response.json();
+        playlistsEl.innerHTML = "";
+        trackPlaylist.innerHTML = "";
+        if (playlistsCache.length === 0) {
+          playlistsEl.innerHTML = '<div class="list-item">No playlists yet.</div>';
+          selectedPlaylistId = null;
+          renderTracks();
+          return;
+        }
+        for (const playlist of playlistsCache) {
+          const item = document.createElement("div");
+          item.className = "list-item";
+          item.innerHTML = `
+            <div>
+              <button class="inline secondary" data-action="select" data-playlist-id="${playlist.id}">
+                ${playlist.name}
+              </button>
+              <span class="badge">${playlist.tracks.length} tracks</span>
+            </div>
+            <div class="actions">
+              <button class="ghost" data-action="play" data-playlist-id="${playlist.id}">Play</button>
+            </div>
+          `;
+          playlistsEl.appendChild(item);
+
+          const trackOption = document.createElement("option");
+          trackOption.value = playlist.id;
+          trackOption.textContent = playlist.name;
+          trackPlaylist.appendChild(trackOption);
+        }
+        if (!selectedPlaylistId && playlistsCache.length > 0) {
+          selectedPlaylistId = playlistsCache[0].id;
+          trackPlaylist.value = selectedPlaylistId;
+        }
+        renderTracks();
+      }
+
+      playlistsEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const action = button.dataset.action;
+        const playlistId = button.dataset.playlistId;
+        if (!playlistId) return;
+        if (action === "select") {
+          selectedPlaylistId = playlistId;
+          trackPlaylist.value = playlistId;
+          renderTracks();
+        }
+        if (action === "play") {
+          await fetch(`/api/playlists/${playlistId}/play`, { method: "POST" });
+          fetchState();
+        }
+      });
+
+      trackPlaylist.addEventListener("change", () => {
+        selectedPlaylistId = trackPlaylist.value || null;
+        renderTracks();
+      });
+
+      tracksEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const action = button.dataset.action;
+        const wrapper = button.closest(".list-item");
+        const trackId = wrapper?.dataset.trackId;
+        if (!trackId || !selectedPlaylistId) return;
+        if (action === "remove") {
+          await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}`, { method: "DELETE" });
+        }
+        if (action === "up" || action === "down") {
+          await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}/move`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction: action })
+          });
+        }
+        fetchPlaylists();
+      });
+
+      document.getElementById("start-session").addEventListener("click", async () => {
+        await fetch("/api/session/start", { method: "POST", headers: { "Content-Type": "application/json" } });
+        fetchState();
+      });
+
+      document.getElementById("stop-session").addEventListener("click", async () => {
+        await fetch("/api/session/stop", { method: "POST", headers: { "Content-Type": "application/json" } });
+        fetchState();
+      });
+
+      document.getElementById("skip-track").addEventListener("click", async () => {
+        await fetch("/api/queue/skip", { method: "POST", headers: { "Content-Type": "application/json" } });
+        fetchState();
+      });
+
+      document.getElementById("open-stream").addEventListener("click", () => {
+        window.open("/player/stream", "erwin-stream", "width=1100,height=720");
+      });
+
+      playlistForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const name = playlistForm["playlist-name"].value;
+        await fetch("/api/playlists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name })
+        });
+        playlistForm.reset();
+        fetchPlaylists();
+      });
+
+      trackForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const playlistId = trackForm["track-playlist"].value;
+        const url = trackForm["track-url"].value;
+        if (!playlistId || !url) return;
+        await fetch("/api/tracks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playlistId, url })
+        });
+        trackForm.reset();
+        fetchPlaylists();
+      });
+
+      document.getElementById("logout").addEventListener("click", async () => {
+        await fetch("/api/auth/logout", { method: "POST" });
+        window.location.href = "/login";
+      });
+
+      const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+      ws.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.event === "STATE_UPDATE" || message.event === "QUEUE_UPDATE") {
+          fetchState();
+        }
+      });
+
+      fetchState();
+      fetchPlaylists();
+    </script>
+  </body>
+</html>
