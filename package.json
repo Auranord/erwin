@@ -19,7 +19,7 @@
     "express": "^4.19.2",
     "express-session": "^1.17.3",
     "nanoid": "^5.0.7",
-    "ytdl-core": "^4.11.5",
+    "@distube/ytdl-core": "^4.13.5",
     "ws": "^8.17.1"
   }
 }

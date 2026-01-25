@@ -8,7 +8,7 @@ import Database from "better-sqlite3";
 import { WebSocketServer } from "ws";
 import fs from "fs";
 import { promises as fsPromises } from "fs";
-import ytdl from "ytdl-core";
+import ytdl from "@distube/ytdl-core";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -155,6 +155,8 @@ function initDb() {
       track_id TEXT NOT NULL,
       status TEXT NOT NULL,
       error TEXT,
+      attempts INTEGER DEFAULT 0,
+      retry_after TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -225,10 +227,19 @@ function initDb() {
         track_id TEXT NOT NULL,
         status TEXT NOT NULL,
         error TEXT,
+        attempts INTEGER DEFAULT 0,
+        retry_after TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
     `);
+  }
+  const downloadQueueColumnNames = new Set(downloadQueueColumns.map((column) => column.name));
+  if (!downloadQueueColumnNames.has("attempts")) {
+    db.prepare("ALTER TABLE download_queue ADD COLUMN attempts INTEGER DEFAULT 0").run();
+  }
+  if (!downloadQueueColumnNames.has("retry_after")) {
+    db.prepare("ALTER TABLE download_queue ADD COLUMN retry_after TEXT").run();
   }
 
   const state = db.prepare("SELECT id FROM play_state WHERE id = 1").get();
@@ -272,12 +283,15 @@ async function downloadTrackAudio(track) {
 async function downloadWorker() {
   const pending = db
     .prepare(
-      "SELECT download_queue.id as queue_id, download_queue.playlist_id, download_queue.track_id, tracks.youtube_id FROM download_queue JOIN tracks ON tracks.id = download_queue.track_id WHERE download_queue.status IN ('pending', 'failed') ORDER BY download_queue.created_at ASC LIMIT 1"
+      "SELECT download_queue.id as queue_id, download_queue.playlist_id, download_queue.track_id, download_queue.attempts, download_queue.retry_after, tracks.youtube_id FROM download_queue JOIN tracks ON tracks.id = download_queue.track_id WHERE download_queue.status IN ('pending', 'failed') ORDER BY download_queue.created_at ASC LIMIT 1"
     )
     .get();
   if (!pending) return;
+  if (pending.retry_after && new Date(pending.retry_after) > new Date()) {
+    return;
+  }
   db.prepare(
-    "UPDATE download_queue SET status = 'downloading', error = NULL, updated_at = ? WHERE id = ?"
+    "UPDATE download_queue SET status = 'downloading', error = NULL, attempts = attempts + 1, updated_at = ? WHERE id = ?"
   ).run(new Date().toISOString(), pending.queue_id);
   db.prepare("UPDATE tracks SET download_status = 'downloading', download_error = NULL WHERE id = ?").run(
     pending.track_id
@@ -298,12 +312,14 @@ async function downloadWorker() {
     console.log(`Download ready for track ${pending.track_id}.`);
   } catch (error) {
     console.error(`Download failed for track ${pending.track_id}:`, error);
+    const backoffMinutes = Math.min(30, 2 ** Math.min(5, (pending.attempts || 0) + 1));
+    const retryAfter = new Date(Date.now() + backoffMinutes * 60 * 1000).toISOString();
     db.prepare(
       "UPDATE tracks SET download_status = 'failed', download_error = ? WHERE id = ?"
     ).run(String(error?.message || error), pending.track_id);
     db.prepare(
-      "UPDATE download_queue SET status = 'failed', error = ?, updated_at = ? WHERE id = ?"
-    ).run(String(error?.message || error), new Date().toISOString(), pending.queue_id);
+      "UPDATE download_queue SET status = 'failed', error = ?, retry_after = ?, updated_at = ? WHERE id = ?"
+    ).run(String(error?.message || error), retryAfter, new Date().toISOString(), pending.queue_id);
   }
 }
 
@@ -372,7 +388,7 @@ function normalizePlaylistPositions(playlistId) {
 function enqueueDownload(playlistId, trackId) {
   const now = new Date().toISOString();
   db.prepare(
-    "INSERT INTO download_queue (id, playlist_id, track_id, status, error, created_at, updated_at) VALUES (?, ?, ?, 'pending', NULL, ?, ?)"
+    "INSERT INTO download_queue (id, playlist_id, track_id, status, error, attempts, retry_after, created_at, updated_at) VALUES (?, ?, ?, 'pending', NULL, 0, NULL, ?, ?)"
   ).run(nanoid(), playlistId, trackId, now, now);
   db.prepare(
     "UPDATE tracks SET download_status = 'pending', download_error = NULL WHERE id = ?"
