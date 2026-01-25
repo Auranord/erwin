@@ -6,6 +6,9 @@ import { nanoid } from "nanoid";
 import bcrypt from "bcryptjs";
 import Database from "better-sqlite3";
 import { WebSocketServer } from "ws";
+import fs from "fs";
+import { promises as fsPromises } from "fs";
+import ytdl from "ytdl-core";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -17,6 +20,7 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || "erwin-dev-secret";
 const DB_URL = process.env.DB_URL || "./data/erwin.sqlite";
+const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -48,6 +52,7 @@ function broadcast(event, payload) {
 }
 
 function initDb() {
+  fs.mkdirSync(AUDIO_DIR, { recursive: true });
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -72,6 +77,10 @@ function initDb() {
       duration_sec INTEGER,
       channel TEXT,
       thumbnail TEXT,
+      audio_path TEXT,
+      download_status TEXT,
+      download_error TEXT,
+      downloaded_at TEXT,
       disabled INTEGER DEFAULT 0,
       fail_count INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
@@ -144,6 +153,21 @@ function initDb() {
     db.prepare("ALTER TABLE play_state ADD COLUMN paused_at_ms INTEGER").run();
   }
 
+  const trackColumns = db.prepare("PRAGMA table_info(tracks)").all();
+  const trackColumnNames = new Set(trackColumns.map((column) => column.name));
+  if (!trackColumnNames.has("audio_path")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN audio_path TEXT").run();
+  }
+  if (!trackColumnNames.has("download_status")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN download_status TEXT").run();
+  }
+  if (!trackColumnNames.has("download_error")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN download_error TEXT").run();
+  }
+  if (!trackColumnNames.has("downloaded_at")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN downloaded_at TEXT").run();
+  }
+
   const state = db.prepare("SELECT id FROM play_state WHERE id = 1").get();
   if (!state) {
     db.prepare(
@@ -153,6 +177,57 @@ function initDb() {
 }
 
 initDb();
+
+async function downloadTrackAudio(track) {
+  const outputPath = path.join(AUDIO_DIR, `${track.id}.mp3`);
+  const info = await ytdl.getInfo(track.youtube_id);
+  const title = info.videoDetails?.title || null;
+  const channel = info.videoDetails?.author?.name || null;
+  const thumbnail = info.videoDetails?.thumbnails?.slice(-1)[0]?.url || null;
+  const durationSec = info.videoDetails?.lengthSeconds
+    ? Number(info.videoDetails.lengthSeconds)
+    : null;
+
+  await new Promise((resolve, reject) => {
+    const stream = ytdl.downloadFromInfo(info, {
+      quality: "highestaudio",
+      filter: "audioonly"
+    });
+    const fileStream = fs.createWriteStream(outputPath);
+    stream.pipe(fileStream);
+    stream.on("error", reject);
+    fileStream.on("finish", resolve);
+    fileStream.on("error", reject);
+  });
+
+  const now = new Date().toISOString();
+  db.prepare(
+    "UPDATE tracks SET title = COALESCE(title, ?), channel = COALESCE(channel, ?), thumbnail = COALESCE(thumbnail, ?), duration_sec = COALESCE(duration_sec, ?), audio_path = ?, download_status = 'ready', download_error = NULL, downloaded_at = ? WHERE id = ?"
+  ).run(title, channel, thumbnail, durationSec, outputPath, now, track.id);
+}
+
+async function downloadWorker() {
+  const pending = db
+    .prepare(
+      "SELECT id, youtube_id FROM tracks WHERE disabled = 0 AND (audio_path IS NULL OR audio_path = '') AND (download_status IS NULL OR download_status IN ('pending', 'failed')) LIMIT 1"
+    )
+    .get();
+  if (!pending) return;
+  db.prepare("UPDATE tracks SET download_status = 'downloading', download_error = NULL WHERE id = ?").run(
+    pending.id
+  );
+  try {
+    await downloadTrackAudio(pending);
+  } catch (error) {
+    db.prepare(
+      "UPDATE tracks SET download_status = 'failed', download_error = ? WHERE id = ?"
+    ).run(String(error?.message || error), pending.id);
+  }
+}
+
+setInterval(() => {
+  downloadWorker();
+}, 5000);
 
 function requireAuth(req, res, next) {
   if (req.session?.user) {
@@ -242,7 +317,7 @@ app.get("/api/state", requireAuth, (req, res) => {
   const currentTrack = playState?.current_track_id
     ? db
         .prepare(
-          "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail FROM tracks WHERE id = ?"
+          "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status FROM tracks WHERE id = ?"
         )
         .get(playState.current_track_id)
     : null;
@@ -297,6 +372,26 @@ app.post("/api/session/resume", requireAuth, requireRole("admin", "mod"), (req, 
   res.json({ playState: updated });
 });
 
+app.post("/api/session/seek", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const { positionSeconds } = req.body || {};
+  if (typeof positionSeconds !== "number" || Number.isNaN(positionSeconds)) {
+    return res.status(400).json({ error: "positionSeconds must be a number" });
+  }
+  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  if (!playState?.current_track_id) {
+    return res.status(400).json({ error: "No active track" });
+  }
+  const now = Date.now();
+  const startedAt = now - Math.max(0, positionSeconds * 1000);
+  const pausedAt = playState.paused ? now : null;
+  db.prepare(
+    "UPDATE play_state SET started_at_ms = ?, paused_at_ms = ?, updated_at = ? WHERE id = 1"
+  ).run(startedAt, pausedAt, new Date().toISOString());
+  const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  broadcast("STATE_UPDATE", { playState: updated });
+  res.json({ playState: updated });
+});
+
 app.post("/api/session/stop", requireAuth, requireRole("admin", "mod"), (req, res) => {
   db.prepare(
     "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
@@ -326,6 +421,46 @@ app.post("/api/queue/skip", requireAuth, requireRole("admin", "mod"), (req, res)
     .all();
   broadcast("STATE_UPDATE", { playState, queue });
   res.json({ playState, queue });
+});
+
+app.get("/api/audio/:trackId", requireAuth, (req, res) => {
+  const track = db
+    .prepare("SELECT audio_path FROM tracks WHERE id = ?")
+    .get(req.params.trackId);
+  if (!track?.audio_path) {
+    return res.status(404).json({ error: "Audio not available" });
+  }
+  fsPromises
+    .access(track.audio_path)
+    .then(() => {
+      const stat = fs.statSync(track.audio_path);
+      const range = req.headers.range;
+      if (range) {
+        const [startStr, endStr] = range.replace(/bytes=/, "").split("-");
+        const start = parseInt(startStr, 10);
+        const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
+        if (start >= stat.size) {
+          res.status(416).send("Requested range not satisfiable");
+          return;
+        }
+        res.writeHead(206, {
+          "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+          "Accept-Ranges": "bytes",
+          "Content-Length": end - start + 1,
+          "Content-Type": "audio/mpeg"
+        });
+        fs.createReadStream(track.audio_path, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          "Content-Length": stat.size,
+          "Content-Type": "audio/mpeg"
+        });
+        fs.createReadStream(track.audio_path).pipe(res);
+      }
+    })
+    .catch(() => {
+      res.status(404).json({ error: "Audio not available" });
+    });
 });
 
 app.post("/api/queue/enqueue", requireAuth, requireRole("admin"), (req, res) => {
@@ -423,7 +558,7 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, r
       .prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?")
       .get(req.params.id).maxPosition || 0;
   const insertTrack = db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
   );
   const insertPlaylistTrack = db.prepare(
     "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
@@ -467,7 +602,7 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
       .prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?")
       .get(playlistId).maxPosition || 0) + 1;
   db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 0, 0, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
   ).run(trackId, youtubeId, url, now);
   db.prepare("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)").run(
     playlistId,

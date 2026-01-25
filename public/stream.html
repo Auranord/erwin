@@ -15,7 +15,7 @@
       <section class="card">
         <h2>Now Playing</h2>
         <div id="stream-track" class="list-item">Waiting for session start...</div>
-        <div id="player"></div>
+        <audio id="player"></audio>
         <div class="section-title" style="margin-top: 16px;">Playback Controls</div>
         <div class="grid">
           <div>
@@ -27,7 +27,6 @@
             <button id="play-toggle">Play / Pause</button>
             <button id="restart-track" class="secondary">Play from Beginning</button>
             <button id="skip-track" class="ghost">Skip</button>
-            <button id="sync-track" class="secondary">Sync Now</button>
             <button id="mute-toggle" class="ghost">Mute</button>
             <div>
               <label for="volume-control">Volume</label>
@@ -104,15 +103,15 @@
         }
       });
       document.getElementById("restart-track").addEventListener("click", () => {
-        player.seekTo(0);
-        player.play();
+        fetch("/api/session/seek", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ positionSeconds: 0 })
+        }).then(refresh);
       });
       document.getElementById("skip-track").addEventListener("click", async () => {
         await fetch("/api/queue/skip", { method: "POST", headers: { "Content-Type": "application/json" } });
         refresh();
-      });
-      document.getElementById("sync-track").addEventListener("click", () => {
-        player.syncNow();
       });
       muteToggle.addEventListener("click", () => {
         isMuted = !isMuted;
@@ -131,7 +130,11 @@
         const duration = player.getDuration();
         if (!duration) return;
         const target = (Number(progressEl.value) / 100) * duration;
-        player.seekTo(target);
+        fetch("/api/session/seek", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ positionSeconds: target })
+        }).then(refresh);
       });
     </script>
   </body>
