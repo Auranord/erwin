@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Login</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body class="login">
+    <main class="card login-card">
+      <h1>Welcome back to Erwin</h1>
+      <p class="notice">Login to access the dashboard and player views.</p>
+      <form id="login-form" class="grid" style="margin-top: 16px;">
+        <div>
+          <label for="username">Username</label>
+          <input id="username" name="username" autocomplete="username" required />
+        </div>
+        <div>
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+        </div>
+        <button type="submit">Login</button>
+      </form>
+      <p id="login-error" class="notice" style="color: #fca5a5; display: none;"></p>
+      <p class="notice">Default admin: <strong>admin / admin123</strong> (change via env).</p>
+    </main>
+    <script>
+      const form = document.getElementById("login-form");
+      const error = document.getElementById("login-error");
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        error.style.display = "none";
+        const body = {
+          username: form.username.value,
+          password: form.password.value
+        };
+        const response = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          error.textContent = payload.error || "Login failed";
+          error.style.display = "block";
+          return;
+        }
+        window.location.href = "/dashboard";
+      });
+    </script>
+  </body>
+</html>
