@@ -111,6 +111,17 @@ button.ghost {
   border: 1px solid #1f2937;
 }
 
+.list-item .actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.list-item .actions button {
+  width: auto;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .badge {
   padding: 4px 8px;
   border-radius: 999px;
@@ -123,14 +134,31 @@ button.ghost {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+  margin-top: 16px;
 }
 
-.tab {
-  padding: 8px 12px;
+.tab-link {
+  padding: 8px 14px;
   border-radius: 999px;
   background: #1e293b;
   border: 1px solid #334155;
   font-size: 13px;
+  text-decoration: none;
+  color: #e2e8f0;
+}
+
+.tab-link.active {
+  background: #4f46e5;
+  color: #f8fafc;
+  border-color: transparent;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
 }
 
 .notice {

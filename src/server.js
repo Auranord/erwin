@@ -188,6 +188,23 @@ function parseYouTubeId(input) {
   return null;
 }
 
+function normalizePlaylistPositions(playlistId) {
+  const tracks = db
+    .prepare(
+      "SELECT track_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position ASC"
+    )
+    .all(playlistId);
+  const update = db.prepare(
+    "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
+  );
+  const transaction = db.transaction((rows) => {
+    rows.forEach((row, index) => {
+      update.run(index + 1, playlistId, row.track_id);
+    });
+  });
+  transaction(tracks);
+}
+
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
@@ -427,6 +444,63 @@ app.put("/api/tracks/:id/disable", requireAuth, requireRole("admin"), (req, res)
   }
   res.json({ id: req.params.id, disabled: Boolean(value) });
 });
+
+app.delete(
+  "/api/playlists/:playlistId/tracks/:trackId",
+  requireAuth,
+  requireRole("admin"),
+  (req, res) => {
+    const result = db
+      .prepare(
+        "DELETE FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?"
+      )
+      .run(req.params.playlistId, req.params.trackId);
+    if (result.changes === 0) {
+      return res.status(404).json({ error: "Track not found in playlist" });
+    }
+    normalizePlaylistPositions(req.params.playlistId);
+    res.json({ ok: true });
+  }
+);
+
+app.post(
+  "/api/playlists/:playlistId/tracks/:trackId/move",
+  requireAuth,
+  requireRole("admin"),
+  (req, res) => {
+    const { direction } = req.body || {};
+    if (!["up", "down"].includes(direction)) {
+      return res.status(400).json({ error: "direction must be up or down" });
+    }
+    const current = db
+      .prepare(
+        "SELECT position FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?"
+      )
+      .get(req.params.playlistId, req.params.trackId);
+    if (!current) {
+      return res.status(404).json({ error: "Track not found in playlist" });
+    }
+    const targetPosition = direction === "up" ? current.position - 1 : current.position + 1;
+    const target = db
+      .prepare(
+        "SELECT track_id, position FROM playlist_tracks WHERE playlist_id = ? AND position = ?"
+      )
+      .get(req.params.playlistId, targetPosition);
+    if (!target) {
+      return res.json({ ok: true });
+    }
+    const swap = db.transaction(() => {
+      db.prepare(
+        "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
+      ).run(target.position, req.params.playlistId, req.params.trackId);
+      db.prepare(
+        "UPDATE playlist_tracks SET position = ? WHERE playlist_id = ? AND track_id = ?"
+      ).run(current.position, req.params.playlistId, target.track_id);
+    });
+    swap();
+    res.json({ ok: true });
+  }
+);
 
 app.put("/api/settings", requireAuth, requireRole("admin"), (req, res) => {
   const settings = req.body || {};
