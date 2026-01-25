@@ -9,3 +9,13 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+    develop:
+      watch:
+        - path: ./src
+          target: /app/src
+          action: sync
+        - path: ./public
+          target: /app/public
+          action: sync
+        - path: ./package.json
+          action: rebuild

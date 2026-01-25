@@ -58,6 +58,14 @@ cp .env.example .env
 docker compose up --build
 ```
 
+### Docker watch (optional)
+
+Use Compose file watch to sync changes without opening another terminal:
+
+```bash
+docker compose watch
+```
+
 ## Logs
 
 - Docker: `docker compose logs -f erwin`
