@@ -58,7 +58,9 @@
 
     function syncPosition(track, playState, force = false) {
       if (!state.player || !track || !playState?.started_at_ms) return;
-      const targetTime = Math.max(0, (Date.now() - playState.started_at_ms) / 1000);
+      const referenceTime =
+        playState.paused && playState.paused_at_ms ? playState.paused_at_ms : Date.now();
+      const targetTime = Math.max(0, (referenceTime - playState.started_at_ms) / 1000);
       const currentTime = state.player.getCurrentTime ? state.player.getCurrentTime() : 0;
       const drift = Math.abs(currentTime - targetTime);
       if (force || drift > 2) {
@@ -111,7 +113,21 @@
     init();
     startSyncLoop();
 
-    return { setState };
+    return {
+      setState,
+      play: () => state.player?.playVideo(),
+      pause: () => state.player?.pauseVideo(),
+      mute: () => state.player?.mute(),
+      unmute: () => state.player?.unMute(),
+      setVolume: (value) => state.player?.setVolume(value),
+      seekTo: (seconds) => state.player?.seekTo(seconds, true),
+      getCurrentTime: () => (state.player?.getCurrentTime ? state.player.getCurrentTime() : 0),
+      getDuration: () => (state.player?.getDuration ? state.player.getDuration() : 0),
+      syncNow: () => {
+        if (!state.playState) return;
+        syncPosition(state.playState.track, state.playState.playState, true);
+      }
+    };
   }
 
   window.ErwinPlayer = { createPlayer };

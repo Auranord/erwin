@@ -15,24 +15,20 @@
       <section class="card">
         <h2>Now Playing</h2>
         <div id="listen-track" class="list-item">Waiting for session start...</div>
-        <div id="player"></div>
         <p class="notice">This view mirrors the stream player track state.</p>
       </section>
     </main>
-    <script src="/assets/player.js"></script>
     <script>
       const trackEl = document.getElementById("listen-track");
-      const player = window.ErwinPlayer.createPlayer({
-        elementId: "player",
-        statusEl: trackEl,
-        mode: "listen"
-      });
 
       async function refresh() {
         const response = await fetch("/api/state");
         if (!response.ok) return;
         const { playState, currentTrack } = await response.json();
-        player.setState({ playState, currentTrack });
+        const label = currentTrack?.title || currentTrack?.youtube_id;
+        trackEl.textContent = label
+          ? `${label} (${playState?.paused ? "Paused" : "Playing"})`
+          : "Waiting for session start...";
       }
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.addEventListener("message", (event) => {

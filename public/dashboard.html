@@ -11,7 +11,7 @@
       <h1>Erwin Dashboard</h1>
       <p>Manage playlists, control playback, and monitor vote rounds.</p>
       <nav class="tabs" aria-label="Dashboard tabs">
-        <a class="tab-link active" href="#" data-tab="player">Music Player</a>
+        <a class="tab-link active" href="#" data-tab="player">Music Player Dashboard</a>
         <a class="tab-link" href="#" data-tab="playlists">Playlist Editor</a>
         <a class="tab-link" href="#" data-tab="chat">Live Chat Feed</a>
         <a class="tab-link" href="#" data-tab="settings">Settings</a>
@@ -22,7 +22,7 @@
       <section class="tab-panel active" data-tab-panel="player">
         <div class="grid two">
           <div class="card">
-            <h2>Music Player</h2>
+            <h2>Music Player Dashboard</h2>
             <div class="section-title">Now Playing</div>
             <div id="now-playing" class="list-item">No track loaded yet.</div>
             <div class="section-title" style="margin-top: 16px;">Queue</div>
@@ -34,6 +34,9 @@
               <button id="start-session">Start Playback</button>
               <button id="stop-session" class="secondary">Stop Playback</button>
               <button id="skip-track" class="ghost">Skip Track</button>
+            </div>
+            <div class="grid">
+              <button id="open-stream" class="secondary">Open Stream Player</button>
             </div>
             <p class="notice">Stream player view: <code>/player/stream</code></p>
           </div>
@@ -311,6 +314,10 @@
       document.getElementById("skip-track").addEventListener("click", async () => {
         await fetch("/api/queue/skip", { method: "POST", headers: { "Content-Type": "application/json" } });
         fetchState();
+      });
+
+      document.getElementById("open-stream").addEventListener("click", () => {
+        window.open("/player/stream", "erwin-stream", "width=1100,height=720");
       });
 
       playlistForm.addEventListener("submit", async (event) => {

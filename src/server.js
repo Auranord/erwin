@@ -90,6 +90,7 @@ function initDb() {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       current_track_id TEXT,
       started_at_ms INTEGER,
+      paused_at_ms INTEGER,
       paused INTEGER DEFAULT 0,
       updated_at TEXT NOT NULL
     );
@@ -137,10 +138,16 @@ function initDb() {
     );
   }
 
+  const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
+  const hasPausedAt = playStateColumns.some((column) => column.name === "paused_at_ms");
+  if (!hasPausedAt) {
+    db.prepare("ALTER TABLE play_state ADD COLUMN paused_at_ms INTEGER").run();
+  }
+
   const state = db.prepare("SELECT id FROM play_state WHERE id = 1").get();
   if (!state) {
     db.prepare(
-      "INSERT INTO play_state (id, current_track_id, started_at_ms, paused, updated_at) VALUES (1, NULL, NULL, 1, ?)"
+      "INSERT INTO play_state (id, current_track_id, started_at_ms, paused_at_ms, paused, updated_at) VALUES (1, NULL, NULL, NULL, 1, ?)"
     ).run(new Date().toISOString());
   }
 }
@@ -253,16 +260,46 @@ app.post("/api/session/start", requireAuth, requireRole("admin", "mod"), (req, r
     ? db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId)
     : null;
   db.prepare(
-    "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused = 0, updated_at = ? WHERE id = 1"
+    "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
   ).run(track ? track.id : null, Date.now(), new Date().toISOString());
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   broadcast("STATE_UPDATE", { playState });
   res.json({ playState });
 });
 
+app.post("/api/session/pause", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  if (!playState?.current_track_id || playState.paused) {
+    return res.json({ playState });
+  }
+  db.prepare(
+    "UPDATE play_state SET paused = 1, paused_at_ms = ?, updated_at = ? WHERE id = 1"
+  ).run(Date.now(), new Date().toISOString());
+  const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  broadcast("STATE_UPDATE", { playState: updated });
+  res.json({ playState: updated });
+});
+
+app.post("/api/session/resume", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  if (!playState?.current_track_id || !playState.paused) {
+    return res.json({ playState });
+  }
+  const elapsed = playState.started_at_ms
+    ? playState.paused_at_ms - playState.started_at_ms
+    : 0;
+  const startedAt = Date.now() - Math.max(0, elapsed);
+  db.prepare(
+    "UPDATE play_state SET paused = 0, paused_at_ms = NULL, started_at_ms = ?, updated_at = ? WHERE id = 1"
+  ).run(startedAt, new Date().toISOString());
+  const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  broadcast("STATE_UPDATE", { playState: updated });
+  res.json({ playState: updated });
+});
+
 app.post("/api/session/stop", requireAuth, requireRole("admin", "mod"), (req, res) => {
   db.prepare(
-    "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
+    "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
   ).run(new Date().toISOString());
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   broadcast("STATE_UPDATE", { playState });
@@ -278,7 +315,7 @@ app.post("/api/queue/skip", requireAuth, requireRole("admin", "mod"), (req, res)
   if (next) {
     db.prepare("DELETE FROM queue WHERE id = ?").run(next.id);
     db.prepare(
-      "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused = 0, updated_at = ? WHERE id = 1"
+      "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
     ).run(next.track_id, Date.now(), new Date().toISOString());
   }
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
@@ -474,7 +511,7 @@ app.post(
         ).run(nanoid(), track.id, "playlist", req.session.user.id, now);
       });
       db.prepare(
-        "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused = 0, updated_at = ? WHERE id = 1"
+        "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
       ).run(tracks[0].id, Date.now(), now);
     });
     transaction();
