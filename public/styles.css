@@ -122,6 +122,12 @@ button.ghost {
   font-size: 12px;
 }
 
+.list-item button.inline {
+  width: auto;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
 .badge {
   padding: 4px 8px;
   border-radius: 999px;

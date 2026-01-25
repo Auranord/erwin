@@ -445,6 +445,43 @@ app.put("/api/tracks/:id/disable", requireAuth, requireRole("admin"), (req, res)
   res.json({ id: req.params.id, disabled: Boolean(value) });
 });
 
+app.post(
+  "/api/playlists/:id/play",
+  requireAuth,
+  requireRole("admin", "mod"),
+  (req, res) => {
+    const tracks = db
+      .prepare(
+        "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND tracks.disabled = 0 ORDER BY playlist_tracks.position ASC"
+      )
+      .all(req.params.id);
+    if (tracks.length === 0) {
+      return res.status(404).json({ error: "Playlist has no playable tracks" });
+    }
+    const now = new Date().toISOString();
+    const transaction = db.transaction(() => {
+      db.prepare("DELETE FROM queue").run();
+      tracks.slice(1).forEach((track) => {
+        db.prepare(
+          "INSERT INTO queue (id, track_id, source, added_by_user_id, created_at) VALUES (?, ?, ?, ?, ?)"
+        ).run(nanoid(), track.id, "playlist", req.session.user.id, now);
+      });
+      db.prepare(
+        "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused = 0, updated_at = ? WHERE id = 1"
+      ).run(tracks[0].id, Date.now(), now);
+    });
+    transaction();
+    const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+    const queue = db
+      .prepare(
+        "SELECT queue.id, queue.track_id, queue.source, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.created_at ASC"
+      )
+      .all();
+    broadcast("STATE_UPDATE", { playState, queue });
+    res.json({ playState, queue });
+  }
+);
+
 app.delete(
   "/api/playlists/:playlistId/tracks/:trackId",
   requireAuth,

@@ -93,23 +93,8 @@
             <div id="tracks" class="list">
               <div class="list-item">Select a playlist to view tracks.</div>
             </div>
+            <p class="notice">Editing playlists while playing keeps the current track and only affects upcoming queue entries.</p>
           </div>
-        </div>
-
-        <div class="card">
-          <h2>Track Import</h2>
-          <form id="import-form" class="grid">
-            <div>
-              <label for="import-playlist">Playlist</label>
-              <select id="import-playlist" name="import-playlist"></select>
-            </div>
-            <div>
-              <label for="import-urls">YouTube URLs (one per line)</label>
-              <textarea id="import-urls" rows="6"></textarea>
-            </div>
-            <button type="submit">Import Tracks</button>
-          </form>
-          <p class="notice">Metadata enrichment is queued separately in the MVP.</p>
         </div>
       </section>
 
@@ -163,10 +148,8 @@
       const queueEl = document.getElementById("queue");
       const playlistsEl = document.getElementById("playlists");
       const tracksEl = document.getElementById("tracks");
-      const importPlaylist = document.getElementById("import-playlist");
       const trackPlaylist = document.getElementById("track-playlist");
       const playlistForm = document.getElementById("playlist-form");
-      const importForm = document.getElementById("import-form");
       const trackForm = document.getElementById("track-form");
       let playlistsCache = [];
       let selectedPlaylistId = null;
@@ -238,7 +221,6 @@
         if (!response.ok) return;
         playlistsCache = await response.json();
         playlistsEl.innerHTML = "";
-        importPlaylist.innerHTML = "";
         trackPlaylist.innerHTML = "";
         if (playlistsCache.length === 0) {
           playlistsEl.innerHTML = '<div class="list-item">No playlists yet.</div>';
@@ -247,22 +229,20 @@
           return;
         }
         for (const playlist of playlistsCache) {
-          const item = document.createElement("button");
-          item.type = "button";
+          const item = document.createElement("div");
           item.className = "list-item";
-          item.style.textAlign = "left";
-          item.innerHTML = `<span>${playlist.name}</span><span class="badge">${playlist.tracks.length} tracks</span>`;
-          item.addEventListener("click", () => {
-            selectedPlaylistId = playlist.id;
-            trackPlaylist.value = playlist.id;
-            renderTracks();
-          });
+          item.innerHTML = `
+            <div>
+              <button class="inline secondary" data-action="select" data-playlist-id="${playlist.id}">
+                ${playlist.name}
+              </button>
+              <span class="badge">${playlist.tracks.length} tracks</span>
+            </div>
+            <div class="actions">
+              <button class="ghost" data-action="play" data-playlist-id="${playlist.id}">Play</button>
+            </div>
+          `;
           playlistsEl.appendChild(item);
-
-          const option = document.createElement("option");
-          option.value = playlist.id;
-          option.textContent = playlist.name;
-          importPlaylist.appendChild(option);
 
           const trackOption = document.createElement("option");
           trackOption.value = playlist.id;
@@ -275,6 +255,28 @@
         }
         renderTracks();
       }
+
+      playlistsEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const action = button.dataset.action;
+        const playlistId = button.dataset.playlistId;
+        if (!playlistId) return;
+        if (action === "select") {
+          selectedPlaylistId = playlistId;
+          trackPlaylist.value = playlistId;
+          renderTracks();
+        }
+        if (action === "play") {
+          await fetch(`/api/playlists/${playlistId}/play`, { method: "POST" });
+          fetchState();
+        }
+      });
+
+      trackPlaylist.addEventListener("change", () => {
+        selectedPlaylistId = trackPlaylist.value || null;
+        renderTracks();
+      });
 
       tracksEl.addEventListener("click", async (event) => {
         const button = event.target.closest("button");
@@ -334,20 +336,6 @@
           body: JSON.stringify({ playlistId, url })
         });
         trackForm.reset();
-        fetchPlaylists();
-      });
-
-      importForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const urls = importForm["import-urls"].value.split("\n").map((line) => line.trim()).filter(Boolean);
-        const playlistId = importPlaylist.value;
-        if (!playlistId || urls.length === 0) return;
-        await fetch(`/api/playlists/${playlistId}/import`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ urls })
-        });
-        importForm.reset();
         fetchPlaylists();
       });
 
