@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Stream Player</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Stream Player</h1>
+      <p>This view is intended for OBS Browser Source (audio on).</p>
+    </header>
+    <main>
+      <section class="card">
+        <h2>Now Playing</h2>
+        <div id="stream-track" class="list-item">Waiting for session start...</div>
+        <audio id="player"></audio>
+        <div class="section-title" style="margin-top: 16px;">Playback Controls</div>
+        <div class="grid">
+          <div>
+            <label for="playback-progress">Play bar</label>
+            <input id="playback-progress" type="range" min="0" max="100" value="0" />
+            <div class="notice" id="playback-time">0:00 / 0:00</div>
+          </div>
+          <div class="grid two">
+            <button id="play-toggle">Play / Pause</button>
+            <button id="restart-track" class="secondary">Play from Beginning</button>
+            <button id="skip-track" class="ghost">Skip</button>
+            <button id="mute-toggle" class="ghost">Mute</button>
+            <div>
+              <label for="volume-control">Volume</label>
+              <input id="volume-control" type="range" min="0" max="100" value="80" />
+            </div>
+          </div>
+        </div>
+        <p class="notice">Use Control audio via OBS to isolate music audio.</p>
+      </section>
+    </main>
+    <script src="/assets/player.js"></script>
+    <script>
+      const trackEl = document.getElementById("stream-track");
+      const player = window.ErwinPlayer.createPlayer({
+        elementId: "player",
+        statusEl: trackEl,
+        mode: "stream"
+      });
+      const progressEl = document.getElementById("playback-progress");
+      const timeEl = document.getElementById("playback-time");
+      const volumeEl = document.getElementById("volume-control");
+      const muteToggle = document.getElementById("mute-toggle");
+      let isMuted = false;
+      let isPaused = true;
+
+      function formatTime(seconds) {
+        if (!Number.isFinite(seconds)) return "0:00";
+        const minutes = Math.floor(seconds / 60);
+        const remaining = Math.floor(seconds % 60).toString().padStart(2, "0");
+        return `${minutes}:${remaining}`;
+      }
+
+      function updateProgress() {
+        const duration = player.getDuration();
+        const current = player.getCurrentTime();
+        if (duration > 0) {
+          const percent = Math.min(100, (current / duration) * 100);
+          progressEl.value = String(percent);
+          timeEl.textContent = `${formatTime(current)} / ${formatTime(duration)}`;
+        } else {
+          progressEl.value = "0";
+          timeEl.textContent = "0:00 / 0:00";
+        }
+      }
+
+      async function refresh() {
+        const response = await fetch("/api/state");
+        if (!response.ok) return;
+        const { playState, currentTrack } = await response.json();
+        player.setState({ playState, currentTrack });
+        isPaused = playState?.paused ?? true;
+        document.getElementById("play-toggle").textContent = isPaused ? "Play" : "Pause";
+      }
+      const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+      ws.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.event === "STATE_UPDATE") {
+          refresh();
+        }
+      });
+      refresh();
+      updateProgress();
+      setInterval(updateProgress, 1000);
+
+      document.getElementById("play-toggle").addEventListener("click", () => {
+        if (isPaused) {
+          fetch("/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json" } }).then(
+            refresh
+          );
+        } else {
+          fetch("/api/session/pause", { method: "POST", headers: { "Content-Type": "application/json" } }).then(
+            refresh
+          );
+        }
+      });
+      document.getElementById("restart-track").addEventListener("click", () => {
+        fetch("/api/session/seek", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ positionSeconds: 0 })
+        }).then(refresh);
+      });
+      document.getElementById("skip-track").addEventListener("click", async () => {
+        await fetch("/api/queue/skip", { method: "POST", headers: { "Content-Type": "application/json" } });
+        refresh();
+      });
+      muteToggle.addEventListener("click", () => {
+        isMuted = !isMuted;
+        if (isMuted) {
+          player.mute();
+          muteToggle.textContent = "Unmute";
+        } else {
+          player.unmute();
+          muteToggle.textContent = "Mute";
+        }
+      });
+      volumeEl.addEventListener("input", () => {
+        player.setVolume(Number(volumeEl.value));
+      });
+      progressEl.addEventListener("change", () => {
+        const duration = player.getDuration();
+        if (!duration) return;
+        const target = (Number(progressEl.value) / 100) * duration;
+        fetch("/api/session/seek", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ positionSeconds: target })
+        }).then(refresh);
+      });
+    </script>
+  </body>
+</html>
