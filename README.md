@@ -42,13 +42,14 @@ For a wide architecture overview and a delivery plan, see [docs/architecture-pla
 
 ## Quickstart (local)
 
-1. Copy `.env.example` to `.env` and adjust credentials.
-2. Install dependencies and start the server:
+1. Use Node.js LTS (20 or 22). This project depends on native SQLite bindings.
+2. Copy `.env.example` to `.env` and adjust credentials.
+3. Install dependencies and start the server:
    ```bash
    npm install
    npm start
    ```
-3. Visit `http://localhost:3000/login` and use the seeded admin credentials.
+4. Visit `http://localhost:3000/login` and use the seeded admin credentials.
 
 ## Docker (local)
 
