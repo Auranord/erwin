@@ -19,7 +19,7 @@
     "express": "^4.19.2",
     "express-session": "^1.17.3",
     "nanoid": "^5.0.7",
-    "youtubei.js": "^10.6.0",
+    "youtubei.js": "^9.1.0",
     "ws": "^8.17.1"
   }
 }
