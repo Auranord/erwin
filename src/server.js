@@ -21,9 +21,31 @@ const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || "erwin-dev-secret";
 const DB_URL = process.env.DB_URL || "./data/erwin.sqlite";
 const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
+const LOG_DIR = process.env.ERWIN_LOG_DIR || "./data/logs";
+const LOG_FILE = path.join(LOG_DIR, "erwin.log");
 
 const app = express();
 const db = new Database(DB_URL);
+
+function ensureLogs() {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+function log(level, message, meta = {}) {
+  const entry = {
+    time: new Date().toISOString(),
+    level,
+    message,
+    ...meta
+  };
+  const line = JSON.stringify(entry);
+  if (level === "error") {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
+  fs.appendFile(LOG_FILE, `${line}\n`, () => {});
+}
 
 app.use(cookieParser());
 app.use(express.json());
@@ -40,6 +62,19 @@ app.use(
   })
 );
 
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    log("info", "request", {
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      duration_ms: Date.now() - start
+    });
+  });
+  next();
+});
+
 const wss = new WebSocketServer({ noServer: true });
 
 function broadcast(event, payload) {
@@ -49,9 +84,11 @@ function broadcast(event, payload) {
       client.send(message);
     }
   });
+  log("info", "broadcast", { event });
 }
 
 function initDb() {
+  ensureLogs();
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -155,6 +192,7 @@ function initDb() {
     console.log(
       `Seeded admin user: ${username}. Set ERWIN_ADMIN_USER/ERWIN_ADMIN_PASSWORD to change.`
     );
+    log("info", "seeded admin user", { username });
   }
 
   const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
@@ -355,14 +393,17 @@ app.post("/api/auth/login", (req, res) => {
     .prepare("SELECT id, username, password_hash, role FROM users WHERE username = ?")
     .get(username);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    log("warn", "login failed", { username });
     return res.status(401).json({ error: "Invalid credentials" });
   }
   req.session.user = { id: user.id, username: user.username, role: user.role };
+  log("info", "login success", { username: user.username, role: user.role });
   res.json({ id: user.id, username: user.username, role: user.role });
 });
 
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
+    log("info", "logout", { userId: req.session?.user?.id || null });
     res.json({ ok: true });
   });
 });
@@ -392,6 +433,7 @@ app.post("/api/session/start", requireAuth, requireRole("admin", "mod"), (req, r
   db.prepare(
     "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
   ).run(track ? track.id : null, Date.now(), new Date().toISOString());
+  log("info", "session start", { trackId: track?.id || null });
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   broadcast("STATE_UPDATE", { playState });
   res.json({ playState });
@@ -405,6 +447,7 @@ app.post("/api/session/pause", requireAuth, requireRole("admin", "mod"), (req, r
   db.prepare(
     "UPDATE play_state SET paused = 1, paused_at_ms = ?, updated_at = ? WHERE id = 1"
   ).run(Date.now(), new Date().toISOString());
+  log("info", "session pause", { trackId: playState.current_track_id });
   const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   broadcast("STATE_UPDATE", { playState: updated });
   res.json({ playState: updated });
@@ -422,6 +465,7 @@ app.post("/api/session/resume", requireAuth, requireRole("admin", "mod"), (req, 
   db.prepare(
     "UPDATE play_state SET paused = 0, paused_at_ms = NULL, started_at_ms = ?, updated_at = ? WHERE id = 1"
   ).run(startedAt, new Date().toISOString());
+  log("info", "session resume", { trackId: playState.current_track_id });
   const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   broadcast("STATE_UPDATE", { playState: updated });
   res.json({ playState: updated });
@@ -442,6 +486,7 @@ app.post("/api/session/seek", requireAuth, requireRole("admin", "mod"), (req, re
   db.prepare(
     "UPDATE play_state SET started_at_ms = ?, paused_at_ms = ?, updated_at = ? WHERE id = 1"
   ).run(startedAt, pausedAt, new Date().toISOString());
+  log("info", "session seek", { positionSeconds, trackId: playState.current_track_id });
   const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   broadcast("STATE_UPDATE", { playState: updated });
   res.json({ playState: updated });
@@ -451,6 +496,7 @@ app.post("/api/session/stop", requireAuth, requireRole("admin", "mod"), (req, re
   db.prepare(
     "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
   ).run(new Date().toISOString());
+  log("info", "session stop");
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   broadcast("STATE_UPDATE", { playState });
   res.json({ playState });
@@ -468,6 +514,7 @@ app.post("/api/queue/skip", requireAuth, requireRole("admin", "mod"), (req, res)
       "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
     ).run(next.track_id, Date.now(), new Date().toISOString());
   }
+  log("info", "queue skip", { nextTrackId: next?.track_id || null });
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
   const queue = db
     .prepare(
@@ -581,6 +628,7 @@ app.post("/api/playlists", requireAuth, requireRole("admin"), (req, res) => {
   db.prepare(
     "INSERT INTO playlists (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)"
   ).run(playlist.id, playlist.name, playlist.created_at, playlist.updated_at);
+  log("info", "playlist created", { playlistId: playlist.id, name: playlist.name });
   res.status(201).json(playlist);
 });
 
@@ -605,6 +653,7 @@ app.delete("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) =
     return res.status(404).json({ error: "Playlist not found" });
   }
   db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").run(req.params.id);
+  log("info", "playlist deleted", { playlistId: req.params.id });
   res.json({ ok: true });
 });
 
@@ -635,6 +684,11 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, r
     }
   });
   transaction(urls);
+  log("info", "playlist import queued", {
+    playlistId: req.params.id,
+    requested: urls.length,
+    queued: imported.length
+  });
   res.json({ importedCount: imported.length, imported });
 });
 
@@ -657,6 +711,7 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
     "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
   ).run(trackId, youtubeId, url, now);
   enqueueDownload(playlistId, trackId);
+  log("info", "track queued", { trackId, playlistId, youtubeId });
   res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
 });
 

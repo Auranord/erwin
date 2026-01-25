@@ -58,6 +58,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
+## Logs
+
+- Docker: `docker compose logs -f erwin`
+- Local file: `./data/logs/erwin.log`
+
 ## License
 
 TBD.
