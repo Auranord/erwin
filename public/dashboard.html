@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Dashboard</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Erwin Dashboard</h1>
+      <p>Manage playlists, control playback, and monitor vote rounds.</p>
+      <div class="tabs" style="margin-top: 16px;">
+        <div class="tab">Music Player</div>
+        <div class="tab">Playlist Editor</div>
+        <div class="tab">Live Chat Feed</div>
+        <div class="tab">Settings</div>
+      </div>
+    </header>
+
+    <main>
+      <section class="grid two">
+        <div class="card">
+          <h2>Music Player</h2>
+          <div class="section-title">Now Playing</div>
+          <div id="now-playing" class="list-item">No track loaded yet.</div>
+          <div class="section-title" style="margin-top: 16px;">Queue</div>
+          <div id="queue" class="list">
+            <div class="list-item">Queue is empty.</div>
+          </div>
+          <div class="section-title" style="margin-top: 16px;">Admin Controls</div>
+          <div class="grid">
+            <button id="start-session">Start Playback</button>
+            <button id="stop-session" class="secondary">Stop Playback</button>
+            <button id="skip-track" class="ghost">Skip Track</button>
+          </div>
+          <p class="notice">Stream player view: <code>/player/stream</code></p>
+        </div>
+
+        <div class="card">
+          <h2>Voting</h2>
+          <p class="notice">Voting rounds are managed by the bot service. This panel mirrors active rounds.</p>
+          <div class="list">
+            <div class="list-item">
+              <span>Vote status</span>
+              <span class="badge" id="vote-status">Idle</span>
+            </div>
+            <div class="list-item">
+              <span>Vote window</span>
+              <span id="vote-window">--</span>
+            </div>
+          </div>
+          <p class="notice">Chat command: <code>!vote 1..5</code> near track end.</p>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <div class="card">
+          <h2>Playlist Editor</h2>
+          <div class="section-title">Create Playlist</div>
+          <form id="playlist-form" class="grid">
+            <div>
+              <label for="playlist-name">Playlist name</label>
+              <input id="playlist-name" name="playlist-name" required />
+            </div>
+            <button type="submit">Create Playlist</button>
+          </form>
+
+          <div class="section-title" style="margin-top: 16px;">Playlists</div>
+          <div id="playlists" class="list">
+            <div class="list-item">No playlists yet.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Track Import</h2>
+          <form id="import-form" class="grid">
+            <div>
+              <label for="import-playlist">Playlist</label>
+              <select id="import-playlist" name="import-playlist"></select>
+            </div>
+            <div>
+              <label for="import-urls">YouTube URLs (one per line)</label>
+              <textarea id="import-urls" rows="6"></textarea>
+            </div>
+            <button type="submit">Import Tracks</button>
+          </form>
+          <p class="notice">Metadata enrichment is queued separately in the MVP.</p>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <div class="card">
+          <h2>Live Chat Feed</h2>
+          <p class="notice">Hook up the Twitch IRC module to populate real-time chat messages.</p>
+          <div class="list">
+            <div class="list-item">
+              <span class="badge">System</span>
+              <span>Erwin is standing by.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Settings Snapshot</h2>
+          <div class="list">
+            <div class="list-item">
+              <span>Vote options</span>
+              <span>5 default</span>
+            </div>
+            <div class="list-item">
+              <span>Vote duration</span>
+              <span>30 seconds</span>
+            </div>
+            <div class="list-item">
+              <span>Vote lead time</span>
+              <span>20 seconds</span>
+            </div>
+          </div>
+          <p class="notice">Adjust settings via the API to persist configuration.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span class="status-pill"><span></span> Connected</span>
+      <span style="margin-left: 12px;">Need audio in OBS? Use <code>/player/stream</code>.</span>
+      <button id="logout" class="secondary" style="float: right;">Logout</button>
+    </footer>
+
+    <script>
+      const nowPlaying = document.getElementById("now-playing");
+      const queueEl = document.getElementById("queue");
+      const playlistsEl = document.getElementById("playlists");
+      const importPlaylist = document.getElementById("import-playlist");
+      const playlistForm = document.getElementById("playlist-form");
+      const importForm = document.getElementById("import-form");
+
+      async function fetchState() {
+        const response = await fetch("/api/state");
+        if (!response.ok) return;
+        const { playState, queue } = await response.json();
+        if (playState?.current_track_id) {
+          nowPlaying.textContent = `Track ID: ${playState.current_track_id}`;
+        } else {
+          nowPlaying.textContent = "No track loaded yet.";
+        }
+        if (!queue || queue.length === 0) {
+          queueEl.innerHTML = '<div class="list-item">Queue is empty.</div>';
+        } else {
+          queueEl.innerHTML = queue
+            .map(
+              (item) =>
+                `<div class="list-item"><span>${item.title || item.track_id}</span><span class="badge">${item.source}</span></div>`
+            )
+            .join("");
+        }
+      }
+
+      async function fetchPlaylists() {
+        const response = await fetch("/api/playlists");
+        if (!response.ok) return;
+        const playlists = await response.json();
+        playlistsEl.innerHTML = "";
+        importPlaylist.innerHTML = "";
+        if (playlists.length === 0) {
+          playlistsEl.innerHTML = '<div class="list-item">No playlists yet.</div>';
+          return;
+        }
+        for (const playlist of playlists) {
+          const item = document.createElement("div");
+          item.className = "list-item";
+          item.innerHTML = `<span>${playlist.name}</span><span class="badge">${playlist.tracks.length} tracks</span>`;
+          playlistsEl.appendChild(item);
+
+          const option = document.createElement("option");
+          option.value = playlist.id;
+          option.textContent = playlist.name;
+          importPlaylist.appendChild(option);
+        }
+      }
+
+      document.getElementById("start-session").addEventListener("click", async () => {
+        await fetch("/api/session/start", { method: "POST", headers: { "Content-Type": "application/json" } });
+        fetchState();
+      });
+
+      document.getElementById("stop-session").addEventListener("click", async () => {
+        await fetch("/api/session/stop", { method: "POST", headers: { "Content-Type": "application/json" } });
+        fetchState();
+      });
+
+      document.getElementById("skip-track").addEventListener("click", async () => {
+        await fetch("/api/queue/skip", { method: "POST", headers: { "Content-Type": "application/json" } });
+        fetchState();
+      });
+
+      playlistForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const name = playlistForm["playlist-name"].value;
+        await fetch("/api/playlists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name })
+        });
+        playlistForm.reset();
+        fetchPlaylists();
+      });
+
+      importForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const urls = importForm["import-urls"].value.split("\n").map((line) => line.trim()).filter(Boolean);
+        const playlistId = importPlaylist.value;
+        if (!playlistId || urls.length === 0) return;
+        await fetch(`/api/playlists/${playlistId}/import`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls })
+        });
+        importForm.reset();
+        fetchPlaylists();
+      });
+
+      document.getElementById("logout").addEventListener("click", async () => {
+        await fetch("/api/auth/logout", { method: "POST" });
+        window.location.href = "/login";
+      });
+
+      const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+      ws.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.event === "STATE_UPDATE" || message.event === "QUEUE_UPDATE") {
+          fetchState();
+        }
+      });
+
+      fetchState();
+      fetchPlaylists();
+    </script>
+  </body>
+</html>
