@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Listening Room</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Listening Room</h1>
+      <p>Follow along with the stream player session.</p>
+    </header>
+    <main>
+      <section class="card">
+        <h2>Now Playing</h2>
+        <div id="listen-track" class="list-item">Waiting for session start...</div>
+        <p class="notice">This view mirrors the stream player track state.</p>
+      </section>
+    </main>
+    <script>
+      const trackEl = document.getElementById("listen-track");
+      async function refresh() {
+        const response = await fetch("/api/state");
+        if (!response.ok) return;
+        const { playState } = await response.json();
+        trackEl.textContent = playState?.current_track_id
+          ? `Track ID: ${playState.current_track_id}`
+          : "Waiting for session start...";
+      }
+      const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+      ws.addEventListener("message", (event) => {
+        const message = JSON.parse(event.data);
+        if (message.event === "STATE_UPDATE") {
+          refresh();
+        }
+      });
+      refresh();
+    </script>
+  </body>
+</html>
