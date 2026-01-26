@@ -455,6 +455,11 @@ async function downloadWorker() {
       "UPDATE download_queue SET status = 'ready', updated_at = ? WHERE id = ?"
     ).run(new Date().toISOString(), pending.queue_id);
     console.log(`Download ready for track ${pending.track_id}.`);
+    broadcast("DOWNLOAD_UPDATE", {
+      trackId: pending.track_id,
+      playlistId: pending.playlist_id,
+      status: "ready"
+    });
   } catch (error) {
     console.error(`Download failed for track ${pending.track_id}:`, error);
     const statusCode = error?.statusCode || error?.status;
@@ -475,6 +480,11 @@ async function downloadWorker() {
       new Date().toISOString(),
       pending.queue_id
     );
+    broadcast("DOWNLOAD_UPDATE", {
+      trackId: pending.track_id,
+      playlistId: pending.playlist_id,
+      status: isBlocked ? "blocked" : "failed"
+    });
     if (isBlocked) {
       log("error", "download blocked", {
         trackId: pending.track_id,
@@ -791,6 +801,14 @@ app.get("/api/downloads", requireAuth, (req, res) => {
   res.json(downloads);
 });
 
+app.post("/api/downloads/clear", requireAuth, requireRole("admin"), (req, res) => {
+  const result = db
+    .prepare("DELETE FROM download_queue WHERE status IN ('ready', 'failed', 'blocked')")
+    .run();
+  log("info", "download queue cleared", { cleared: result.changes });
+  res.json({ cleared: result.changes });
+});
+
 app.post("/api/playlists", requireAuth, requireRole("admin"), (req, res) => {
   const { name } = req.body || {};
   if (!name) {
@@ -890,6 +908,22 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
   enqueueDownload(playlistId, trackId);
   log("info", "track queued", { trackId, playlistId, youtubeId });
   res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+});
+
+app.put("/api/tracks/:id", requireAuth, requireRole("admin"), (req, res) => {
+  const { title } = req.body || {};
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: "title required" });
+  }
+  const trimmed = title.trim();
+  const result = db
+    .prepare("UPDATE tracks SET title = ? WHERE id = ?")
+    .run(trimmed, req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  log("info", "track renamed", { trackId: req.params.id, title: trimmed });
+  res.json({ id: req.params.id, title: trimmed });
 });
 
 app.put("/api/tracks/:id/disable", requireAuth, requireRole("admin"), (req, res) => {

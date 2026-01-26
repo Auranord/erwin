@@ -91,13 +91,19 @@
               </div>
               <button type="submit">Add Track</button>
             </form>
+          </div>
 
-            <div class="section-title" style="margin-top: 16px;">Tracks</div>
+          <div class="card">
+            <h2>Track Editor</h2>
+            <p class="notice">Manage tracks, reorder them, and rename titles after downloads complete.</p>
             <div id="tracks" class="list">
               <div class="list-item">Select a playlist to view tracks.</div>
             </div>
             <p class="notice">Editing playlists while playing keeps the current track and only affects upcoming queue entries.</p>
-            <div class="section-title" style="margin-top: 16px;">Download Queue</div>
+            <div class="section-title" style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between;">
+              <span>Download Queue</span>
+              <button id="clear-downloads" class="secondary" type="button">Clear Completed</button>
+            </div>
             <div id="download-queue" class="list">
               <div class="list-item">No downloads yet.</div>
             </div>
@@ -186,20 +192,24 @@
           return;
         }
         tracksEl.innerHTML = playlist.tracks
-          .map(
-            (track, index) =>
-              `<div class="list-item" data-track-id="${track.id}">
-                <div>
-                  <div>${track.title || track.youtube_id}</div>
+          .map((track, index) => {
+            const label = track.title || track.youtube_id;
+            return `<div class="list-item" data-track-id="${track.id}">
+                <div style="flex: 1;">
+                  <div>${label}</div>
                   <div class="notice">${track.url}</div>
+                  <div class="inline-input" style="margin-top: 8px;">
+                    <input type="text" name="rename" placeholder="Rename track" value="${track.title || ""}" />
+                    <button class="secondary" data-action="rename">Save</button>
+                  </div>
                 </div>
                 <div class="actions">
                   <button class="secondary" data-action="up" ${index === 0 ? "disabled" : ""}>Up</button>
                   <button class="secondary" data-action="down" ${index === playlist.tracks.length - 1 ? "disabled" : ""}>Down</button>
                   <button class="ghost" data-action="remove">Remove</button>
                 </div>
-              </div>`
-          )
+              </div>`;
+          })
           .join("");
       }
 
@@ -314,6 +324,17 @@
         if (action === "remove") {
           await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}`, { method: "DELETE" });
         }
+        if (action === "rename") {
+          const input = wrapper.querySelector('input[name="rename"]');
+          const title = input?.value?.trim();
+          if (title) {
+            await fetch(`/api/tracks/${trackId}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ title })
+            });
+          }
+        }
         if (action === "up" || action === "down") {
           await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}/move`, {
             method: "POST",
@@ -375,11 +396,21 @@
         window.location.href = "/login";
       });
 
+      document.getElementById("clear-downloads").addEventListener("click", async () => {
+        await fetch("/api/downloads/clear", { method: "POST" });
+        fetchDownloads();
+      });
+
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.addEventListener("message", (event) => {
         const message = JSON.parse(event.data);
         if (message.event === "STATE_UPDATE" || message.event === "QUEUE_UPDATE") {
           fetchState();
+          return;
+        }
+        if (message.event === "DOWNLOAD_UPDATE") {
+          fetchDownloads();
+          fetchPlaylists();
         }
       });
 
