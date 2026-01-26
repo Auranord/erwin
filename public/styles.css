@@ -134,14 +134,41 @@ button.ghost {
   font-size: 13px;
 }
 
-.inline-input {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.75);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
 }
 
-.inline-input input {
-  flex: 1;
+.modal.hidden {
+  display: none;
+}
+
+.modal-card {
+  width: min(420px, 90vw);
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.6);
+}
+
+.modal-card h3 {
+  margin: 0 0 8px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
+.modal-actions button {
+  width: auto;
 }
 
 .track-editor-header {

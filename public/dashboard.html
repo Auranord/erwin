@@ -165,6 +165,19 @@
       <button id="logout" class="secondary" style="float: right;">Logout</button>
     </footer>
 
+    <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+      <div class="modal-card">
+        <h3 id="rename-title">Rename Track</h3>
+        <p class="notice">Update the display title for this track.</p>
+        <label for="rename-input">New title</label>
+        <input id="rename-input" type="text" placeholder="Track title" />
+        <div class="modal-actions">
+          <button id="rename-cancel" class="secondary" type="button">Cancel</button>
+          <button id="rename-save" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const nowPlaying = document.getElementById("now-playing");
       const queueEl = document.getElementById("queue");
@@ -176,8 +189,13 @@
       const trackForm = document.getElementById("track-form");
       const trackFilter = document.getElementById("track-filter");
       const trackCount = document.getElementById("track-count");
+      const renameModal = document.getElementById("rename-modal");
+      const renameInput = document.getElementById("rename-input");
+      const renameSave = document.getElementById("rename-save");
+      const renameCancel = document.getElementById("rename-cancel");
       let playlistsCache = [];
       let selectedPlaylistId = null;
+      let renameTrackId = null;
 
       document.querySelectorAll(".tab-link").forEach((link) => {
         link.addEventListener("click", (event) => {
@@ -219,16 +237,13 @@
           .map((track, index) => {
             const label = track.title || track.youtube_id;
             const trackIndex = positions.get(track.id) ?? index;
-            return `<div class="list-item" data-track-id="${track.id}">
+            return `<div class="list-item" data-track-id="${track.id}" data-track-title="${track.title || ""}">
                 <div style="flex: 1;">
                   <div>${label}</div>
                   <div class="notice">${track.url}</div>
-                  <div class="inline-input" style="margin-top: 8px;">
-                    <input type="text" name="rename" placeholder="Rename track" value="${track.title || ""}" />
-                    <button class="secondary" data-action="rename">Save</button>
-                  </div>
                 </div>
                 <div class="actions">
+                  <button class="secondary" data-action="rename">Rename</button>
                   <button class="secondary" data-action="up" ${trackIndex === 0 ? "disabled" : ""}>Up</button>
                   <button class="secondary" data-action="down" ${trackIndex === playlist.tracks.length - 1 ? "disabled" : ""}>Down</button>
                   <button class="ghost" data-action="remove">Remove</button>
@@ -365,15 +380,10 @@
           await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}`, { method: "DELETE" });
         }
         if (action === "rename") {
-          const input = wrapper.querySelector('input[name="rename"]');
-          const title = input?.value?.trim();
-          if (title) {
-            await fetch(`/api/tracks/${trackId}`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ title })
-            });
-          }
+          renameTrackId = trackId;
+          renameInput.value = wrapper.dataset.trackTitle || "";
+          renameModal.classList.remove("hidden");
+          renameInput.focus();
         }
         if (action === "up" || action === "down") {
           await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}/move`, {
@@ -382,6 +392,34 @@
             body: JSON.stringify({ direction: action })
           });
         }
+        fetchPlaylists();
+      });
+
+      function closeRenameModal() {
+        renameModal.classList.add("hidden");
+        renameTrackId = null;
+        renameInput.value = "";
+      }
+
+      renameCancel.addEventListener("click", () => {
+        closeRenameModal();
+      });
+
+      renameModal.addEventListener("click", (event) => {
+        if (event.target === renameModal) {
+          closeRenameModal();
+        }
+      });
+
+      renameSave.addEventListener("click", async () => {
+        const title = renameInput.value.trim();
+        if (!renameTrackId || !title) return;
+        await fetch(`/api/tracks/${renameTrackId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title })
+        });
+        closeRenameModal();
         fetchPlaylists();
       });
 
