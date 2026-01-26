@@ -40,6 +40,53 @@ For a wide architecture overview and a delivery plan, see [docs/architecture-pla
 - Add Docker Compose, `.env.example`, and persistent volumes.
 - Build the tabbed dashboard and the stream player view.
 
+## Quickstart (local)
+
+1. Use Node.js LTS (20 or 22). This project depends on native SQLite bindings.
+2. Copy `.env.example` to `.env` and adjust credentials.
+3. Install `yt-dlp` and `ffmpeg` so the download worker can fetch and transcode audio (both must be in your `PATH`).
+4. Install dependencies and start the server:
+   ```bash
+   npm install
+   npm start
+   ```
+5. Visit `http://localhost:3000/login` and use the seeded admin credentials.
+
+## Docker (local)
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+### Docker watch (optional)
+
+Use Compose file watch to sync changes without opening another terminal:
+
+```bash
+docker compose watch
+```
+
+## Logs
+
+- Docker: `docker compose logs -f erwin`
+- Local file: `./data/logs/erwin.log`
+
+## YouTube download troubleshooting
+
+Downloads use `yt-dlp`. Some videos require authenticated requests to download. If downloads fail with 403 errors, provide cookies:
+
+1. Export your YouTube cookies to a Netscape-format text file (recommended).
+   - JSON exports are also accepted and will be converted automatically at runtime.
+2. Set either:
+   - `ERWIN_YTDL_COOKIE_FILE=/app/data/youtube.cookie` (recommended with Docker volume mount)
+   - or `ERWIN_YTDL_COOKIE=YOUR_COOKIE_HEADER_VALUE`
+
+If you see errors about a missing JavaScript runtime or `ffprobe`/`ffmpeg`, ensure `node` and `ffmpeg` are installed and available. You can override detection with:
+
+- `ERWIN_YTDL_JS_RUNTIME=node:/path/to/node`
+- `ERWIN_YTDL_FFMPEG_LOCATION=/path/to/ffmpeg`
+
 ## License
 
 TBD.
