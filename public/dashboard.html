@@ -80,17 +80,10 @@
                 <select id="track-playlist" name="track-playlist"></select>
               </div>
               <div>
-                <label for="track-url">YouTube URL or ID</label>
-                <input id="track-url" name="track-url" placeholder="https://youtu.be/..." />
+                <label for="track-url">YouTube Track or Playlist URL</label>
+                <input id="track-url" name="track-url" placeholder="https://youtu.be/... or https://www.youtube.com/playlist?list=..." />
               </div>
-              <button type="submit">Add Track</button>
-            </form>
-            <form id="playlist-import-form" class="grid" style="margin-top: 16px;">
-              <div>
-                <label for="playlist-urls">YouTube Playlist URLs (one per line)</label>
-                <textarea id="playlist-urls" name="playlist-urls" rows="3" placeholder="https://www.youtube.com/playlist?list=..."></textarea>
-              </div>
-              <button type="submit" class="secondary">Add Playlist</button>
+              <button type="submit">Add</button>
             </form>
             <div class="section-title" style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between;">
               <span>Download Queue</span>
@@ -188,8 +181,6 @@
       const trackPlaylist = document.getElementById("track-playlist");
       const playlistForm = document.getElementById("playlist-form");
       const trackForm = document.getElementById("track-form");
-      const playlistImportForm = document.getElementById("playlist-import-form");
-      const playlistUrls = document.getElementById("playlist-urls");
       const trackFilter = document.getElementById("track-filter");
       const trackCount = document.getElementById("track-count");
       const renameModal = document.getElementById("rename-modal");
@@ -451,30 +442,20 @@
         const playlistId = trackForm["track-playlist"].value;
         const url = trackForm["track-url"].value;
         if (!playlistId || !url) return;
-        await fetch("/api/tracks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ playlistId, url })
-        });
+        if (url.includes("list=")) {
+          await fetch(`/api/playlists/${playlistId}/import`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ urls: [url.trim()] })
+          });
+        } else {
+          await fetch("/api/tracks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ playlistId, url })
+          });
+        }
         trackForm.reset();
-        fetchPlaylists();
-        fetchDownloads();
-      });
-
-      playlistImportForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const playlistId = trackForm["track-playlist"].value;
-        const urls = playlistUrls.value
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean);
-        if (!playlistId || urls.length === 0) return;
-        await fetch(`/api/playlists/${playlistId}/import`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ urls })
-        });
-        playlistUrls.value = "";
         fetchPlaylists();
         fetchDownloads();
       });
