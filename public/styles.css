@@ -101,6 +101,12 @@ button.ghost {
   gap: 8px;
 }
 
+.track-list {
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
 .list-item {
   display: flex;
   justify-content: space-between;
@@ -126,6 +132,36 @@ button.ghost {
   width: auto;
   padding: 6px 10px;
   font-size: 13px;
+}
+
+.inline-input {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-input input {
+  flex: 1;
+}
+
+.track-editor-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.track-editor-tools {
+  min-width: 220px;
+  display: grid;
+  gap: 6px;
+  justify-items: stretch;
+}
+
+.track-editor-tools .notice {
+  margin: 0;
+  text-align: right;
 }
 
 .badge {

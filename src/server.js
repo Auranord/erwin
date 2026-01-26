@@ -565,6 +565,7 @@ function enqueueDownload(playlistId, trackId) {
     "UPDATE tracks SET download_status = 'pending', download_error = NULL WHERE id = ?"
   ).run(trackId);
   console.log(`Queued download for track ${trackId} (playlist ${playlistId}).`);
+  broadcast("DOWNLOAD_UPDATE", { trackId, playlistId, status: "pending" });
 }
 
 app.get("/api/health", (req, res) => {
@@ -806,6 +807,7 @@ app.post("/api/downloads/clear", requireAuth, requireRole("admin"), (req, res) =
     .prepare("DELETE FROM download_queue WHERE status IN ('ready', 'failed', 'blocked')")
     .run();
   log("info", "download queue cleared", { cleared: result.changes });
+  broadcast("DOWNLOAD_UPDATE", { action: "cleared", cleared: result.changes });
   res.json({ cleared: result.changes });
 });
 
@@ -824,6 +826,7 @@ app.post("/api/playlists", requireAuth, requireRole("admin"), (req, res) => {
     "INSERT INTO playlists (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)"
   ).run(playlist.id, playlist.name, playlist.created_at, playlist.updated_at);
   log("info", "playlist created", { playlistId: playlist.id, name: playlist.name });
+  broadcast("PLAYLIST_UPDATE", { playlistId: playlist.id, action: "created" });
   res.status(201).json(playlist);
 });
 
@@ -839,6 +842,7 @@ app.put("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) => {
   if (result.changes === 0) {
     return res.status(404).json({ error: "Playlist not found" });
   }
+  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "updated" });
   res.json({ id: req.params.id, name, updated_at });
 });
 
@@ -849,6 +853,7 @@ app.delete("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) =
   }
   db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").run(req.params.id);
   log("info", "playlist deleted", { playlistId: req.params.id });
+  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "deleted" });
   res.json({ ok: true });
 });
 
@@ -884,6 +889,7 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, r
     requested: urls.length,
     queued: imported.length
   });
+  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "imported" });
   res.json({ importedCount: imported.length, imported });
 });
 
@@ -907,6 +913,7 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
   ).run(trackId, youtubeId, url, now);
   enqueueDownload(playlistId, trackId);
   log("info", "track queued", { trackId, playlistId, youtubeId });
+  broadcast("PLAYLIST_UPDATE", { playlistId, action: "track_added", trackId });
   res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
 });
 
@@ -923,6 +930,7 @@ app.put("/api/tracks/:id", requireAuth, requireRole("admin"), (req, res) => {
     return res.status(404).json({ error: "Track not found" });
   }
   log("info", "track renamed", { trackId: req.params.id, title: trimmed });
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
   res.json({ id: req.params.id, title: trimmed });
 });
 
@@ -989,6 +997,11 @@ app.delete(
       return res.status(404).json({ error: "Track not found in playlist" });
     }
     normalizePlaylistPositions(req.params.playlistId);
+    broadcast("PLAYLIST_UPDATE", {
+      playlistId: req.params.playlistId,
+      trackId: req.params.trackId,
+      action: "track_removed"
+    });
     res.json({ ok: true });
   }
 );
@@ -1028,6 +1041,11 @@ app.post(
       ).run(current.position, req.params.playlistId, target.track_id);
     });
     swap();
+    broadcast("PLAYLIST_UPDATE", {
+      playlistId: req.params.playlistId,
+      trackId: req.params.trackId,
+      action: "track_moved"
+    });
     res.json({ ok: true });
   }
 );
