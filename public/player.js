@@ -62,6 +62,21 @@
       state.audio = document.getElementById(elementId);
       if (state.audio) {
         state.audio.preload = "metadata";
+        state.audio.addEventListener("ended", async () => {
+          if (mode !== "stream") return;
+          try {
+            await fetch("/api/queue/skip", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" }
+            });
+            const response = await fetch("/api/state");
+            if (!response.ok) return;
+            const { playState, currentTrack } = await response.json();
+            setState({ playState, currentTrack });
+          } catch {
+            // Ignore ended handler errors to avoid stopping playback updates.
+          }
+        });
       }
     }
 

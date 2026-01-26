@@ -701,6 +701,10 @@ app.post("/api/queue/skip", requireAuth, requireRole("admin", "mod"), (req, res)
     db.prepare(
       "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
     ).run(next.track_id, Date.now(), new Date().toISOString());
+  } else {
+    db.prepare(
+      "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
+    ).run(new Date().toISOString());
   }
   log("info", "queue skip", { nextTrackId: next?.track_id || null });
   const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
