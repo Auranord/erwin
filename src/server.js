@@ -910,6 +910,22 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
   res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
 });
 
+app.put("/api/tracks/:id", requireAuth, requireRole("admin"), (req, res) => {
+  const { title } = req.body || {};
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: "title required" });
+  }
+  const trimmed = title.trim();
+  const result = db
+    .prepare("UPDATE tracks SET title = ? WHERE id = ?")
+    .run(trimmed, req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  log("info", "track renamed", { trackId: req.params.id, title: trimmed });
+  res.json({ id: req.params.id, title: trimmed });
+});
+
 app.put("/api/tracks/:id/disable", requireAuth, requireRole("admin"), (req, res) => {
   const { disabled } = req.body || {};
   const value = disabled ? 1 : 0;
