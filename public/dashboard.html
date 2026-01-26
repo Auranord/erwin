@@ -29,12 +29,6 @@
             <div id="queue" class="list">
               <div class="list-item">Queue is empty.</div>
             </div>
-            <div class="section-title" style="margin-top: 16px;">Admin Controls</div>
-            <div class="grid">
-              <button id="start-session">Start Playback</button>
-              <button id="stop-session" class="secondary">Stop Playback</button>
-              <button id="skip-track" class="ghost">Skip Track</button>
-            </div>
             <div class="grid">
               <button id="open-stream" class="secondary">Open Stream Player</button>
             </div>
@@ -264,11 +258,16 @@
       async function fetchState() {
         const response = await fetch("/api/state");
         if (!response.ok) return;
-        const { playState, queue } = await response.json();
-        if (playState?.current_track_id) {
-          nowPlaying.textContent = `Track ID: ${playState.current_track_id}`;
+        const { playState, queue, currentTrack } = await response.json();
+        if (playState?.current_track_id && currentTrack) {
+          const title = currentTrack.title || "Untitled track";
+          nowPlaying.textContent = playState.paused
+            ? `Paused: ${title}`
+            : `Now Playing: ${title}`;
+        } else if (playState?.paused) {
+          nowPlaying.textContent = "Playback paused.";
         } else {
-          nowPlaying.textContent = "No track loaded yet.";
+          nowPlaying.textContent = "Nothing is playing.";
         }
         if (!queue || queue.length === 0) {
           queueEl.innerHTML = '<div class="list-item">Queue is empty.</div>';
@@ -429,21 +428,6 @@
         });
         closeRenameModal();
         fetchPlaylists();
-      });
-
-      document.getElementById("start-session").addEventListener("click", async () => {
-        await fetch("/api/session/start", { method: "POST", headers: { "Content-Type": "application/json" } });
-        fetchState();
-      });
-
-      document.getElementById("stop-session").addEventListener("click", async () => {
-        await fetch("/api/session/stop", { method: "POST", headers: { "Content-Type": "application/json" } });
-        fetchState();
-      });
-
-      document.getElementById("skip-track").addEventListener("click", async () => {
-        await fetch("/api/queue/skip", { method: "POST", headers: { "Content-Type": "application/json" } });
-        fetchState();
       });
 
       document.getElementById("open-stream").addEventListener("click", () => {
