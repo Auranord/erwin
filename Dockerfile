@@ -17,9 +17,11 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip \
-  && pip3 install --no-cache-dir yt-dlp \
+  && apt-get install -y --no-install-recommends python3 python3-pip pipx \
+  && pipx install yt-dlp \
   && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.local/bin:${PATH}"
 
 COPY --from=build /app /app
 
