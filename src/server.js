@@ -298,7 +298,6 @@ function initDb() {
 initDb();
 
 async function downloadTrackAudio(track) {
-  const outputPath = path.join(AUDIO_DIR, `${track.id}.mp3`);
   const client = await getYouTubeClient();
   const info = await client.getInfo(track.youtube_id);
   const basic = info?.basic_info || {};
@@ -306,6 +305,13 @@ async function downloadTrackAudio(track) {
   const channel = basic.author?.name || null;
   const thumbnail = basic.thumbnail?.[basic.thumbnail.length - 1]?.url || null;
   const durationSec = basic.duration ? Number(basic.duration) : null;
+
+  const safeTitle = (title || track.youtube_id)
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  const outputPath = path.join(AUDIO_DIR, `${safeTitle}-${track.id}.mp3`);
 
   const stream = await info.download({ type: "audio", quality: "best" });
   await pipeline(stream, fs.createWriteStream(outputPath));
