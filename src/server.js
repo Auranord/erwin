@@ -26,6 +26,8 @@ const LOG_DIR = process.env.ERWIN_LOG_DIR || "./data/logs";
 const LOG_FILE = path.join(LOG_DIR, "erwin.log");
 const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtube.cookie";
 const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
+const YTDL_JS_RUNTIME = process.env.ERWIN_YTDL_JS_RUNTIME || `node:${process.execPath}`;
+const YTDL_FFMPEG_LOCATION = process.env.ERWIN_YTDL_FFMPEG_LOCATION || "";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -92,17 +94,26 @@ function broadcast(event, payload) {
 
 function runYtDlp(args) {
   return new Promise((resolve, reject) => {
-    execFile("yt-dlp", args, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(
-          new Error(
-            `yt-dlp failed (code ${error.code ?? "unknown"}): ${stderr || error.message}`
-          )
-        );
-        return;
+    const runtimeArgs = ["--js-runtimes", YTDL_JS_RUNTIME];
+    const ffmpegArgs = YTDL_FFMPEG_LOCATION
+      ? ["--ffmpeg-location", YTDL_FFMPEG_LOCATION]
+      : [];
+    execFile(
+      "yt-dlp",
+      [...runtimeArgs, ...ffmpegArgs, ...args],
+      { maxBuffer: 1024 * 1024 * 10 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(
+            new Error(
+              `yt-dlp failed (code ${error.code ?? "unknown"}): ${stderr || error.message}`
+            )
+          );
+          return;
+        }
+        resolve(stdout);
       }
-      resolve(stdout);
-    });
+    );
   });
 }
 

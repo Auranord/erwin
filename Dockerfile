@@ -16,12 +16,13 @@ COPY public ./public
 FROM node:22-bookworm-slim
 WORKDIR /app
 
+ENV PIPX_HOME=/opt/pipx
+ENV PIPX_BIN_DIR=/usr/local/bin
+
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 python3-pip pipx \
+  && apt-get install -y --no-install-recommends python3 python3-pip pipx ffmpeg \
   && pipx install yt-dlp \
   && rm -rf /var/lib/apt/lists/*
-
-ENV PATH="/root/.local/bin:${PATH}"
 
 COPY --from=build /app /app
 
