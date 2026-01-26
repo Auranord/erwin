@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { WebSocketServer } from "ws";
 import fs from "fs";
 import { promises as fsPromises } from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
@@ -24,6 +25,7 @@ const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
 const LOG_DIR = process.env.ERWIN_LOG_DIR || "./data/logs";
 const LOG_FILE = path.join(LOG_DIR, "erwin.log");
 const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtube.cookie";
+const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -102,6 +104,100 @@ function runYtDlp(args) {
       resolve(stdout);
     });
   });
+}
+
+function toNetscapeCookieLine(cookie) {
+  const domain = cookie.domain || "";
+  const includeSubdomains = domain.startsWith(".");
+  const pathValue = cookie.path || "/";
+  const secure = Boolean(cookie.secure);
+  const expires =
+    Number.isFinite(cookie.expirationDate) && cookie.expirationDate > 0
+      ? Math.floor(cookie.expirationDate)
+      : 0;
+  return [
+    domain,
+    includeSubdomains ? "TRUE" : "FALSE",
+    pathValue,
+    secure ? "TRUE" : "FALSE",
+    expires,
+    cookie.name || "",
+    cookie.value || ""
+  ].join("\t");
+}
+
+async function buildYtDlpCookieArgs() {
+  if (YTDL_COOKIE) {
+    return {
+      args: ["--add-header", `Cookie: ${YTDL_COOKIE}`],
+      cleanup: async () => {}
+    };
+  }
+
+  if (!YTDL_COOKIE_FILE || !fs.existsSync(YTDL_COOKIE_FILE)) {
+    return { args: [], cleanup: async () => {} };
+  }
+
+  const raw = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim();
+  if (!raw) {
+    log("warn", "yt-dlp cookies file is empty", { path: YTDL_COOKIE_FILE });
+    return { args: [], cleanup: async () => {} };
+  }
+
+  const firstChar = raw[0];
+  if (firstChar !== "[" && firstChar !== "{") {
+    return { args: ["--cookies", YTDL_COOKIE_FILE], cleanup: async () => {} };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    const cookieList = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.cookies)
+        ? parsed.cookies
+        : null;
+    if (!cookieList) {
+      log("warn", "yt-dlp cookies JSON is not an array", { path: YTDL_COOKIE_FILE });
+      return { args: [], cleanup: async () => {} };
+    }
+    const lines = cookieList
+      .map((cookie) => toNetscapeCookieLine(cookie))
+      .filter((line) => line.trim().length > 0);
+    if (!lines.length) {
+      log("warn", "yt-dlp cookies JSON has no entries", { path: YTDL_COOKIE_FILE });
+      return { args: [], cleanup: async () => {} };
+    }
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), "erwin-ytcookies-"));
+    const tempPath = path.join(tempDir, "cookies.txt");
+    await fsPromises.writeFile(
+      tempPath,
+      `# Netscape HTTP Cookie File\n${lines.join("\n")}\n`
+    );
+    log("info", "yt-dlp cookies JSON converted to Netscape format", {
+      source: YTDL_COOKIE_FILE,
+      tempPath
+    });
+    return {
+      args: ["--cookies", tempPath],
+      cleanup: async () => {
+        try {
+          await fsPromises.unlink(tempPath);
+          await fsPromises.rmdir(tempDir);
+        } catch (error) {
+          log("warn", "unable to cleanup temporary cookie file", {
+            error: String(error?.message || error),
+            tempPath
+          });
+        }
+      }
+    };
+  } catch (error) {
+    log("warn", "yt-dlp cookies file looks like JSON but failed to parse", {
+      path: YTDL_COOKIE_FILE,
+      error: String(error?.message || error)
+    });
+    return { args: [], cleanup: async () => {} };
+  }
 }
 
 function initDb() {
@@ -278,54 +374,44 @@ async function downloadTrackAudio(track) {
       .slice(0, 120);
 
   const videoUrl = `https://www.youtube.com/watch?v=${track.youtube_id}`;
-  const cookieArgs = [];
-  if (YTDL_COOKIE_FILE && fs.existsSync(YTDL_COOKIE_FILE)) {
-    try {
-      const firstChar = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim()[0];
-      if (!firstChar) {
-        log("warn", "yt-dlp cookies file is empty", { path: YTDL_COOKIE_FILE });
-      } else if (firstChar === "[") {
-        log("warn", "yt-dlp cookies file looks like JSON; expected Netscape format", {
-          path: YTDL_COOKIE_FILE
-        });
-      } else {
-        cookieArgs.push("--cookies", YTDL_COOKIE_FILE);
-      }
-    } catch (error) {
-      log("warn", "unable to read cookies file for yt-dlp", {
-        error: String(error?.message || error)
-      });
-    }
+  const { args: cookieArgs, cleanup } = await buildYtDlpCookieArgs();
+  try {
+    const metadataRaw = await runYtDlp([
+      "--dump-single-json",
+      "--no-playlist",
+      ...cookieArgs,
+      videoUrl
+    ]);
+    const metadata = JSON.parse(metadataRaw);
+    const title = metadata?.title || null;
+    const channel = metadata?.uploader || null;
+    const durationSec = Number.isFinite(metadata?.duration) ? metadata.duration : null;
+    const thumbnail = metadata?.thumbnail || null;
+
+    const safeTitle = getSafeTitle(title);
+    const outputBase = path.join(AUDIO_DIR, `${safeTitle}-${track.id}`);
+    const outputPath = `${outputBase}.mp3`;
+
+    await runYtDlp([
+      "--no-playlist",
+      ...cookieArgs,
+      "-x",
+      "--audio-format",
+      "mp3",
+      "--audio-quality",
+      "0",
+      "-o",
+      `${outputBase}.%(ext)s`,
+      videoUrl
+    ]);
+
+    const now = new Date().toISOString();
+    db.prepare(
+      "UPDATE tracks SET title = COALESCE(title, ?), channel = COALESCE(channel, ?), thumbnail = COALESCE(thumbnail, ?), duration_sec = COALESCE(duration_sec, ?), audio_path = ?, download_status = 'ready', download_error = NULL, downloaded_at = ? WHERE id = ?"
+    ).run(title, channel, thumbnail, durationSec, outputPath, now, track.id);
+  } finally {
+    await cleanup();
   }
-
-  const metadataRaw = await runYtDlp(["--dump-single-json", "--no-playlist", ...cookieArgs, videoUrl]);
-  const metadata = JSON.parse(metadataRaw);
-  const title = metadata?.title || null;
-  const channel = metadata?.uploader || null;
-  const durationSec = Number.isFinite(metadata?.duration) ? metadata.duration : null;
-  const thumbnail = metadata?.thumbnail || null;
-
-  const safeTitle = getSafeTitle(title);
-  const outputBase = path.join(AUDIO_DIR, `${safeTitle}-${track.id}`);
-  const outputPath = `${outputBase}.mp3`;
-
-  await runYtDlp([
-    "--no-playlist",
-    ...cookieArgs,
-    "-x",
-    "--audio-format",
-    "mp3",
-    "--audio-quality",
-    "0",
-    "-o",
-    `${outputBase}.%(ext)s`,
-    videoUrl
-  ]);
-
-  const now = new Date().toISOString();
-  db.prepare(
-    "UPDATE tracks SET title = COALESCE(title, ?), channel = COALESCE(channel, ?), thumbnail = COALESCE(thumbnail, ?), duration_sec = COALESCE(duration_sec, ?), audio_path = ?, download_status = 'ready', download_error = NULL, downloaded_at = ? WHERE id = ?"
-  ).run(title, channel, thumbnail, durationSec, outputPath, now, track.id);
 }
 
 async function downloadWorker() {
