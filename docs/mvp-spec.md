@@ -284,7 +284,6 @@ Client → server:
 - `TWITCH_BOT_USERNAME`
 - `TWITCH_OAUTH_TOKEN`
 - `TWITCH_CHANNEL`
-- `YOUTUBE_API_KEY` (optional)
 
 ## Extensibility (Erwin as “main bot” later)
 
