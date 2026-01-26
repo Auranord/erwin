@@ -243,7 +243,6 @@ function initDb() {
       download_error TEXT,
       downloaded_at TEXT,
       disabled INTEGER DEFAULT 0,
-      fail_count INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
 
@@ -269,7 +268,6 @@ function initDb() {
       id TEXT PRIMARY KEY,
       track_id TEXT NOT NULL,
       source TEXT NOT NULL,
-      added_by_user_id TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -616,6 +614,36 @@ function enqueueDownload(playlistId, trackId) {
   broadcast("DOWNLOAD_UPDATE", { trackId, playlistId, status });
 }
 
+function getPlayState() {
+  return db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+}
+
+function getCurrentTrack(playState) {
+  if (!playState?.current_track_id) {
+    return null;
+  }
+  return db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status FROM tracks WHERE id = ?"
+    )
+    .get(playState.current_track_id);
+}
+
+function getQueue() {
+  return db
+    .prepare(
+      "SELECT queue.id, queue.track_id, queue.source, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.created_at ASC"
+    )
+    .all();
+}
+
+function broadcastStateUpdate({ includeQueue = false } = {}) {
+  const playState = getPlayState();
+  const queue = includeQueue ? getQueue() : undefined;
+  broadcast("STATE_UPDATE", queue ? { playState, queue } : { playState });
+  return { playState, queue };
+}
+
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
@@ -645,19 +673,9 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/state", requireAuth, (req, res) => {
-  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  const currentTrack = playState?.current_track_id
-    ? db
-        .prepare(
-          "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status FROM tracks WHERE id = ?"
-        )
-        .get(playState.current_track_id)
-    : null;
-  const queue = db
-    .prepare(
-      "SELECT queue.id, queue.track_id, queue.source, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.created_at ASC"
-    )
-    .all();
+  const playState = getPlayState();
+  const currentTrack = getCurrentTrack(playState);
+  const queue = getQueue();
   res.json({ playState, currentTrack, queue });
 });
 
@@ -670,8 +688,7 @@ app.post("/api/session/start", requireAuth, requireRole("admin", "mod"), (req, r
     "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
   ).run(track ? track.id : null, Date.now(), new Date().toISOString());
   log("info", "session start", { trackId: track?.id || null });
-  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  broadcast("STATE_UPDATE", { playState });
+  const { playState } = broadcastStateUpdate();
   res.json({ playState });
 });
 
@@ -684,8 +701,7 @@ app.post("/api/session/pause", requireAuth, requireRole("admin", "mod"), (req, r
     "UPDATE play_state SET paused = 1, paused_at_ms = ?, updated_at = ? WHERE id = 1"
   ).run(Date.now(), new Date().toISOString());
   log("info", "session pause", { trackId: playState.current_track_id });
-  const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  broadcast("STATE_UPDATE", { playState: updated });
+  const { playState: updated } = broadcastStateUpdate();
   res.json({ playState: updated });
 });
 
@@ -702,8 +718,7 @@ app.post("/api/session/resume", requireAuth, requireRole("admin", "mod"), (req, 
     "UPDATE play_state SET paused = 0, paused_at_ms = NULL, started_at_ms = ?, updated_at = ? WHERE id = 1"
   ).run(startedAt, new Date().toISOString());
   log("info", "session resume", { trackId: playState.current_track_id });
-  const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  broadcast("STATE_UPDATE", { playState: updated });
+  const { playState: updated } = broadcastStateUpdate();
   res.json({ playState: updated });
 });
 
@@ -723,8 +738,7 @@ app.post("/api/session/seek", requireAuth, requireRole("admin", "mod"), (req, re
     "UPDATE play_state SET started_at_ms = ?, paused_at_ms = ?, updated_at = ? WHERE id = 1"
   ).run(startedAt, pausedAt, new Date().toISOString());
   log("info", "session seek", { positionSeconds, trackId: playState.current_track_id });
-  const updated = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  broadcast("STATE_UPDATE", { playState: updated });
+  const { playState: updated } = broadcastStateUpdate();
   res.json({ playState: updated });
 });
 
@@ -733,8 +747,7 @@ app.post("/api/session/stop", requireAuth, requireRole("admin", "mod"), (req, re
     "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
   ).run(new Date().toISOString());
   log("info", "session stop");
-  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  broadcast("STATE_UPDATE", { playState });
+  const { playState } = broadcastStateUpdate();
   res.json({ playState });
 });
 
@@ -755,13 +768,7 @@ app.post("/api/queue/skip", requireAuth, requireRole("admin", "mod"), (req, res)
     ).run(new Date().toISOString());
   }
   log("info", "queue skip", { nextTrackId: next?.track_id || null });
-  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  const queue = db
-    .prepare(
-      "SELECT queue.id, queue.track_id, queue.source, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.created_at ASC"
-    )
-    .all();
-  broadcast("STATE_UPDATE", { playState, queue });
+  const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
   res.json({ playState, queue });
 });
 
@@ -815,12 +822,14 @@ app.post("/api/queue/enqueue", requireAuth, requireRole("admin"), (req, res) => 
     id: nanoid(),
     track_id: track.id,
     source: source || "admin",
-    added_by_user_id: req.session.user.id,
     created_at: new Date().toISOString()
   };
-  db.prepare(
-    "INSERT INTO queue (id, track_id, source, added_by_user_id, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).run(entry.id, entry.track_id, entry.source, entry.added_by_user_id, entry.created_at);
+  db.prepare("INSERT INTO queue (id, track_id, source, created_at) VALUES (?, ?, ?, ?)").run(
+    entry.id,
+    entry.track_id,
+    entry.source,
+    entry.created_at
+  );
   broadcast("QUEUE_UPDATE", { entry });
   res.json(entry);
 });
@@ -919,7 +928,7 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, r
     return res.status(404).json({ error: "Playlist not found" });
   }
   const insertTrack = db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, ?)"
   );
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
@@ -967,7 +976,7 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
   if (!existing) {
     const now = new Date().toISOString();
     db.prepare(
-      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, ?)"
     ).run(trackId, youtubeId, url, now);
   }
   enqueueDownload(playlistId, trackId);
@@ -1023,21 +1032,15 @@ app.post(
       db.prepare("DELETE FROM queue").run();
       tracks.slice(1).forEach((track) => {
         db.prepare(
-          "INSERT INTO queue (id, track_id, source, added_by_user_id, created_at) VALUES (?, ?, ?, ?, ?)"
-        ).run(nanoid(), track.id, "playlist", req.session.user.id, now);
+          "INSERT INTO queue (id, track_id, source, created_at) VALUES (?, ?, ?, ?)"
+        ).run(nanoid(), track.id, "playlist", now);
       });
       db.prepare(
         "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
       ).run(tracks[0].id, Date.now(), now);
     });
     transaction();
-    const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-    const queue = db
-      .prepare(
-        "SELECT queue.id, queue.track_id, queue.source, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.created_at ASC"
-      )
-      .all();
-    broadcast("STATE_UPDATE", { playState, queue });
+    const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
     res.json({ playState, queue });
   }
 );
