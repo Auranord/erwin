@@ -8,10 +8,9 @@ import Database from "better-sqlite3";
 import { WebSocketServer } from "ws";
 import fs from "fs";
 import { promises as fsPromises } from "fs";
-import { Innertube, UniversalCache } from "youtubei.js";
-import { pipeline } from "stream/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { execFile } from "child_process";
 
 dotenv.config();
 
@@ -25,7 +24,6 @@ const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
 const LOG_DIR = process.env.ERWIN_LOG_DIR || "./data/logs";
 const LOG_FILE = path.join(LOG_DIR, "erwin.log");
 const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtube.cookie";
-const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -48,24 +46,6 @@ function log(level, message, meta = {}) {
     console.log(line);
   }
   fs.appendFile(LOG_FILE, `${line}\n`, () => {});
-}
-
-function cookieHeaderFromJson(jsonText) {
-  try {
-    const parsed = JSON.parse(jsonText);
-    if (!Array.isArray(parsed)) {
-      return null;
-    }
-    const pairs = parsed
-      .filter((entry) => entry?.name && typeof entry?.value === "string")
-      .map((entry) => `${entry.name}=${entry.value}`);
-    if (pairs.length === 0) {
-      return null;
-    }
-    return pairs.join("; ");
-  } catch {
-    return null;
-  }
 }
 
 app.use(cookieParser());
@@ -97,7 +77,6 @@ app.use((req, res, next) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
-let youtubeClientPromise;
 
 function broadcast(event, payload) {
   const message = JSON.stringify({ event, payload });
@@ -109,27 +88,20 @@ function broadcast(event, payload) {
   log("info", "broadcast", { event });
 }
 
-async function getYouTubeClient() {
-  if (!youtubeClientPromise) {
-    youtubeClientPromise = (async () => {
-      let cookieHeader = YTDL_COOKIE;
-      if (!cookieHeader && YTDL_COOKIE_FILE) {
-        try {
-          const rawCookie = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim();
-          cookieHeader = cookieHeaderFromJson(rawCookie) || rawCookie;
-        } catch (error) {
-          log("warn", "cookie file not found", { error: String(error?.message || error) });
-        }
+function runYtDlp(args) {
+  return new Promise((resolve, reject) => {
+    execFile("yt-dlp", args, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(
+          new Error(
+            `yt-dlp failed (code ${error.code ?? "unknown"}): ${stderr || error.message}`
+          )
+        );
+        return;
       }
-      const client = await Innertube.create({
-        cache: new UniversalCache(false),
-        cookie: cookieHeader || undefined
-      });
-      log("info", "youtube client initialized", { hasCookie: Boolean(cookieHeader) });
-      return client;
-    })();
-  }
-  return youtubeClientPromise;
+      resolve(stdout);
+    });
+  });
 }
 
 function initDb() {
@@ -298,23 +270,57 @@ function initDb() {
 initDb();
 
 async function downloadTrackAudio(track) {
-  const client = await getYouTubeClient();
-  const info = await client.getInfo(track.youtube_id);
-  const basic = info?.basic_info || {};
-  const title = basic.title || null;
-  const channel = basic.author?.name || null;
-  const thumbnail = basic.thumbnail?.[basic.thumbnail.length - 1]?.url || null;
-  const durationSec = basic.duration ? Number(basic.duration) : null;
+  const getSafeTitle = (rawTitle) =>
+    (rawTitle || track.youtube_id)
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
 
-  const safeTitle = (title || track.youtube_id)
-    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
-  const outputPath = path.join(AUDIO_DIR, `${safeTitle}-${track.id}.mp3`);
+  const videoUrl = `https://www.youtube.com/watch?v=${track.youtube_id}`;
+  const cookieArgs = [];
+  if (YTDL_COOKIE_FILE && fs.existsSync(YTDL_COOKIE_FILE)) {
+    try {
+      const firstChar = fs.readFileSync(YTDL_COOKIE_FILE, "utf8").trim()[0];
+      if (!firstChar) {
+        log("warn", "yt-dlp cookies file is empty", { path: YTDL_COOKIE_FILE });
+      } else if (firstChar === "[") {
+        log("warn", "yt-dlp cookies file looks like JSON; expected Netscape format", {
+          path: YTDL_COOKIE_FILE
+        });
+      } else {
+        cookieArgs.push("--cookies", YTDL_COOKIE_FILE);
+      }
+    } catch (error) {
+      log("warn", "unable to read cookies file for yt-dlp", {
+        error: String(error?.message || error)
+      });
+    }
+  }
 
-  const stream = await info.download({ type: "audio", quality: "best" });
-  await pipeline(stream, fs.createWriteStream(outputPath));
+  const metadataRaw = await runYtDlp(["--dump-single-json", "--no-playlist", ...cookieArgs, videoUrl]);
+  const metadata = JSON.parse(metadataRaw);
+  const title = metadata?.title || null;
+  const channel = metadata?.uploader || null;
+  const durationSec = Number.isFinite(metadata?.duration) ? metadata.duration : null;
+  const thumbnail = metadata?.thumbnail || null;
+
+  const safeTitle = getSafeTitle(title);
+  const outputBase = path.join(AUDIO_DIR, `${safeTitle}-${track.id}`);
+  const outputPath = `${outputBase}.mp3`;
+
+  await runYtDlp([
+    "--no-playlist",
+    ...cookieArgs,
+    "-x",
+    "--audio-format",
+    "mp3",
+    "--audio-quality",
+    "0",
+    "-o",
+    `${outputBase}.%(ext)s`,
+    videoUrl
+  ]);
 
   const now = new Date().toISOString();
   db.prepare(

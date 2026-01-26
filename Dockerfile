@@ -16,6 +16,10 @@ COPY public ./public
 FROM node:22-bookworm-slim
 WORKDIR /app
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends yt-dlp \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /app /app
 
 EXPOSE 3000
