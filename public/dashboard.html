@@ -310,6 +310,9 @@
           selectedPlaylistId = playlistsCache[0].id;
           trackPlaylist.value = selectedPlaylistId;
         }
+        if (trackPlaylist.value !== selectedPlaylistId) {
+          selectedPlaylistId = trackPlaylist.value || selectedPlaylistId;
+        }
         renderTracks();
       }
 
