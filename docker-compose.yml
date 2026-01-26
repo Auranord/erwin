@@ -1,0 +1,19 @@
+services:
+  erwin:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    develop:
+      watch:
+        - path: ./src
+          target: /app/src
+          action: sync
+        - path: ./public
+          target: /app/public
+          action: sync
+        - path: ./package.json
+          action: rebuild
