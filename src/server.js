@@ -444,16 +444,21 @@ async function downloadWorker() {
   console.log(`Downloading audio for track ${pending.track_id}...`);
   try {
     await downloadTrackAudio({ id: pending.track_id, youtube_id: pending.youtube_id });
-    const position =
-      (db
-        .prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?")
-        .get(pending.playlist_id).maxPosition || 0) + 1;
-    db.prepare(
-      "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
-    ).run(pending.playlist_id, pending.track_id, position);
-    db.prepare(
-      "UPDATE download_queue SET status = 'ready', updated_at = ? WHERE id = ?"
-    ).run(new Date().toISOString(), pending.queue_id);
+    const entries = db
+      .prepare(
+        "SELECT id, playlist_id FROM download_queue WHERE track_id = ? AND status IN ('pending', 'waiting', 'downloading')"
+      )
+      .all(pending.track_id);
+    const now = new Date().toISOString();
+    const transaction = db.transaction(() => {
+      entries.forEach((entry) => {
+        addTrackToPlaylist(entry.playlist_id, pending.track_id);
+        db.prepare(
+          "UPDATE download_queue SET status = 'ready', updated_at = ? WHERE id = ?"
+        ).run(now, entry.id);
+      });
+    });
+    transaction();
     console.log(`Download ready for track ${pending.track_id}.`);
     broadcast("DOWNLOAD_UPDATE", {
       trackId: pending.track_id,
@@ -471,15 +476,26 @@ async function downloadWorker() {
     db.prepare(
       "UPDATE tracks SET download_status = 'failed', download_error = ? WHERE id = ?"
     ).run(String(error?.message || error), pending.track_id);
-    db.prepare(
-      "UPDATE download_queue SET status = ?, error = ?, retry_after = ?, updated_at = ? WHERE id = ?"
-    ).run(
-      isBlocked ? "blocked" : "failed",
-      String(error?.message || error),
-      retryAfter,
-      new Date().toISOString(),
-      pending.queue_id
-    );
+    const entries = db
+      .prepare(
+        "SELECT id FROM download_queue WHERE track_id = ? AND status IN ('pending', 'waiting', 'downloading')"
+      )
+      .all(pending.track_id);
+    const now = new Date().toISOString();
+    const transaction = db.transaction(() => {
+      entries.forEach((entry) => {
+        db.prepare(
+          "UPDATE download_queue SET status = ?, error = ?, retry_after = ?, updated_at = ? WHERE id = ?"
+        ).run(
+          isBlocked ? "blocked" : "failed",
+          String(error?.message || error),
+          retryAfter,
+          now,
+          entry.id
+        );
+      });
+    });
+    transaction();
     broadcast("DOWNLOAD_UPDATE", {
       trackId: pending.track_id,
       playlistId: pending.playlist_id,
@@ -556,16 +572,48 @@ function normalizePlaylistPositions(playlistId) {
   transaction(tracks);
 }
 
+function addTrackToPlaylist(playlistId, trackId) {
+  const existing = db
+    .prepare("SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?")
+    .get(playlistId, trackId);
+  if (existing) {
+    return false;
+  }
+  const position =
+    (db
+      .prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?")
+      .get(playlistId).maxPosition || 0) + 1;
+  db.prepare(
+    "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)"
+  ).run(playlistId, trackId, position);
+  return true;
+}
+
 function enqueueDownload(playlistId, trackId) {
+  const track = db
+    .prepare("SELECT download_status FROM tracks WHERE id = ?")
+    .get(trackId);
+  if (track?.download_status === "ready") {
+    addTrackToPlaylist(playlistId, trackId);
+    return;
+  }
+  const active = db
+    .prepare(
+      "SELECT 1 FROM download_queue WHERE track_id = ? AND status IN ('pending', 'downloading', 'waiting') LIMIT 1"
+    )
+    .get(trackId);
+  const status = active ? "waiting" : "pending";
   const now = new Date().toISOString();
   db.prepare(
-    "INSERT INTO download_queue (id, playlist_id, track_id, status, error, attempts, retry_after, created_at, updated_at) VALUES (?, ?, ?, 'pending', NULL, 0, NULL, ?, ?)"
-  ).run(nanoid(), playlistId, trackId, now, now);
-  db.prepare(
-    "UPDATE tracks SET download_status = 'pending', download_error = NULL WHERE id = ?"
-  ).run(trackId);
+    "INSERT INTO download_queue (id, playlist_id, track_id, status, error, attempts, retry_after, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, 0, NULL, ?, ?)"
+  ).run(nanoid(), playlistId, trackId, status, now, now);
+  if (!active) {
+    db.prepare(
+      "UPDATE tracks SET download_status = 'pending', download_error = NULL WHERE id = ?"
+    ).run(trackId);
+  }
   console.log(`Queued download for track ${trackId} (playlist ${playlistId}).`);
-  broadcast("DOWNLOAD_UPDATE", { trackId, playlistId, status: "pending" });
+  broadcast("DOWNLOAD_UPDATE", { trackId, playlistId, status });
 }
 
 app.get("/api/health", (req, res) => {
@@ -873,6 +921,7 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, r
   const insertTrack = db.prepare(
     "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
   );
+  const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
   const imported = [];
   const transaction = db.transaction((items) => {
@@ -881,10 +930,13 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, r
       if (!youtubeId) {
         continue;
       }
-      const trackId = nanoid();
-      insertTrack.run(trackId, youtubeId, url, now);
+      const existing = findTrack.get(youtubeId);
+      const trackId = existing ? existing.id : nanoid();
+      if (!existing) {
+        insertTrack.run(trackId, youtubeId, url, now);
+      }
       enqueueDownload(req.params.id, trackId);
-      imported.push({ id: trackId, youtubeId, url });
+      imported.push({ id: trackId, youtubeId, url, reused: Boolean(existing) });
     }
   });
   transaction(urls);
@@ -910,13 +962,16 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
   if (!youtubeId) {
     return res.status(400).json({ error: "Invalid YouTube URL or ID" });
   }
-  const trackId = nanoid();
-  const now = new Date().toISOString();
-  db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
-  ).run(trackId, youtubeId, url, now);
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, fail_count, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
   enqueueDownload(playlistId, trackId);
-  log("info", "track queued", { trackId, playlistId, youtubeId });
+  log("info", "track queued", { trackId, playlistId, youtubeId, reused: Boolean(existing) });
   broadcast("PLAYLIST_UPDATE", { playlistId, action: "track_added", trackId });
   res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
 });
