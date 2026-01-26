@@ -801,6 +801,14 @@ app.get("/api/downloads", requireAuth, (req, res) => {
   res.json(downloads);
 });
 
+app.post("/api/downloads/clear", requireAuth, requireRole("admin"), (req, res) => {
+  const result = db
+    .prepare("DELETE FROM download_queue WHERE status IN ('ready', 'failed', 'blocked')")
+    .run();
+  log("info", "download queue cleared", { cleared: result.changes });
+  res.json({ cleared: result.changes });
+});
+
 app.post("/api/playlists", requireAuth, requireRole("admin"), (req, res) => {
   const { name } = req.body || {};
   if (!name) {
