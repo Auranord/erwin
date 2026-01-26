@@ -92,7 +92,9 @@ main {
 }
 
 .player-row.compact input[type="range"] {
-  max-width: 140px;
+  width: 160px;
+  max-width: 160px;
+  flex: 0 0 160px;
 }
 
 .player-row .notice {

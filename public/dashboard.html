@@ -306,12 +306,14 @@
           trackOption.textContent = playlist.name;
           trackPlaylist.appendChild(trackOption);
         }
-        if (!selectedPlaylistId && playlistsCache.length > 0) {
+        const selectedExists = selectedPlaylistId
+          ? playlistsCache.some((playlist) => playlist.id === selectedPlaylistId)
+          : false;
+        if (!selectedExists && playlistsCache.length > 0) {
           selectedPlaylistId = playlistsCache[0].id;
-          trackPlaylist.value = selectedPlaylistId;
         }
-        if (trackPlaylist.value !== selectedPlaylistId) {
-          selectedPlaylistId = trackPlaylist.value || selectedPlaylistId;
+        if (selectedPlaylistId) {
+          trackPlaylist.value = selectedPlaylistId;
         }
         renderTracks();
       }
