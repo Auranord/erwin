@@ -45,6 +45,60 @@ main {
   margin-top: 0;
 }
 
+.player-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.player-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.player-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.icon-button {
+  width: auto;
+  padding: 10px 16px;
+  font-size: 16px;
+  border-radius: 10px;
+}
+
+.player-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.player-actions.bottom-left {
+  justify-content: flex-start;
+}
+
+.player-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.player-row.compact {
+  justify-content: flex-end;
+}
+
+.player-row.compact input[type="range"] {
+  max-width: 140px;
+}
+
+.player-row .notice {
+  margin: 0;
+}
+
 .grid {
   display: grid;
   gap: 16px;
