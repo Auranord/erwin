@@ -91,6 +91,13 @@
               </div>
               <button type="submit">Add Track</button>
             </form>
+            <form id="playlist-import-form" class="grid" style="margin-top: 16px;">
+              <div>
+                <label for="playlist-urls">YouTube Playlist URLs (one per line)</label>
+                <textarea id="playlist-urls" name="playlist-urls" rows="3" placeholder="https://www.youtube.com/playlist?list=..."></textarea>
+              </div>
+              <button type="submit" class="secondary">Add Playlist</button>
+            </form>
             <div class="section-title" style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between;">
               <span>Download Queue</span>
               <button id="clear-downloads" class="secondary" type="button">Clear Completed</button>
@@ -187,6 +194,8 @@
       const trackPlaylist = document.getElementById("track-playlist");
       const playlistForm = document.getElementById("playlist-form");
       const trackForm = document.getElementById("track-form");
+      const playlistImportForm = document.getElementById("playlist-import-form");
+      const playlistUrls = document.getElementById("playlist-urls");
       const trackFilter = document.getElementById("track-filter");
       const trackCount = document.getElementById("track-count");
       const renameModal = document.getElementById("rename-modal");
@@ -235,12 +244,11 @@
         trackCount.textContent = `${filtered.length} / ${playlist.tracks.length} tracks`;
         tracksEl.innerHTML = filtered
           .map((track, index) => {
-            const label = track.title || track.youtube_id;
+            const label = track.title || "Untitled track";
             const trackIndex = positions.get(track.id) ?? index;
             return `<div class="list-item" data-track-id="${track.id}" data-track-title="${track.title || ""}">
                 <div style="flex: 1;">
                   <div>${label}</div>
-                  <div class="notice">${track.url}</div>
                 </div>
                 <div class="actions">
                   <button class="secondary" data-action="rename">Rename</button>
@@ -465,6 +473,24 @@
           body: JSON.stringify({ playlistId, url })
         });
         trackForm.reset();
+        fetchPlaylists();
+        fetchDownloads();
+      });
+
+      playlistImportForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const playlistId = trackForm["track-playlist"].value;
+        const urls = playlistUrls.value
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        if (!playlistId || urls.length === 0) return;
+        await fetch(`/api/playlists/${playlistId}/import`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls })
+        });
+        playlistUrls.value = "";
         fetchPlaylists();
         fetchDownloads();
       });
