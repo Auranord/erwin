@@ -36,7 +36,6 @@ const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
 const TWITCH_IRC_HOST =
   process.env.TWITCH_IRC_HOST ||
   "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com";
-const TWITCH_DEBUG = process.env.TWITCH_DEBUG === "true";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -277,6 +276,13 @@ function initDb() {
       id TEXT PRIMARY KEY,
       track_id TEXT NOT NULL,
       source TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS play_pool (
+      id TEXT PRIMARY KEY,
+      track_id TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
 
@@ -371,6 +377,32 @@ function initDb() {
   }
   if (!downloadQueueColumnNames.has("retry_after")) {
     db.prepare("ALTER TABLE download_queue ADD COLUMN retry_after TEXT").run();
+  }
+
+  const queueColumns = db.prepare("PRAGMA table_info(queue)").all();
+  const queueColumnNames = new Set(queueColumns.map((column) => column.name));
+  if (!queueColumnNames.has("position")) {
+    db.prepare("ALTER TABLE queue ADD COLUMN position INTEGER NOT NULL DEFAULT 0").run();
+    const queueEntries = db
+      .prepare("SELECT id FROM queue ORDER BY created_at ASC")
+      .all()
+      .map((entry, index) => ({ id: entry.id, position: index + 1 }));
+    const updatePosition = db.prepare("UPDATE queue SET position = ? WHERE id = ?");
+    const transaction = db.transaction((entries) => {
+      entries.forEach((entry) => updatePosition.run(entry.position, entry.id));
+    });
+    transaction(queueEntries);
+  }
+
+  const poolColumns = db.prepare("PRAGMA table_info(play_pool)").all();
+  if (poolColumns.length === 0) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS play_pool (
+        id TEXT PRIMARY KEY,
+        track_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
   }
 
   const state = db.prepare("SELECT id FROM play_state WHERE id = 1").get();
@@ -645,9 +677,68 @@ function getCurrentTrack(playState) {
 function getQueue() {
   return db
     .prepare(
-      "SELECT queue.id, queue.track_id, queue.source, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.created_at ASC"
+      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
     )
     .all();
+}
+
+function getPoolTracks() {
+  return db
+    .prepare(
+      "SELECT play_pool.id, play_pool.track_id, play_pool.created_at, tracks.title, tracks.channel FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id ORDER BY play_pool.created_at ASC"
+    )
+    .all();
+}
+
+function removeFromPool(trackId) {
+  const result = db.prepare("DELETE FROM play_pool WHERE track_id = ?").run(trackId);
+  if (result.changes > 0) {
+    broadcast("POOL_UPDATE", { action: "removed", trackId });
+  }
+  return result.changes > 0;
+}
+
+function seedPool(trackIds) {
+  const now = new Date().toISOString();
+  const insert = db.prepare(
+    "INSERT INTO play_pool (id, track_id, created_at) VALUES (?, ?, ?)"
+  );
+  const transaction = db.transaction((ids) => {
+    ids.forEach((trackId) => {
+      insert.run(nanoid(), trackId, now);
+    });
+  });
+  transaction(trackIds);
+  broadcast("POOL_UPDATE", { action: "seeded", count: trackIds.length });
+}
+
+function insertPoolEntries(trackIds) {
+  const now = new Date().toISOString();
+  const insert = db.prepare(
+    "INSERT INTO play_pool (id, track_id, created_at) VALUES (?, ?, ?)"
+  );
+  trackIds.forEach((trackId) => {
+    insert.run(nanoid(), trackId, now);
+  });
+}
+
+function getQueueNextPosition() {
+  return (
+    db.prepare("SELECT MAX(position) as maxPosition FROM queue").get().maxPosition || 0
+  ) + 1;
+}
+
+function normalizeQueuePositions() {
+  const entries = db
+    .prepare("SELECT id FROM queue ORDER BY position ASC, created_at ASC")
+    .all();
+  const update = db.prepare("UPDATE queue SET position = ? WHERE id = ?");
+  const transaction = db.transaction((items) => {
+    items.forEach((item, index) => {
+      update.run(index + 1, item.id);
+    });
+  });
+  transaction(entries);
 }
 
 function broadcastStateUpdate({ includeQueue = false } = {}) {
@@ -760,15 +851,14 @@ function enqueueTrack(trackId, source) {
     id: nanoid(),
     track_id: trackId,
     source,
+    position: getQueueNextPosition(),
     created_at: new Date().toISOString()
   };
-  db.prepare("INSERT INTO queue (id, track_id, source, created_at) VALUES (?, ?, ?, ?)").run(
-    entry.id,
-    entry.track_id,
-    entry.source,
-    entry.created_at
-  );
+  db.prepare(
+    "INSERT INTO queue (id, track_id, source, position, created_at) VALUES (?, ?, ?, ?, ?)"
+  ).run(entry.id, entry.track_id, entry.source, entry.position, entry.created_at);
   broadcast("QUEUE_UPDATE", { entry });
+  removeFromPool(trackId);
   return entry;
 }
 
@@ -805,18 +895,30 @@ function resumeSession() {
 function skipQueue() {
   const next = db
     .prepare(
-      "SELECT queue.id, queue.track_id FROM queue ORDER BY queue.created_at ASC LIMIT 1"
+      "SELECT queue.id, queue.track_id FROM queue ORDER BY queue.position ASC, queue.created_at ASC LIMIT 1"
     )
     .get();
   if (next) {
     db.prepare("DELETE FROM queue WHERE id = ?").run(next.id);
+    normalizeQueuePositions();
     db.prepare(
       "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
     ).run(next.track_id, Date.now(), new Date().toISOString());
   } else {
-    db.prepare(
-      "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
-    ).run(new Date().toISOString());
+    const poolTracks = getPoolTracks();
+    if (poolTracks.length > 0) {
+      const nextTrack = pickRandom(poolTracks);
+      if (nextTrack) {
+        removeFromPool(nextTrack.track_id);
+        db.prepare(
+          "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
+        ).run(nextTrack.track_id, Date.now(), new Date().toISOString());
+      }
+    } else {
+      db.prepare(
+        "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
+      ).run(new Date().toISOString());
+    }
   }
   log("info", "queue skip", { nextTrackId: next?.track_id || null });
   const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
@@ -921,12 +1023,12 @@ function getVoteCandidates() {
   const playState = getPlayState();
   const currentTrackId = playState?.current_track_id;
   const queuedIds = new Set(getQueue().map((entry) => entry.track_id));
-  const allTracks = db
+  const poolTracks = db
     .prepare(
-      "SELECT id, title, channel, download_status, disabled FROM tracks WHERE disabled = 0"
+      "SELECT tracks.id, tracks.title, tracks.channel, tracks.download_status FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id"
     )
     .all();
-  const filtered = allTracks.filter(
+  const filtered = poolTracks.filter(
     (track) => track.id !== currentTrackId && !queuedIds.has(track.id)
   );
   const ready = filtered.filter((track) => track.download_status === "ready");
@@ -1078,6 +1180,8 @@ function connectTwitchBot() {
     });
     return;
   }
+  const welcomeMessage = String(getSettingValue("twitch_welcome_message", "") || "")
+    .trim();
   twitchSocket = tls.connect(
     {
       host: TWITCH_IRC_HOST,
@@ -1096,8 +1200,8 @@ function connectTwitchBot() {
       );
       twitchSocket.write(`JOIN #${TWITCH_CHANNEL}\r\n`);
       log("info", "twitch bot connected", { channel: TWITCH_CHANNEL });
-      if (TWITCH_DEBUG) {
-        sendBotMessage("Erwin bot connected and ready for votes.");
+      if (welcomeMessage) {
+        sendBotMessage(welcomeMessage);
       }
     }
   );
@@ -1105,9 +1209,6 @@ function connectTwitchBot() {
   twitchSocket.on("data", (data) => {
     const messages = data.toString().split("\r\n").filter(Boolean);
     messages.forEach((line) => {
-      if (TWITCH_DEBUG) {
-        log("info", "twitch irc", { line });
-      }
       if (line.startsWith("PING")) {
         twitchSocket.write(`PONG ${line.slice(5)}\r\n`);
         return;
@@ -1305,19 +1406,57 @@ app.post("/api/queue/enqueue", requireAuth, requireRole("admin"), (req, res) => 
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
   }
-  const entry = {
-    id: nanoid(),
-    track_id: track.id,
-    source: source || "admin",
-    created_at: new Date().toISOString()
-  };
-  db.prepare("INSERT INTO queue (id, track_id, source, created_at) VALUES (?, ?, ?, ?)").run(
-    entry.id,
-    entry.track_id,
-    entry.source,
-    entry.created_at
-  );
-  broadcast("QUEUE_UPDATE", { entry });
+  const entry = enqueueTrack(track.id, source || "admin");
+  res.json(entry);
+});
+
+app.post("/api/queue/:id/move", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const { direction } = req.body || {};
+  if (!["up", "down"].includes(direction)) {
+    return res.status(400).json({ error: "direction must be up or down" });
+  }
+  const current = db
+    .prepare("SELECT id, position FROM queue WHERE id = ?")
+    .get(req.params.id);
+  if (!current) {
+    return res.status(404).json({ error: "Queue item not found" });
+  }
+  const targetPosition = direction === "up" ? current.position - 1 : current.position + 1;
+  const target = db
+    .prepare("SELECT id, position FROM queue WHERE position = ?")
+    .get(targetPosition);
+  if (!target) {
+    return res.json({ ok: true });
+  }
+  const swap = db.transaction(() => {
+    db.prepare("UPDATE queue SET position = ? WHERE id = ?").run(
+      target.position,
+      current.id
+    );
+    db.prepare("UPDATE queue SET position = ? WHERE id = ?").run(
+      current.position,
+      target.id
+    );
+  });
+  swap();
+  broadcast("QUEUE_UPDATE", { action: "reordered" });
+  res.json({ ok: true });
+});
+
+app.get("/api/pool", requireAuth, (req, res) => {
+  res.json(getPoolTracks());
+});
+
+app.post("/api/pool/enqueue", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const entry = enqueueTrack(trackId, "pool");
   res.json(entry);
 });
 
@@ -1515,18 +1654,25 @@ app.post(
       return res.status(404).json({ error: "Playlist has no playable tracks" });
     }
     const now = new Date().toISOString();
+    const shuffled = shuffleArray(tracks);
+    const firstTrack = shuffled[0];
+    const remaining = shuffled.slice(1);
     const transaction = db.transaction(() => {
       db.prepare("DELETE FROM queue").run();
-      tracks.slice(1).forEach((track) => {
-        db.prepare(
-          "INSERT INTO queue (id, track_id, source, created_at) VALUES (?, ?, ?, ?)"
-        ).run(nanoid(), track.id, "playlist", now);
-      });
+      db.prepare("DELETE FROM play_pool").run();
+      if (remaining.length > 0) {
+        insertPoolEntries(remaining.map((track) => track.id));
+      }
       db.prepare(
         "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
-      ).run(tracks[0].id, Date.now(), now);
+      ).run(firstTrack.id, Date.now(), now);
     });
     transaction();
+    if (remaining.length > 0) {
+      broadcast("POOL_UPDATE", { action: "seeded", count: remaining.length });
+    } else {
+      broadcast("POOL_UPDATE", { action: "seeded", count: 0 });
+    }
     const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
     res.json({ playState, queue });
   }

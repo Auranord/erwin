@@ -29,6 +29,10 @@
             <div id="queue" class="list">
               <div class="list-item">Queue is empty.</div>
             </div>
+            <div class="section-title" style="margin-top: 16px;">Candidate Pool</div>
+            <div id="pool" class="list">
+              <div class="list-item">Pool is empty.</div>
+            </div>
             <div class="grid">
               <button id="open-stream" class="secondary">Open Stream Player</button>
             </div>
@@ -181,6 +185,7 @@
     <script>
       const nowPlaying = document.getElementById("now-playing");
       const queueEl = document.getElementById("queue");
+      const poolEl = document.getElementById("pool");
       const playlistsEl = document.getElementById("playlists");
       const tracksEl = document.getElementById("tracks");
       const downloadQueueEl = document.getElementById("download-queue");
@@ -390,11 +395,39 @@
         } else {
           queueEl.innerHTML = queue
             .map(
-              (item) =>
-                `<div class="list-item"><span>${item.title || item.track_id}</span><span class="badge">${item.source}</span></div>`
+              (item, index) =>
+                `<div class="list-item" data-queue-id="${item.id}">
+                  <span>${item.title || item.track_id}</span>
+                  <div class="actions">
+                    <span class="badge">${item.source}</span>
+                    <button class="secondary icon-only" data-action="queue-up" ${index === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">⬆️</button>
+                    <button class="secondary icon-only" data-action="queue-down" ${index === queue.length - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">⬇️</button>
+                  </div>
+                </div>`
             )
             .join("");
         }
+      }
+
+      async function fetchPool() {
+        const response = await fetch("/api/pool");
+        if (!response.ok) return;
+        const pool = await response.json();
+        if (!pool.length) {
+          poolEl.innerHTML = '<div class="list-item">Pool is empty.</div>';
+          return;
+        }
+        poolEl.innerHTML = pool
+          .map(
+            (item) =>
+              `<div class="list-item" data-track-id="${item.track_id}">
+                <span>${item.title || item.track_id}</span>
+                <div class="actions">
+                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track">➕</button>
+                </div>
+              </div>`
+          )
+          .join("");
       }
 
       async function fetchPlaylists() {
@@ -558,6 +591,39 @@
         fetchPlaylists();
       });
 
+      queueEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const action = button.dataset.action;
+        const wrapper = button.closest(".list-item");
+        const queueId = wrapper?.dataset.queueId;
+        if (!queueId) return;
+        if (action === "queue-up" || action === "queue-down") {
+          await fetch(`/api/queue/${queueId}/move`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction: action === "queue-up" ? "up" : "down" })
+          });
+          fetchState();
+        }
+      });
+
+      poolEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const action = button.dataset.action;
+        const wrapper = button.closest(".list-item");
+        const trackId = wrapper?.dataset.trackId;
+        if (action !== "pool-enqueue" || !trackId) return;
+        await fetch("/api/pool/enqueue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackId })
+        });
+        fetchPool();
+        fetchState();
+      });
+
       function closeRenameModal() {
         renameModal.classList.add("hidden");
         renameTrackId = null;
@@ -669,6 +735,10 @@
           fetchPlaylists();
           return;
         }
+        if (message.event === "POOL_UPDATE") {
+          fetchPool();
+          return;
+        }
         if (message.event === "VOTE_START") {
           setActiveVote(message.payload);
           return;
@@ -700,6 +770,7 @@
       fetchDownloads();
       fetchSettings();
       fetchActiveVote();
+      fetchPool();
     </script>
   </body>
 </html>
