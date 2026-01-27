@@ -173,6 +173,15 @@ button.ghost {
   border: 1px solid #1f2937;
 }
 
+.chat-feed .list-item {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.chat-feed .list-item span:nth-child(2) {
+  flex: 1;
+}
+
 .list-item .actions {
   display: inline-flex;
   gap: 6px;

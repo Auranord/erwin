@@ -12,6 +12,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
+import tls from "tls";
 
 dotenv.config();
 
@@ -28,6 +29,14 @@ const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtub
 const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 const YTDL_JS_RUNTIME = process.env.ERWIN_YTDL_JS_RUNTIME || `node:${process.execPath}`;
 const YTDL_FFMPEG_LOCATION = process.env.ERWIN_YTDL_FFMPEG_LOCATION || "";
+const TWITCH_BOT_USERNAME = process.env.TWITCH_BOT_USERNAME || "";
+const TWITCH_OAUTH_TOKEN = process.env.TWITCH_OAUTH_TOKEN || "";
+const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "";
+const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
+const TWITCH_IRC_HOST =
+  process.env.TWITCH_IRC_HOST ||
+  "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com";
+const TWITCH_DEBUG = process.env.TWITCH_DEBUG === "true";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -512,6 +521,10 @@ setInterval(() => {
   downloadWorker();
 }, 5000);
 
+setInterval(() => {
+  tickVoting();
+}, 1000);
+
 function requireAuth(req, res, next) {
   if (req.session?.user) {
     return next();
@@ -644,6 +657,516 @@ function broadcastStateUpdate({ includeQueue = false } = {}) {
   return { playState, queue };
 }
 
+const VOTE_SETTINGS_DEFAULTS = {
+  vote_options: 5,
+  vote_duration: 30,
+  vote_lead_time: 20
+};
+
+function clampNumber(value, min, max, fallback) {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function getSettingValue(key, fallback) {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
+  if (!row) return fallback;
+  const numeric = Number(row.value);
+  if (Number.isFinite(numeric)) return numeric;
+  return row.value;
+}
+
+function getVotingSettings() {
+  const options = clampNumber(
+    Number(getSettingValue("vote_options", VOTE_SETTINGS_DEFAULTS.vote_options)),
+    2,
+    5,
+    VOTE_SETTINGS_DEFAULTS.vote_options
+  );
+  const duration = clampNumber(
+    Number(getSettingValue("vote_duration", VOTE_SETTINGS_DEFAULTS.vote_duration)),
+    5,
+    300,
+    VOTE_SETTINGS_DEFAULTS.vote_duration
+  );
+  const leadTime = clampNumber(
+    Number(getSettingValue("vote_lead_time", VOTE_SETTINGS_DEFAULTS.vote_lead_time)),
+    0,
+    300,
+    VOTE_SETTINGS_DEFAULTS.vote_lead_time
+  );
+  return { options, duration, leadTime };
+}
+
+function parseVoteRound(row) {
+  if (!row) return null;
+  let options = [];
+  try {
+    options = JSON.parse(row.options_json) || [];
+  } catch {
+    options = [];
+  }
+  return {
+    id: row.id,
+    startedAt: row.started_at,
+    endsAt: row.ends_at,
+    options,
+    winnerTrackId: row.winner_track_id || null
+  };
+}
+
+function getActiveVoteRound() {
+  const now = new Date().toISOString();
+  const row = db
+    .prepare(
+      "SELECT * FROM vote_rounds WHERE winner_track_id IS NULL AND ends_at > ? ORDER BY started_at DESC LIMIT 1"
+    )
+    .get(now);
+  return parseVoteRound(row);
+}
+
+function getVoteTallies(voteRoundId) {
+  const rows = db
+    .prepare(
+      "SELECT option_index, COUNT(*) as count FROM votes WHERE vote_round_id = ? GROUP BY option_index"
+    )
+    .all(voteRoundId);
+  return rows.reduce((acc, row) => {
+    acc[row.option_index] = row.count;
+    return acc;
+  }, {});
+}
+
+function broadcastVoteUpdate(round) {
+  if (!round) return;
+  const counts = getVoteTallies(round.id);
+  broadcast("VOTE_UPDATE", {
+    roundId: round.id,
+    startedAt: round.startedAt,
+    endsAt: round.endsAt,
+    options: round.options,
+    counts
+  });
+}
+
+function buildVoteSummary(options) {
+  return options
+    .map((option, index) => `${index + 1}: ${option.title || option.trackId}`)
+    .join(" | ");
+}
+
+function enqueueTrack(trackId, source) {
+  const entry = {
+    id: nanoid(),
+    track_id: trackId,
+    source,
+    created_at: new Date().toISOString()
+  };
+  db.prepare("INSERT INTO queue (id, track_id, source, created_at) VALUES (?, ?, ?, ?)").run(
+    entry.id,
+    entry.track_id,
+    entry.source,
+    entry.created_at
+  );
+  broadcast("QUEUE_UPDATE", { entry });
+  return entry;
+}
+
+function pauseSession() {
+  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  if (!playState?.current_track_id || playState.paused) {
+    return { playState };
+  }
+  db.prepare(
+    "UPDATE play_state SET paused = 1, paused_at_ms = ?, updated_at = ? WHERE id = 1"
+  ).run(Date.now(), new Date().toISOString());
+  log("info", "session pause", { trackId: playState.current_track_id });
+  const { playState: updated } = broadcastStateUpdate();
+  return { playState: updated };
+}
+
+function resumeSession() {
+  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
+  if (!playState?.current_track_id || !playState.paused) {
+    return { playState };
+  }
+  const elapsed = playState.started_at_ms
+    ? playState.paused_at_ms - playState.started_at_ms
+    : 0;
+  const startedAt = Date.now() - Math.max(0, elapsed);
+  db.prepare(
+    "UPDATE play_state SET paused = 0, paused_at_ms = NULL, started_at_ms = ?, updated_at = ? WHERE id = 1"
+  ).run(startedAt, new Date().toISOString());
+  log("info", "session resume", { trackId: playState.current_track_id });
+  const { playState: updated } = broadcastStateUpdate();
+  return { playState: updated };
+}
+
+function skipQueue() {
+  const next = db
+    .prepare(
+      "SELECT queue.id, queue.track_id FROM queue ORDER BY queue.created_at ASC LIMIT 1"
+    )
+    .get();
+  if (next) {
+    db.prepare("DELETE FROM queue WHERE id = ?").run(next.id);
+    db.prepare(
+      "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
+    ).run(next.track_id, Date.now(), new Date().toISOString());
+  } else {
+    db.prepare(
+      "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
+    ).run(new Date().toISOString());
+  }
+  log("info", "queue skip", { nextTrackId: next?.track_id || null });
+  const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
+  return { playState, queue };
+}
+
+function broadcastChatMessage({
+  user,
+  message,
+  isSystem = false,
+  isCommand = false,
+  role = "viewer"
+}) {
+  broadcast("CHAT_MESSAGE", {
+    user,
+    message,
+    isSystem,
+    isCommand,
+    role,
+    timestamp: new Date().toISOString()
+  });
+}
+
+function sendBotMessage(message) {
+  broadcastChatMessage({ user: "Erwin", message, isSystem: true, role: "bot" });
+  sendTwitchMessage(message);
+}
+
+function parseTags(raw) {
+  return raw.split(";").reduce((acc, pair) => {
+    const [key, value] = pair.split("=");
+    acc[key] = value ?? "";
+    return acc;
+  }, {});
+}
+
+function parseIrcMessage(line) {
+  let rest = line;
+  let tags = {};
+  let prefix = "";
+  if (rest.startsWith("@")) {
+    const spaceIndex = rest.indexOf(" ");
+    if (spaceIndex !== -1) {
+      tags = parseTags(rest.slice(1, spaceIndex));
+      rest = rest.slice(spaceIndex + 1);
+    }
+  }
+  if (rest.startsWith(":")) {
+    const spaceIndex = rest.indexOf(" ");
+    if (spaceIndex !== -1) {
+      prefix = rest.slice(1, spaceIndex);
+      rest = rest.slice(spaceIndex + 1);
+    }
+  }
+  const trailingIndex = rest.indexOf(" :");
+  const middle = trailingIndex === -1 ? rest : rest.slice(0, trailingIndex);
+  const trailing = trailingIndex === -1 ? "" : rest.slice(trailingIndex + 2);
+  const parts = middle.split(" ").filter(Boolean);
+  const command = parts.shift() || "";
+  return {
+    tags,
+    prefix,
+    command,
+    params: parts,
+    trailing
+  };
+}
+
+function getIrcUsername(prefix) {
+  if (!prefix) return "";
+  return prefix.split("!")[0] || prefix;
+}
+
+function isModerator(tags) {
+  const badges = tags.badges || "";
+  return tags.mod === "1" || badges.includes("broadcaster") || badges.includes("moderator");
+}
+
+function formatTrackLabel(track) {
+  if (!track) return "Nothing is playing.";
+  const title = track.title || track.youtube_id || "Untitled track";
+  const channel = track.channel ? ` by ${track.channel}` : "";
+  return `${title}${channel}`;
+}
+
+function pickRandom(array) {
+  if (!array.length) return null;
+  const index = Math.floor(Math.random() * array.length);
+  return array[index];
+}
+
+function shuffleArray(array) {
+  const copy = [...array];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function getVoteCandidates() {
+  const playState = getPlayState();
+  const currentTrackId = playState?.current_track_id;
+  const queuedIds = new Set(getQueue().map((entry) => entry.track_id));
+  const allTracks = db
+    .prepare(
+      "SELECT id, title, channel, download_status, disabled FROM tracks WHERE disabled = 0"
+    )
+    .all();
+  const filtered = allTracks.filter(
+    (track) => track.id !== currentTrackId && !queuedIds.has(track.id)
+  );
+  const ready = filtered.filter((track) => track.download_status === "ready");
+  return ready.length >= 2 ? ready : filtered;
+}
+
+function startVoteRound() {
+  const settings = getVotingSettings();
+  const candidates = getVoteCandidates();
+  if (candidates.length < 2) {
+    log("warn", "not enough vote candidates", { candidates: candidates.length });
+    return null;
+  }
+  const selected = shuffleArray(candidates).slice(0, settings.options);
+  const options = selected.map((track) => ({
+    trackId: track.id,
+    title: track.title,
+    channel: track.channel
+  }));
+  const now = new Date();
+  const endsAt = new Date(now.getTime() + settings.duration * 1000);
+  const round = {
+    id: nanoid(),
+    started_at: now.toISOString(),
+    ends_at: endsAt.toISOString(),
+    options_json: JSON.stringify(options),
+    winner_track_id: null
+  };
+  db.prepare(
+    "INSERT INTO vote_rounds (id, started_at, ends_at, options_json, winner_track_id) VALUES (?, ?, ?, ?, NULL)"
+  ).run(round.id, round.started_at, round.ends_at, round.options_json);
+  const parsed = parseVoteRound(round);
+  broadcast("VOTE_START", {
+    roundId: parsed.id,
+    startedAt: parsed.startedAt,
+    endsAt: parsed.endsAt,
+    options: parsed.options,
+    counts: {}
+  });
+  sendBotMessage(
+    `Vote next song! ${buildVoteSummary(options)} (use ${TWITCH_COMMAND_PREFIX}vote <number>)`
+  );
+  return parsed;
+}
+
+function endVoteRound(round) {
+  const counts = getVoteTallies(round.id);
+  const options = round.options || [];
+  const voteEntries = options.map((option, index) => ({
+    index: index + 1,
+    count: counts[index + 1] || 0,
+    option
+  }));
+  const maxVotes = Math.max(...voteEntries.map((entry) => entry.count));
+  const topEntries = voteEntries.filter((entry) => entry.count === maxVotes);
+  const winnerEntry =
+    maxVotes > 0 ? pickRandom(topEntries) : pickRandom(voteEntries);
+  if (!winnerEntry) {
+    return null;
+  }
+  db.prepare("UPDATE vote_rounds SET winner_track_id = ? WHERE id = ?").run(
+    winnerEntry.option.trackId,
+    round.id
+  );
+  const queueEntry = enqueueTrack(winnerEntry.option.trackId, "vote");
+  broadcast("VOTE_END", {
+    roundId: round.id,
+    startedAt: round.startedAt,
+    endsAt: round.endsAt,
+    options,
+    counts,
+    winner: winnerEntry.option
+  });
+  const winnerLabel = winnerEntry.option.title || winnerEntry.option.trackId;
+  sendBotMessage(`Vote ended! Winner: ${winnerLabel}`);
+  return { winner: winnerEntry.option, queueEntry };
+}
+
+let lastVoteTrackId = null;
+
+function tickVoting() {
+  const active = getActiveVoteRound();
+  if (active) {
+    if (new Date(active.endsAt).getTime() <= Date.now()) {
+      endVoteRound(active);
+    }
+    return;
+  }
+  const playState = getPlayState();
+  if (!playState?.current_track_id) {
+    lastVoteTrackId = null;
+    return;
+  }
+  if (playState.paused) {
+    return;
+  }
+  if (lastVoteTrackId === playState.current_track_id) {
+    return;
+  }
+  const currentTrack = getCurrentTrack(playState);
+  if (!currentTrack?.duration_sec || !playState.started_at_ms) {
+    return;
+  }
+  const elapsedSec = Math.max(0, (Date.now() - playState.started_at_ms) / 1000);
+  const remainingSec = currentTrack.duration_sec - elapsedSec;
+  const { leadTime } = getVotingSettings();
+  if (remainingSec <= leadTime && remainingSec > 0) {
+    const round = startVoteRound();
+    if (round) {
+      lastVoteTrackId = playState.current_track_id;
+    }
+  }
+}
+
+let twitchSocket = null;
+let twitchConnected = false;
+
+function sendTwitchMessage(message) {
+  if (!twitchConnected || !twitchSocket) return;
+  twitchSocket.write(`PRIVMSG #${TWITCH_CHANNEL} :${message}\r\n`);
+}
+
+function handleVoteCommand({ user, optionIndex }) {
+  const round = getActiveVoteRound();
+  if (!round) {
+    sendBotMessage("No active vote right now.");
+    return;
+  }
+  if (
+    !Number.isInteger(optionIndex) ||
+    optionIndex < 1 ||
+    optionIndex > round.options.length
+  ) {
+    sendBotMessage(`Invalid vote. Choose 1-${round.options.length}.`);
+    return;
+  }
+  const now = new Date().toISOString();
+  db.prepare(
+    "INSERT INTO votes (vote_round_id, user_twitch_name, option_index, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (vote_round_id, user_twitch_name) DO UPDATE SET option_index = excluded.option_index, updated_at = excluded.updated_at"
+  ).run(round.id, user, optionIndex, now);
+  broadcastVoteUpdate(round);
+}
+
+function connectTwitchBot() {
+  if (!TWITCH_BOT_USERNAME || !TWITCH_OAUTH_TOKEN || !TWITCH_CHANNEL) {
+    log("warn", "twitch bot disabled - missing credentials", {
+      TWITCH_BOT_USERNAME,
+      TWITCH_CHANNEL
+    });
+    return;
+  }
+  twitchSocket = tls.connect(
+    {
+      host: TWITCH_IRC_HOST,
+      servername: TWITCH_IRC_HOST,
+      port: 6697
+    },
+    () => {
+      twitchConnected = true;
+      const token = TWITCH_OAUTH_TOKEN.startsWith("oauth:")
+        ? TWITCH_OAUTH_TOKEN
+        : `oauth:${TWITCH_OAUTH_TOKEN}`;
+      twitchSocket.write(`PASS ${token}\r\n`);
+      twitchSocket.write(`NICK ${TWITCH_BOT_USERNAME}\r\n`);
+      twitchSocket.write(
+        "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n"
+      );
+      twitchSocket.write(`JOIN #${TWITCH_CHANNEL}\r\n`);
+      log("info", "twitch bot connected", { channel: TWITCH_CHANNEL });
+      if (TWITCH_DEBUG) {
+        sendBotMessage("Erwin bot connected and ready for votes.");
+      }
+    }
+  );
+
+  twitchSocket.on("data", (data) => {
+    const messages = data.toString().split("\r\n").filter(Boolean);
+    messages.forEach((line) => {
+      if (TWITCH_DEBUG) {
+        log("info", "twitch irc", { line });
+      }
+      if (line.startsWith("PING")) {
+        twitchSocket.write(`PONG ${line.slice(5)}\r\n`);
+        return;
+      }
+      const parsed = parseIrcMessage(line);
+      if (parsed.command === "001") {
+        return;
+      }
+      if (parsed.command !== "PRIVMSG") {
+        return;
+      }
+      const user = parsed.tags["display-name"] || getIrcUsername(parsed.prefix);
+      if (!user) return;
+      const message = parsed.trailing || "";
+      const lower = message.toLowerCase();
+      const isCommand = lower.startsWith(TWITCH_COMMAND_PREFIX);
+      const mod = isModerator(parsed.tags);
+      const role = mod ? "mod" : "viewer";
+      broadcastChatMessage({ user, message, isCommand, role });
+      if (user.toLowerCase() === TWITCH_BOT_USERNAME.toLowerCase()) {
+        return;
+      }
+      if (!isCommand) {
+        return;
+      }
+      const [command, arg] = lower.slice(TWITCH_COMMAND_PREFIX.length).split(" ");
+      if (command === "vote") {
+        handleVoteCommand({ user, optionIndex: Number(arg) });
+      }
+      if (command === "song") {
+        const track = getCurrentTrack(getPlayState());
+        sendBotMessage(`Now playing: ${formatTrackLabel(track)}`);
+      }
+      if (command === "skip" && mod) {
+        skipQueue();
+        sendBotMessage("Skipped to next track.");
+      }
+      if (command === "pause" && mod) {
+        pauseSession();
+        sendBotMessage("Playback paused.");
+      }
+      if (command === "resume" && mod) {
+        resumeSession();
+        sendBotMessage("Playback resumed.");
+      }
+    });
+  });
+
+  twitchSocket.on("error", (error) => {
+    twitchConnected = false;
+    log("error", "twitch bot error", { error: String(error?.message || error) });
+  });
+
+  twitchSocket.on("end", () => {
+    twitchConnected = false;
+    log("warn", "twitch bot disconnected");
+  });
+}
+
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
@@ -693,33 +1216,13 @@ app.post("/api/session/start", requireAuth, requireRole("admin", "mod"), (req, r
 });
 
 app.post("/api/session/pause", requireAuth, requireRole("admin", "mod"), (req, res) => {
-  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  if (!playState?.current_track_id || playState.paused) {
-    return res.json({ playState });
-  }
-  db.prepare(
-    "UPDATE play_state SET paused = 1, paused_at_ms = ?, updated_at = ? WHERE id = 1"
-  ).run(Date.now(), new Date().toISOString());
-  log("info", "session pause", { trackId: playState.current_track_id });
-  const { playState: updated } = broadcastStateUpdate();
-  res.json({ playState: updated });
+  const { playState } = pauseSession();
+  res.json({ playState });
 });
 
 app.post("/api/session/resume", requireAuth, requireRole("admin", "mod"), (req, res) => {
-  const playState = db.prepare("SELECT * FROM play_state WHERE id = 1").get();
-  if (!playState?.current_track_id || !playState.paused) {
-    return res.json({ playState });
-  }
-  const elapsed = playState.started_at_ms
-    ? playState.paused_at_ms - playState.started_at_ms
-    : 0;
-  const startedAt = Date.now() - Math.max(0, elapsed);
-  db.prepare(
-    "UPDATE play_state SET paused = 0, paused_at_ms = NULL, started_at_ms = ?, updated_at = ? WHERE id = 1"
-  ).run(startedAt, new Date().toISOString());
-  log("info", "session resume", { trackId: playState.current_track_id });
-  const { playState: updated } = broadcastStateUpdate();
-  res.json({ playState: updated });
+  const { playState } = resumeSession();
+  res.json({ playState });
 });
 
 app.post("/api/session/seek", requireAuth, requireRole("admin", "mod"), (req, res) => {
@@ -752,23 +1255,7 @@ app.post("/api/session/stop", requireAuth, requireRole("admin", "mod"), (req, re
 });
 
 app.post("/api/queue/skip", requireAuth, requireRole("admin", "mod"), (req, res) => {
-  const next = db
-    .prepare(
-      "SELECT queue.id, queue.track_id FROM queue ORDER BY queue.created_at ASC LIMIT 1"
-    )
-    .get();
-  if (next) {
-    db.prepare("DELETE FROM queue WHERE id = ?").run(next.id);
-    db.prepare(
-      "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
-    ).run(next.track_id, Date.now(), new Date().toISOString());
-  } else {
-    db.prepare(
-      "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
-    ).run(new Date().toISOString());
-  }
-  log("info", "queue skip", { nextTrackId: next?.track_id || null });
-  const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
+  const { playState, queue } = skipQueue();
   res.json({ playState, queue });
 });
 
@@ -1133,6 +1620,24 @@ app.get("/api/settings", requireAuth, (req, res) => {
   res.json(settings);
 });
 
+app.get("/api/votes/active", requireAuth, (req, res) => {
+  const round = getActiveVoteRound();
+  if (!round) {
+    return res.json({ active: false });
+  }
+  const counts = getVoteTallies(round.id);
+  res.json({
+    active: true,
+    round: {
+      roundId: round.id,
+      startedAt: round.startedAt,
+      endsAt: round.endsAt,
+      options: round.options,
+      counts
+    }
+  });
+});
+
 app.use("/assets", express.static(path.join(__dirname, "..", "public")));
 
 app.get("/dashboard", requireAuth, (req, res) => {
@@ -1172,3 +1677,5 @@ server.on("upgrade", (request, socket, head) => {
 wss.on("connection", (ws) => {
   ws.send(JSON.stringify({ event: "CONNECTED", payload: {} }));
 });
+
+connectTwitchBot();
