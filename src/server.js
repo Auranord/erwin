@@ -1124,6 +1124,15 @@ app.put("/api/settings", requireAuth, requireRole("admin"), (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/settings", requireAuth, (req, res) => {
+  const rows = db.prepare("SELECT key, value FROM settings").all();
+  const settings = rows.reduce((acc, row) => {
+    acc[row.key] = row.value;
+    return acc;
+  }, {});
+  res.json(settings);
+});
+
 app.use("/assets", express.static(path.join(__dirname, "..", "public")));
 
 app.get("/dashboard", requireAuth, (req, res) => {

@@ -184,6 +184,20 @@ button.ghost {
   font-size: 12px;
 }
 
+.list-item .actions button.icon-only {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.list-item.disabled {
+  opacity: 0.6;
+}
+
 .list-item button.inline {
   width: auto;
   padding: 6px 10px;
