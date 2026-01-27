@@ -29,6 +29,10 @@
             <div id="queue" class="list">
               <div class="list-item">Queue is empty.</div>
             </div>
+            <div class="section-title" style="margin-top: 16px;">Candidate Pool</div>
+            <div id="pool" class="list">
+              <div class="list-item">Pool is empty.</div>
+            </div>
             <div class="grid">
               <button id="open-stream" class="secondary">Open Stream Player</button>
             </div>
@@ -47,6 +51,10 @@
                 <span>Vote window</span>
                 <span id="vote-window">--</span>
               </div>
+            </div>
+            <div class="section-title" style="margin-top: 16px;">Vote options</div>
+            <div id="vote-options" class="list">
+              <div class="list-item">No active vote.</div>
             </div>
             <p class="notice">Chat command: <code>!vote 1..5</code> near track end.</p>
           </div>
@@ -118,11 +126,11 @@
         <div class="grid two">
           <div class="card">
             <h2>Live Chat Feed</h2>
-            <p class="notice">Hook up the Twitch IRC module to populate real-time chat messages.</p>
-            <div class="list">
+            <p class="notice">Incoming Twitch chat messages and bot actions appear here in real time.</p>
+            <div id="chat-feed" class="list chat-feed">
               <div class="list-item">
                 <span class="badge">System</span>
-                <span>Erwin is standing by.</span>
+                <span>Waiting for chat activity...</span>
               </div>
             </div>
           </div>
@@ -177,6 +185,7 @@
     <script>
       const nowPlaying = document.getElementById("now-playing");
       const queueEl = document.getElementById("queue");
+      const poolEl = document.getElementById("pool");
       const playlistsEl = document.getElementById("playlists");
       const tracksEl = document.getElementById("tracks");
       const downloadQueueEl = document.getElementById("download-queue");
@@ -189,6 +198,10 @@
       const renameInput = document.getElementById("rename-input");
       const renameSave = document.getElementById("rename-save");
       const renameCancel = document.getElementById("rename-cancel");
+      const voteStatus = document.getElementById("vote-status");
+      const voteWindow = document.getElementById("vote-window");
+      const voteOptionsEl = document.getElementById("vote-options");
+      const chatFeed = document.getElementById("chat-feed");
       const settingsForm = document.getElementById("settings-form");
       const settingsStatus = document.getElementById("settings-status");
       const settingsVoteOptions = document.getElementById("settings-vote-options");
@@ -197,6 +210,9 @@
       let playlistsCache = [];
       let selectedPlaylistId = null;
       let renameTrackId = null;
+      let activeVote = null;
+      let voteTimer = null;
+      const chatMessages = [];
 
       document.querySelectorAll(".tab-link").forEach((link) => {
         link.addEventListener("click", (event) => {
@@ -259,6 +275,107 @@
           .join("");
       }
 
+      function formatRemainingTime(endsAt) {
+        if (!endsAt) return "--";
+        const remainingMs = new Date(endsAt).getTime() - Date.now();
+        if (remainingMs <= 0) return "0s";
+        const seconds = Math.ceil(remainingMs / 1000);
+        return `${seconds}s`;
+      }
+
+      function renderVoteOptions() {
+        if (!activeVote || !activeVote.options?.length) {
+          voteOptionsEl.innerHTML = '<div class="list-item">No active vote.</div>';
+          voteStatus.textContent = "Idle";
+          voteWindow.textContent = "--";
+          return;
+        }
+        const counts = activeVote.counts || {};
+        voteStatus.textContent = activeVote.status || "Active";
+        voteWindow.textContent =
+          activeVote.status === "Ended"
+            ? "Completed"
+            : formatRemainingTime(activeVote.endsAt);
+        const winnerMarkup = activeVote.winner
+          ? `<div class="list-item"><span>Winner</span><span class="badge">${activeVote.winner.title || activeVote.winner.trackId}</span></div>`
+          : "";
+        voteOptionsEl.innerHTML = activeVote.options
+          .map((option, index) => {
+            const count = counts[index + 1] || 0;
+            const title = option.title || option.trackId;
+            return `<div class="list-item">
+                <span>${index + 1}. ${title}</span>
+                <span class="badge">${count} votes</span>
+              </div>`;
+          })
+          .join("");
+        if (winnerMarkup) {
+          voteOptionsEl.innerHTML = `${winnerMarkup}${voteOptionsEl.innerHTML}`;
+        }
+      }
+
+      function startVoteTimer() {
+        if (voteTimer) {
+          clearInterval(voteTimer);
+        }
+        voteTimer = setInterval(() => {
+          if (!activeVote) {
+            clearInterval(voteTimer);
+            voteTimer = null;
+            return;
+          }
+          renderVoteOptions();
+        }, 1000);
+      }
+
+      function setActiveVote(payload) {
+        if (!payload) {
+          activeVote = null;
+          renderVoteOptions();
+          return;
+        }
+        activeVote = {
+          roundId: payload.roundId,
+          startedAt: payload.startedAt,
+          endsAt: payload.endsAt,
+          options: payload.options || [],
+          counts: payload.counts || {},
+          status: payload.status || "Active",
+          winner: payload.winner || null
+        };
+        renderVoteOptions();
+        startVoteTimer();
+      }
+
+      function appendChatMessage(entry) {
+        if (!entry) return;
+        const normalized = {
+          role: entry.role || "viewer",
+          user: entry.user || "Unknown",
+          ...entry
+        };
+        chatMessages.push(normalized);
+        if (chatMessages.length > 200) {
+          chatMessages.shift();
+        }
+        chatFeed.innerHTML = chatMessages
+          .slice(-100)
+          .map((message) => {
+            const badgeLabel = message.isSystem
+              ? "System"
+              : message.role === "mod"
+                ? "Mod"
+                : "Viewer";
+            const commandFlag = message.isCommand ? '<span class="badge">Command</span>' : "";
+            return `<div class="list-item">
+                <span class="badge">${badgeLabel}</span>
+                <span><strong>${message.user}</strong>: ${message.message}</span>
+                ${commandFlag}
+              </div>`;
+          })
+          .join("");
+      }
+
       async function fetchState() {
         const response = await fetch("/api/state");
         if (!response.ok) return;
@@ -278,11 +395,39 @@
         } else {
           queueEl.innerHTML = queue
             .map(
-              (item) =>
-                `<div class="list-item"><span>${item.title || item.track_id}</span><span class="badge">${item.source}</span></div>`
+              (item, index) =>
+                `<div class="list-item" data-queue-id="${item.id}">
+                  <span>${item.title || item.track_id}</span>
+                  <div class="actions">
+                    <span class="badge">${item.source}</span>
+                    <button class="secondary icon-only" data-action="queue-up" ${index === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">⬆️</button>
+                    <button class="secondary icon-only" data-action="queue-down" ${index === queue.length - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">⬇️</button>
+                  </div>
+                </div>`
             )
             .join("");
         }
+      }
+
+      async function fetchPool() {
+        const response = await fetch("/api/pool");
+        if (!response.ok) return;
+        const pool = await response.json();
+        if (!pool.length) {
+          poolEl.innerHTML = '<div class="list-item">Pool is empty.</div>';
+          return;
+        }
+        poolEl.innerHTML = pool
+          .map(
+            (item) =>
+              `<div class="list-item" data-track-id="${item.track_id}">
+                <span>${item.title || item.track_id}</span>
+                <div class="actions">
+                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track">➕</button>
+                </div>
+              </div>`
+          )
+          .join("");
       }
 
       async function fetchPlaylists() {
@@ -338,6 +483,17 @@
         settingsVoteOptions.value = settings.vote_options ?? settings.voteOptions ?? 5;
         settingsVoteDuration.value = settings.vote_duration ?? settings.voteDuration ?? 30;
         settingsVoteLead.value = settings.vote_lead_time ?? settings.voteLeadTime ?? 20;
+      }
+
+      async function fetchActiveVote() {
+        const response = await fetch("/api/votes/active");
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!data.active) {
+          setActiveVote(null);
+          return;
+        }
+        setActiveVote(data.round);
       }
 
       async function fetchDownloads() {
@@ -433,6 +589,39 @@
           });
         }
         fetchPlaylists();
+      });
+
+      queueEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const action = button.dataset.action;
+        const wrapper = button.closest(".list-item");
+        const queueId = wrapper?.dataset.queueId;
+        if (!queueId) return;
+        if (action === "queue-up" || action === "queue-down") {
+          await fetch(`/api/queue/${queueId}/move`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction: action === "queue-up" ? "up" : "down" })
+          });
+          fetchState();
+        }
+      });
+
+      poolEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const action = button.dataset.action;
+        const wrapper = button.closest(".list-item");
+        const trackId = wrapper?.dataset.trackId;
+        if (action !== "pool-enqueue" || !trackId) return;
+        await fetch("/api/pool/enqueue", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trackId })
+        });
+        fetchPool();
+        fetchState();
       });
 
       function closeRenameModal() {
@@ -544,6 +733,35 @@
         if (message.event === "DOWNLOAD_UPDATE") {
           fetchDownloads();
           fetchPlaylists();
+          return;
+        }
+        if (message.event === "POOL_UPDATE") {
+          fetchPool();
+          return;
+        }
+        if (message.event === "VOTE_START") {
+          setActiveVote(message.payload);
+          return;
+        }
+        if (message.event === "VOTE_UPDATE") {
+          if (activeVote && message.payload.roundId === activeVote.roundId) {
+            setActiveVote({ ...activeVote, counts: message.payload.counts });
+          } else if (!activeVote) {
+            setActiveVote(message.payload);
+          }
+          return;
+        }
+        if (message.event === "VOTE_END") {
+          if (activeVote && message.payload.roundId === activeVote.roundId) {
+            setActiveVote({ ...message.payload, status: "Ended" });
+          }
+          setTimeout(() => {
+            setActiveVote(null);
+          }, 5000);
+          return;
+        }
+        if (message.event === "CHAT_MESSAGE") {
+          appendChatMessage(message.payload);
         }
       });
 
@@ -551,6 +769,8 @@
       fetchPlaylists();
       fetchDownloads();
       fetchSettings();
+      fetchActiveVote();
+      fetchPool();
     </script>
   </body>
 </html>
