@@ -132,22 +132,24 @@
       <section class="tab-panel" data-tab-panel="settings">
         <div class="grid two">
           <div class="card">
-            <h2>Settings Snapshot</h2>
-            <div class="list">
-              <div class="list-item">
-                <span>Vote options</span>
-                <span>5 default</span>
+            <h2>Settings</h2>
+            <p class="notice">Update the voting defaults to keep the bot in sync with dashboard changes.</p>
+            <form id="settings-form" class="grid">
+              <div>
+                <label for="settings-vote-options">Vote options</label>
+                <input id="settings-vote-options" name="vote-options" type="number" min="2" max="10" />
               </div>
-              <div class="list-item">
-                <span>Vote duration</span>
-                <span>30 seconds</span>
+              <div>
+                <label for="settings-vote-duration">Vote duration (seconds)</label>
+                <input id="settings-vote-duration" name="vote-duration" type="number" min="5" step="1" />
               </div>
-              <div class="list-item">
-                <span>Vote lead time</span>
-                <span>20 seconds</span>
+              <div>
+                <label for="settings-vote-lead">Vote lead time (seconds)</label>
+                <input id="settings-vote-lead" name="vote-lead" type="number" min="0" step="1" />
               </div>
-            </div>
-            <p class="notice">Adjust settings via the API to persist configuration.</p>
+              <button type="submit">Save Settings</button>
+            </form>
+            <p id="settings-status" class="notice" aria-live="polite"></p>
           </div>
         </div>
       </section>
@@ -187,6 +189,11 @@
       const renameInput = document.getElementById("rename-input");
       const renameSave = document.getElementById("rename-save");
       const renameCancel = document.getElementById("rename-cancel");
+      const settingsForm = document.getElementById("settings-form");
+      const settingsStatus = document.getElementById("settings-status");
+      const settingsVoteOptions = document.getElementById("settings-vote-options");
+      const settingsVoteDuration = document.getElementById("settings-vote-duration");
+      const settingsVoteLead = document.getElementById("settings-vote-lead");
       let playlistsCache = [];
       let selectedPlaylistId = null;
       let renameTrackId = null;
@@ -231,15 +238,21 @@
           .map((track, index) => {
             const label = track.title || "Untitled track";
             const trackIndex = positions.get(track.id) ?? index;
-            return `<div class="list-item" data-track-id="${track.id}" data-track-title="${track.title || ""}">
+            const disabled = Boolean(track.disabled);
+            const disabledLabel = disabled ? '<span class="badge">Disabled</span>' : "";
+            const toggleLabel = disabled ? "Enable track" : "Disable track";
+            const toggleIcon = disabled ? "✅" : "🚫";
+            return `<div class="list-item ${disabled ? "disabled" : ""}" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
-                  <div>${label}</div>
+                  <div style="display: flex; gap: 8px; align-items: center;">${label} ${disabledLabel}</div>
                 </div>
                 <div class="actions">
-                  <button class="secondary" data-action="rename">Rename</button>
-                  <button class="secondary" data-action="up" ${trackIndex === 0 ? "disabled" : ""}>Up</button>
-                  <button class="secondary" data-action="down" ${trackIndex === playlist.tracks.length - 1 ? "disabled" : ""}>Down</button>
-                  <button class="ghost" data-action="remove">Remove</button>
+                  <button class="secondary icon-only" data-action="enqueue" title="Enqueue track" aria-label="Enqueue track">➕</button>
+                  <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">✏️</button>
+                  <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${toggleIcon}</button>
+                  <button class="secondary icon-only" data-action="up" ${trackIndex === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">⬆️</button>
+                  <button class="secondary icon-only" data-action="down" ${trackIndex === playlist.tracks.length - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">⬇️</button>
+                  <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">🗑️</button>
                 </div>
               </div>`;
           })
@@ -318,6 +331,15 @@
         renderTracks();
       }
 
+      async function fetchSettings() {
+        const response = await fetch("/api/settings");
+        if (!response.ok) return;
+        const settings = await response.json();
+        settingsVoteOptions.value = settings.vote_options ?? settings.voteOptions ?? 5;
+        settingsVoteDuration.value = settings.vote_duration ?? settings.voteDuration ?? 30;
+        settingsVoteLead.value = settings.vote_lead_time ?? settings.voteLeadTime ?? 20;
+      }
+
       async function fetchDownloads() {
         const response = await fetch("/api/downloads");
         if (!response.ok) return;
@@ -378,7 +400,15 @@
         const action = button.dataset.action;
         const wrapper = button.closest(".list-item");
         const trackId = wrapper?.dataset.trackId;
+        const isDisabled = wrapper?.dataset.trackDisabled === "true";
         if (!trackId || !selectedPlaylistId) return;
+        if (action === "enqueue") {
+          await fetch("/api/queue/enqueue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trackId, source: "dashboard" })
+          });
+        }
         if (action === "remove") {
           await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}`, { method: "DELETE" });
         }
@@ -393,6 +423,13 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ direction: action })
+          });
+        }
+        if (action === "toggle-disabled") {
+          await fetch(`/api/tracks/${trackId}/disable`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ disabled: !isDisabled })
           });
         }
         fetchPlaylists();
@@ -475,6 +512,24 @@
         fetchDownloads();
       });
 
+      settingsForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        settingsStatus.textContent = "Saving...";
+        await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            vote_options: Number(settingsVoteOptions.value || 5),
+            vote_duration: Number(settingsVoteDuration.value || 30),
+            vote_lead_time: Number(settingsVoteLead.value || 20)
+          })
+        });
+        settingsStatus.textContent = "Settings saved.";
+        setTimeout(() => {
+          settingsStatus.textContent = "";
+        }, 3000);
+      });
+
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.addEventListener("message", (event) => {
         const message = JSON.parse(event.data);
@@ -495,6 +550,7 @@
       fetchState();
       fetchPlaylists();
       fetchDownloads();
+      fetchSettings();
     </script>
   </body>
 </html>
