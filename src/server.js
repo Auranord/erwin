@@ -806,13 +806,12 @@ function parseVoteRound(row) {
   };
 }
 
-function getActiveVoteRound() {
-  const now = new Date().toISOString();
+function getLatestOpenVoteRound() {
   const row = db
     .prepare(
-      "SELECT * FROM vote_rounds WHERE winner_track_id IS NULL AND ends_at > ? ORDER BY started_at DESC LIMIT 1"
+      "SELECT * FROM vote_rounds WHERE winner_track_id IS NULL ORDER BY started_at DESC LIMIT 1"
     )
-    .get(now);
+    .get();
   return parseVoteRound(row);
 }
 
@@ -1110,7 +1109,7 @@ function endVoteRound(round) {
 let lastVoteTrackId = null;
 
 function tickVoting() {
-  const active = getActiveVoteRound();
+  const active = getLatestOpenVoteRound();
   if (active) {
     if (new Date(active.endsAt).getTime() <= Date.now()) {
       endVoteRound(active);
@@ -1152,9 +1151,13 @@ function sendTwitchMessage(message) {
 }
 
 function handleVoteCommand({ user, optionIndex }) {
-  const round = getActiveVoteRound();
+  const round = getLatestOpenVoteRound();
   if (!round) {
     sendBotMessage("No active vote right now.");
+    return;
+  }
+  if (new Date(round.endsAt).getTime() <= Date.now()) {
+    sendBotMessage("Voting is closed.");
     return;
   }
   if (
@@ -1767,8 +1770,8 @@ app.get("/api/settings", requireAuth, (req, res) => {
 });
 
 app.get("/api/votes/active", requireAuth, (req, res) => {
-  const round = getActiveVoteRound();
-  if (!round) {
+  const round = getLatestOpenVoteRound();
+  if (!round || new Date(round.endsAt).getTime() <= Date.now()) {
     return res.json({ active: false });
   }
   const counts = getVoteTallies(round.id);
