@@ -36,6 +36,7 @@ const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
 const TWITCH_IRC_HOST =
   process.env.TWITCH_IRC_HOST ||
   "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com";
+const TWITCH_DEBUG = process.env.TWITCH_DEBUG === "true";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -1095,12 +1096,18 @@ function connectTwitchBot() {
       );
       twitchSocket.write(`JOIN #${TWITCH_CHANNEL}\r\n`);
       log("info", "twitch bot connected", { channel: TWITCH_CHANNEL });
+      if (TWITCH_DEBUG) {
+        sendBotMessage("Erwin bot connected and ready for votes.");
+      }
     }
   );
 
   twitchSocket.on("data", (data) => {
     const messages = data.toString().split("\r\n").filter(Boolean);
     messages.forEach((line) => {
+      if (TWITCH_DEBUG) {
+        log("info", "twitch irc", { line });
+      }
       if (line.startsWith("PING")) {
         twitchSocket.write(`PONG ${line.slice(5)}\r\n`);
         return;
