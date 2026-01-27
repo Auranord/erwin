@@ -33,6 +33,9 @@ const TWITCH_BOT_USERNAME = process.env.TWITCH_BOT_USERNAME || "";
 const TWITCH_OAUTH_TOKEN = process.env.TWITCH_OAUTH_TOKEN || "";
 const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "";
 const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
+const TWITCH_IRC_HOST =
+  process.env.TWITCH_IRC_HOST ||
+  "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com";
 
 const app = express();
 const db = new Database(DB_URL);
@@ -1076,7 +1079,8 @@ function connectTwitchBot() {
   }
   twitchSocket = tls.connect(
     {
-      host: "irc.chat.twitch.tv",
+      host: TWITCH_IRC_HOST,
+      servername: TWITCH_IRC_HOST,
       port: 6697
     },
     () => {
