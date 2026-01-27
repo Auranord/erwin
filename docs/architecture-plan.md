@@ -17,12 +17,6 @@ This document provides a wide (end-to-end) architecture view plus a phased plan 
 #### Backend (Erwin Orchestrator)
 
 - **API layer**: REST for CRUD actions + WebSocket for live state and events.
-- **Feature modules**:
-  - `modules/music` (playlists, tracks, playback, queue)
-  - `modules/voting` (vote rounds, options, tally)
-  - `modules/chat` (Twitch IRC integration)
-  - `modules/commands` (command router)
-  - `modules/permissions` (role checks)
 - **Scheduler**: triggers vote rounds based on playback time and configured thresholds.
 - **Persistence**: Postgres (primary), background jobs for metadata enrichment.
 
@@ -34,7 +28,7 @@ This document provides a wide (end-to-end) architecture view plus a phased plan 
   - `/player/listen` for team listeners (audio on)
   - `/dashboard` for management (audio off by default)
 - **WebSocket client** for real-time updates.
-- **Player engine** using YouTube IFrame Player API for playback.
+- **Player engine** using downloaded MP3 audio for playback.
 
 #### Twitch integration
 
@@ -69,12 +63,12 @@ This document provides a wide (end-to-end) architecture view plus a phased plan 
 
 - Implement tables: users, playlists, tracks, playlist_tracks, play_state, queue, vote_rounds, votes, settings.
 - Add CRUD endpoints for playlists and tracks.
-- Add metadata enrichment job (YouTube oEmbed / API fallback).
+- Add metadata enrichment job (yt-dlp metadata extraction).
 
 ### Phase 2: Playback + queue engine
 
 - Implement playback session start/stop and queue progression.
-- Add YouTube player state sync via WebSocket heartbeat.
+- Add player state sync via WebSocket heartbeat.
 - Basic error handling (auto-skip, fail count).
 
 ### Phase 3: Voting system
@@ -93,7 +87,7 @@ This document provides a wide (end-to-end) architecture view plus a phased plan 
 ### Phase 5: Frontend UI
 
 - Build dashboard tabs with live updates.
-- Playlist editor with import/export + drag/drop ordering.
+- Playlist editor with URL-based import/export and optional drag/drop ordering.
 - Voting panel with countdown and option list.
 - Chat feed with Erwin action highlights.
 

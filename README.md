@@ -1,11 +1,11 @@
 # Erwin
 
-Erwin is a self-hosted, Dockerized web application that serves as a long-term Twitch chatbot platform. The MVP ships with a music player, playlist curation tools, and a chat-driven voting system. The architecture is modular so future chat features can be added as feature modules.
+Erwin is a self-hosted, Dockerized web application that serves as a long-term Twitch chatbot platform. The MVP ships with a music player, playlist curation tools, and a chat-driven voting system.
 
 ## MVP scope
 
 - Curated playlists stored on the server with create/edit/delete flows.
-- Tracks stored as YouTube IDs/URLs, with metadata fetched asynchronously.
+- Tracks stored as YouTube IDs/URLs, with metadata fetched asynchronously and audio downloaded to MP3 for playback.
 - Automated vote rounds in Twitch chat to pick the next song.
 - Web-based music player with continuous playback and queue.
 - Authentication required for dashboard and listening pages.
@@ -20,7 +20,6 @@ For a wide architecture overview and a delivery plan, see [docs/architecture-pla
 - **Backend**: Orchestrator + Twitch bot (IRC), REST + WebSocket APIs.
 - **Frontend**: SPA dashboard and dedicated player views.
 - **Database**: Postgres (SQLite acceptable for earliest MVP).
-- **Modules**: `modules/music`, `modules/chat`, `modules/commands`, `modules/permissions`.
 
 ## Views
 

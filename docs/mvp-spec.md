@@ -2,7 +2,7 @@
 
 ## Product framing
 
-Erwin is a self-hosted, Dockerized web application that serves as a long-term Twitch chatbot platform. The MVP ships as a music player + playlist curation + chat-driven voting system, designed to be modular for future chat features.
+Erwin is a self-hosted, Dockerized web application that serves as a long-term Twitch chatbot platform. The MVP ships as a music player + playlist curation + chat-driven voting system.
 
 ## Core requirements (MVP)
 
@@ -12,7 +12,7 @@ Erwin is a self-hosted, Dockerized web application that serves as a long-term Tw
 - Create/edit/delete playlists.
 - Add/remove/reorder tracks.
 - Store tracks as YouTube IDs/URLs.
-- Persist metadata (title, duration, channel, thumbnail) via background fetch.
+- Persist metadata (title, duration, channel, thumbnail) via background fetch while downloading audio to MP3.
 - Fully automated voting in chat.
   - Erwin posts a “Vote next song” message with 2–5 random options (configurable, default 5).
   - Viewers vote with `!vote 1` … `!vote 5`.
@@ -62,11 +62,11 @@ Erwin is a self-hosted, Dockerized web application that serves as a long-term Tw
 - Track list per playlist:
   - add by YouTube URL or ID.
   - remove.
-  - reorder (drag/drop).
+  - reorder (drag/drop or button-based controls).
   - disable/blacklist track.
 - Import/export:
-  - paste a list of URLs (one per line).
-  - export playlist to text.
+  - import by pasting a YouTube playlist URL or single track URL.
+  - export via the playlist data in the API/database (UI can be added later).
 
 ### Tab 3: Live Chat Feed
 
@@ -115,7 +115,6 @@ Add a “silent dashboard mode” toggle where the dashboard never plays audio e
   - Maintains playlists and tracks, queue, playback state, vote rounds, and votes.
   - Connects to Twitch chat via IRC to read commands and post messages.
   - Provides REST + WebSocket API to frontend clients.
-  - Modular “feature modules” design for future bot features.
 - **Frontend (Web App)**
   - Single Page App with tabs.
   - Real-time updates via WebSocket.
@@ -173,14 +172,14 @@ When starting a vote round, candidate tracks are selected from the active playli
 ### Edge cases
 
 - If track ends before vote completes, keep playing backup/random until vote ends.
-- If YouTube playback fails, auto-skip and mark track as “failed”; optionally auto-disable after X fails.
+- If audio playback fails, auto-skip and mark track as “failed”; optionally auto-disable after X fails.
 
 ## Web player design
 
 ### Playback engine
 
-- Use YouTube IFrame Player API in the player view.
-- Player runs “audio-first” (video hidden/collapsed).
+- Download YouTube audio to MP3 files for playback.
+- Player runs “audio-first” using the downloaded audio.
 - Player reports state to backend:
   - loaded
   - playing
@@ -192,7 +191,7 @@ When starting a vote round, candidate tracks are selected from the active playli
 - Only one “authoritative” player: the Stream Player (OBS source).
 - Team listeners “follow along” by loading the same track and seeking when backend state updates.
 - Backend state fields:
-  - `currentVideoId`
+  - `currentTrackId`
   - `startedAtEpochMs`
   - `paused`
   - `seekOffsetMs` (if needed)
@@ -287,15 +286,7 @@ Client → server:
 
 ## Extensibility (Erwin as “main bot” later)
 
-The backend should be structured as feature modules:
-
-- `modules/music`
-- `modules/chat`
-- `modules/moderation` (future)
-- `modules/commands` (router)
-- `modules/permissions`
-
-A command router dispatches chat commands to modules with consistent permission checks and rate limits.
+Future phases can break the backend into domain-focused modules once the MVP is stable.
 
 ## Acceptance criteria (MVP)
 
