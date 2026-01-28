@@ -722,6 +722,23 @@ function insertPoolEntries(trackIds) {
   });
 }
 
+function addToPool(trackId) {
+  const existing = db
+    .prepare("SELECT id FROM play_pool WHERE track_id = ? LIMIT 1")
+    .get(trackId);
+  if (existing) {
+    return { added: false };
+  }
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO play_pool (id, track_id, created_at) VALUES (?, ?, ?)").run(
+    nanoid(),
+    trackId,
+    now
+  );
+  broadcast("POOL_UPDATE", { action: "added", trackId });
+  return { added: true };
+}
+
 function getQueueNextPosition() {
   return (
     db.prepare("SELECT MAX(position) as maxPosition FROM queue").get().maxPosition || 0
@@ -754,6 +771,19 @@ const VOTE_SETTINGS_DEFAULTS = {
   vote_lead_time: 20
 };
 
+const TWITCH_MESSAGE_DEFAULTS = {
+  vote_start: "Vote time! Choose the next track with {command}vote <number>.",
+  vote_option: "{number}. {title}{channel}",
+  vote_end: "Vote ended! Winner: {winner}",
+  now_playing: "Now playing: {track}",
+  no_active_vote: "No active vote right now.",
+  vote_closed: "Voting is closed.",
+  invalid_vote: "Invalid vote. Choose 1-{max}.",
+  skip: "Skipped to the next track.",
+  pause: "Playback paused.",
+  resume: "Playback resumed."
+};
+
 function clampNumber(value, min, max, fallback) {
   if (!Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, value));
@@ -765,6 +795,31 @@ function getSettingValue(key, fallback) {
   const numeric = Number(row.value);
   if (Number.isFinite(numeric)) return numeric;
   return row.value;
+}
+
+function getSettingBoolean(key, fallback) {
+  const value = getSettingValue(key, undefined);
+  if (value === undefined) return fallback;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value).trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  return Boolean(value);
+}
+
+function getSettingString(key, fallback) {
+  const value = getSettingValue(key, undefined);
+  if (value === undefined) return fallback;
+  return String(value);
+}
+
+function formatTemplate(template, values) {
+  return template.replace(/\{(\w+)\}/g, (match, key) => {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      return String(values[key]);
+    }
+    return match;
+  });
 }
 
 function getVotingSettings() {
@@ -841,7 +896,7 @@ function broadcastVoteUpdate(round) {
 
 function buildVoteSummary(options) {
   return options
-    .map((option, index) => `${index + 1}: ${option.title || option.trackId}`)
+    .map((option, index) => `${index + 1}. ${formatOptionLabel(option)}`)
     .join(" | ");
 }
 
@@ -1010,6 +1065,27 @@ function formatTrackLabel(track) {
   return `${title}${channel}`;
 }
 
+function formatOptionLabel(option) {
+  if (!option) return "Untitled track";
+  const title = option.title || option.trackId || "Untitled track";
+  const channel = option.channel ? ` by ${option.channel}` : "";
+  return `${title}${channel}`;
+}
+
+function getTwitchMessage(key, fallback, values = {}) {
+  const template = getSettingString(key, fallback);
+  const message = formatTemplate(template, values);
+  return message.trim();
+}
+
+function sendTwitchMessageLines(lines) {
+  lines.forEach((line) => {
+    const message = String(line ?? "").trim();
+    if (!message) return;
+    sendBotMessage(message);
+  });
+}
+
 function pickRandom(array) {
   if (!array.length) return null;
   const index = Math.floor(Math.random() * array.length);
@@ -1074,9 +1150,27 @@ function startVoteRound() {
     options: parsed.options,
     counts: {}
   });
-  sendBotMessage(
-    `Vote next song! ${buildVoteSummary(options)} (use ${TWITCH_COMMAND_PREFIX}vote <number>)`
+  const headerMessage = getTwitchMessage(
+    "twitch_vote_start_message",
+    TWITCH_MESSAGE_DEFAULTS.vote_start,
+    {
+      command: TWITCH_COMMAND_PREFIX,
+      summary: buildVoteSummary(options)
+    }
   );
+  const optionTemplate = getSettingString(
+    "twitch_vote_option_message",
+    TWITCH_MESSAGE_DEFAULTS.vote_option
+  );
+  const optionLines = options.map((option, index) => {
+    return formatTemplate(optionTemplate, {
+      number: index + 1,
+      title: option.title || option.trackId,
+      channel: option.channel ? ` — ${option.channel}` : "",
+      track: formatOptionLabel(option)
+    });
+  });
+  sendTwitchMessageLines([headerMessage, ...optionLines]);
   return parsed;
 }
 
@@ -1108,14 +1202,23 @@ function endVoteRound(round) {
     counts,
     winner: winnerEntry.option
   });
-  const winnerLabel = winnerEntry.option.title || winnerEntry.option.trackId;
-  sendBotMessage(`Vote ended! Winner: ${winnerLabel}`);
+  const winnerLabel = formatOptionLabel(winnerEntry.option);
+  const voteEndMessage = getTwitchMessage(
+    "twitch_vote_end_message",
+    TWITCH_MESSAGE_DEFAULTS.vote_end,
+    { winner: winnerLabel }
+  );
+  sendTwitchMessageLines([voteEndMessage]);
   return { winner: winnerEntry.option, queueEntry };
 }
 
 let lastVoteTrackId = null;
 
 function tickVoting() {
+  const autoEnabled = getSettingBoolean("vote_auto_enabled", true);
+  if (!autoEnabled) {
+    return;
+  }
   const active = getLatestOpenVoteRound();
   if (active) {
     if (new Date(active.endsAt).getTime() <= Date.now()) {
@@ -1167,11 +1270,21 @@ function sendTwitchMessage(message) {
 function handleVoteCommand({ user, optionIndex }) {
   const round = getLatestOpenVoteRound();
   if (!round) {
-    sendBotMessage("No active vote right now.");
+    sendTwitchMessageLines([
+      getTwitchMessage(
+        "twitch_no_active_vote_message",
+        TWITCH_MESSAGE_DEFAULTS.no_active_vote
+      )
+    ]);
     return;
   }
   if (new Date(round.endsAt).getTime() <= Date.now()) {
-    sendBotMessage("Voting is closed.");
+    sendTwitchMessageLines([
+      getTwitchMessage(
+        "twitch_vote_closed_message",
+        TWITCH_MESSAGE_DEFAULTS.vote_closed
+      )
+    ]);
     return;
   }
   if (
@@ -1179,7 +1292,13 @@ function handleVoteCommand({ user, optionIndex }) {
     optionIndex < 1 ||
     optionIndex > round.options.length
   ) {
-    sendBotMessage(`Invalid vote. Choose 1-${round.options.length}.`);
+    sendTwitchMessageLines([
+      getTwitchMessage(
+        "twitch_invalid_vote_message",
+        TWITCH_MESSAGE_DEFAULTS.invalid_vote,
+        { max: round.options.length }
+      )
+    ]);
     return;
   }
   const now = new Date().toISOString();
@@ -1197,8 +1316,10 @@ function connectTwitchBot() {
     });
     return;
   }
-  const welcomeMessage = String(getSettingValue("twitch_welcome_message", "") || "")
-    .trim();
+  const welcomeMessage = getTwitchMessage("twitch_welcome_message", "", {
+    channel: TWITCH_CHANNEL,
+    bot: TWITCH_BOT_USERNAME
+  });
   twitchSocket = tls.connect(
     {
       host: TWITCH_IRC_HOST,
@@ -1218,7 +1339,7 @@ function connectTwitchBot() {
       twitchSocket.write(`JOIN #${TWITCH_CHANNEL}\r\n`);
       log("info", "twitch bot connected", { channel: TWITCH_CHANNEL });
       if (welcomeMessage) {
-        sendBotMessage(welcomeMessage);
+        sendTwitchMessageLines([welcomeMessage]);
       }
     }
   );
@@ -1257,19 +1378,31 @@ function connectTwitchBot() {
       }
       if (command === "song") {
         const track = getCurrentTrack(getPlayState());
-        sendBotMessage(`Now playing: ${formatTrackLabel(track)}`);
+        sendTwitchMessageLines([
+          getTwitchMessage(
+            "twitch_now_playing_message",
+            TWITCH_MESSAGE_DEFAULTS.now_playing,
+            { track: formatTrackLabel(track) }
+          )
+        ]);
       }
       if (command === "skip" && mod) {
         skipQueue();
-        sendBotMessage("Skipped to next track.");
+        sendTwitchMessageLines([
+          getTwitchMessage("twitch_skip_message", TWITCH_MESSAGE_DEFAULTS.skip)
+        ]);
       }
       if (command === "pause" && mod) {
         pauseSession();
-        sendBotMessage("Playback paused.");
+        sendTwitchMessageLines([
+          getTwitchMessage("twitch_pause_message", TWITCH_MESSAGE_DEFAULTS.pause)
+        ]);
       }
       if (command === "resume" && mod) {
         resumeSession();
-        sendBotMessage("Playback resumed.");
+        sendTwitchMessageLines([
+          getTwitchMessage("twitch_resume_message", TWITCH_MESSAGE_DEFAULTS.resume)
+        ]);
       }
     });
   });
@@ -1475,6 +1608,19 @@ app.post("/api/pool/enqueue", requireAuth, requireRole("admin", "mod"), (req, re
   }
   const entry = enqueueTrack(trackId, "pool");
   res.json(entry);
+});
+
+app.post("/api/pool/add", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const result = addToPool(trackId);
+  res.json(result);
 });
 
 app.get("/api/playlists", requireAuth, (req, res) => {
@@ -1771,6 +1917,7 @@ app.put("/api/settings", requireAuth, requireRole("admin"), (req, res) => {
     }
   });
   transaction(settings);
+  broadcast("SETTINGS_UPDATE", { keys: Object.keys(settings) });
   res.json({ ok: true });
 });
 
@@ -1805,9 +1952,6 @@ app.post("/api/votes/start", requireAuth, requireRole("admin", "mod"), (req, res
   const active = getLatestOpenVoteRound();
   if (active && new Date(active.endsAt).getTime() > Date.now()) {
     return res.status(409).json({ error: "Vote already active" });
-  }
-  if (getQueue().length > 0) {
-    return res.status(409).json({ error: "Queue is not empty" });
   }
   const { options } = getVotingSettings();
   if (getPoolTracks().length < options * 2) {
