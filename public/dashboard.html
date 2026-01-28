@@ -41,7 +41,13 @@
           <div class="card">
             <div class="card-header">
               <h2>Voting</h2>
-              <button id="start-vote" class="secondary">Start Vote</button>
+              <div class="card-header-actions">
+                <label class="card-toggle" for="auto-vote-toggle">
+                  <input id="auto-vote-toggle" type="checkbox" />
+                  Auto vote
+                </label>
+                <button id="start-vote" class="secondary">Start Vote</button>
+              </div>
             </div>
             <div class="list">
               <div class="list-item">
@@ -253,6 +259,7 @@
       const settingsVoteOptions = document.getElementById("settings-vote-options");
       const settingsVoteDuration = document.getElementById("settings-vote-duration");
       const settingsVoteLead = document.getElementById("settings-vote-lead");
+      const autoVoteToggle = document.getElementById("auto-vote-toggle");
       const settingsTwitchWelcome = document.getElementById("settings-twitch-welcome");
       const settingsTwitchVoteStart = document.getElementById("settings-twitch-vote-start");
       const settingsTwitchVoteOption = document.getElementById("settings-twitch-vote-option");
@@ -552,6 +559,8 @@
         settingsVoteOptions.value = settings.vote_options ?? settings.voteOptions ?? 5;
         settingsVoteDuration.value = settings.vote_duration ?? settings.voteDuration ?? 30;
         settingsVoteLead.value = settings.vote_lead_time ?? settings.voteLeadTime ?? 20;
+        const autoVoteSetting = settings.vote_auto_enabled ?? settings.voteAutoEnabled ?? 1;
+        autoVoteToggle.checked = String(autoVoteSetting) !== "0";
         settingsTwitchWelcome.value = settings.twitch_welcome_message ?? settings.twitchWelcomeMessage ?? "";
         settingsTwitchVoteStart.value =
           settings.twitch_vote_start_message ?? settings.twitchVoteStartMessage ?? DEFAULT_TWITCH_MESSAGES.vote_start;
@@ -796,6 +805,14 @@
         fetchDownloads();
       });
 
+      autoVoteToggle.addEventListener("change", async () => {
+        await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ vote_auto_enabled: autoVoteToggle.checked ? 1 : 0 })
+        });
+      });
+
       settingsForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         settingsStatus.textContent = "Saving...";
@@ -806,6 +823,7 @@
             vote_options: Number(settingsVoteOptions.value || 5),
             vote_duration: Number(settingsVoteDuration.value || 30),
             vote_lead_time: Number(settingsVoteLead.value || 20),
+            vote_auto_enabled: autoVoteToggle.checked ? 1 : 0,
             twitch_welcome_message: settingsTwitchWelcome.value,
             twitch_vote_start_message: settingsTwitchVoteStart.value,
             twitch_vote_option_message: settingsTwitchVoteOption.value,

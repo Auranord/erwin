@@ -780,6 +780,16 @@ function getSettingValue(key, fallback) {
   return row.value;
 }
 
+function getSettingBoolean(key, fallback) {
+  const value = getSettingValue(key, undefined);
+  if (value === undefined) return fallback;
+  if (typeof value === "number") return value !== 0;
+  const normalized = String(value).trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  return Boolean(value);
+}
+
 function getSettingString(key, fallback) {
   const value = getSettingValue(key, undefined);
   if (value === undefined) return fallback;
@@ -1188,6 +1198,10 @@ function endVoteRound(round) {
 let lastVoteTrackId = null;
 
 function tickVoting() {
+  const autoEnabled = getSettingBoolean("vote_auto_enabled", true);
+  if (!autoEnabled) {
+    return;
+  }
   const active = getLatestOpenVoteRound();
   if (active) {
     if (new Date(active.endsAt).getTime() <= Date.now()) {
@@ -1907,9 +1921,6 @@ app.post("/api/votes/start", requireAuth, requireRole("admin", "mod"), (req, res
   const active = getLatestOpenVoteRound();
   if (active && new Date(active.endsAt).getTime() > Date.now()) {
     return res.status(409).json({ error: "Vote already active" });
-  }
-  if (getQueue().length > 0) {
-    return res.status(409).json({ error: "Queue is not empty" });
   }
   const { options } = getVotingSettings();
   if (getPoolTracks().length < options * 2) {
