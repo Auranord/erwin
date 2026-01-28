@@ -22,7 +22,10 @@
       <section class="tab-panel active" data-tab-panel="player">
         <div class="grid two">
           <div class="card">
-            <h2>Music Player Dashboard</h2>
+            <div class="card-header">
+              <h2>Music Player Dashboard</h2>
+              <button id="open-stream" class="secondary">Open Stream Player</button>
+            </div>
             <div class="section-title">Now Playing</div>
             <div id="now-playing" class="list-item">No track loaded yet.</div>
             <div class="section-title" style="margin-top: 16px;">Queue</div>
@@ -33,16 +36,13 @@
             <div id="pool" class="list">
               <div class="list-item">Pool is empty.</div>
             </div>
-            <div class="grid">
-              <button id="open-stream" class="secondary">Open Stream Player</button>
-              <button id="start-vote" class="secondary">Start Vote</button>
-            </div>
-            <p class="notice">Stream player view: <code>/player/stream</code></p>
           </div>
 
           <div class="card">
-            <h2>Voting</h2>
-            <p class="notice">Voting rounds are managed by the bot service. This panel mirrors active rounds.</p>
+            <div class="card-header">
+              <h2>Voting</h2>
+              <button id="start-vote" class="secondary">Start Vote</button>
+            </div>
             <div class="list">
               <div class="list-item">
                 <span>Vote status</span>
@@ -57,7 +57,6 @@
             <div id="vote-options" class="list">
               <div class="list-item">No active vote.</div>
             </div>
-            <p class="notice">Chat command: <code>!vote 1..5</code> near track end.</p>
           </div>
         </div>
       </section>
@@ -107,7 +106,6 @@
             <div class="track-editor-header">
               <div>
                 <h2>Track Editor</h2>
-                <p class="notice">Manage tracks, reorder them, and rename titles after downloads complete.</p>
               </div>
               <div class="track-editor-tools">
                 <label for="track-filter">Filter</label>
@@ -118,7 +116,6 @@
             <div id="tracks" class="list track-list">
               <div class="list-item">Select a playlist to view tracks.</div>
             </div>
-            <p class="notice">Editing playlists while playing keeps the current track and only affects upcoming queue entries.</p>
           </div>
         </div>
       </section>
@@ -142,7 +139,6 @@
         <div class="grid two">
           <div class="card">
             <h2>Settings</h2>
-            <p class="notice">Update the voting defaults to keep the bot in sync with dashboard changes.</p>
             <form id="settings-form" class="grid">
               <div>
                 <label for="settings-vote-options">Vote options</label>
@@ -156,6 +152,55 @@
                 <label for="settings-vote-lead">Vote lead time (seconds)</label>
                 <input id="settings-vote-lead" name="vote-lead" type="number" min="0" step="1" />
               </div>
+              <div class="section-title form-section-title">Twitch Chat Messages</div>
+              <p class="notice form-section-title">
+                Templates support {command}, {summary}, {number}, {title}, {channel}, {track},
+                {winner}, and {max}.
+              </p>
+              <div>
+                <label for="settings-twitch-welcome">Welcome message</label>
+                <textarea id="settings-twitch-welcome" name="twitch-welcome" rows="2"></textarea>
+              </div>
+              <div>
+                <label for="settings-twitch-vote-start">Vote start message</label>
+                <input id="settings-twitch-vote-start" name="twitch-vote-start" />
+              </div>
+              <div>
+                <label for="settings-twitch-vote-option">Vote option line</label>
+                <input id="settings-twitch-vote-option" name="twitch-vote-option" />
+              </div>
+              <div>
+                <label for="settings-twitch-vote-end">Vote end message</label>
+                <input id="settings-twitch-vote-end" name="twitch-vote-end" />
+              </div>
+              <div>
+                <label for="settings-twitch-now-playing">Now playing message</label>
+                <input id="settings-twitch-now-playing" name="twitch-now-playing" />
+              </div>
+              <div>
+                <label for="settings-twitch-no-active">No active vote message</label>
+                <input id="settings-twitch-no-active" name="twitch-no-active" />
+              </div>
+              <div>
+                <label for="settings-twitch-vote-closed">Vote closed message</label>
+                <input id="settings-twitch-vote-closed" name="twitch-vote-closed" />
+              </div>
+              <div>
+                <label for="settings-twitch-invalid-vote">Invalid vote message</label>
+                <input id="settings-twitch-invalid-vote" name="twitch-invalid-vote" />
+              </div>
+              <div>
+                <label for="settings-twitch-skip">Skip message</label>
+                <input id="settings-twitch-skip" name="twitch-skip" />
+              </div>
+              <div>
+                <label for="settings-twitch-pause">Pause message</label>
+                <input id="settings-twitch-pause" name="twitch-pause" />
+              </div>
+              <div>
+                <label for="settings-twitch-resume">Resume message</label>
+                <input id="settings-twitch-resume" name="twitch-resume" />
+              </div>
               <button type="submit">Save Settings</button>
             </form>
             <p id="settings-status" class="notice" aria-live="polite"></p>
@@ -166,7 +211,6 @@
 
     <footer class="footer">
       <span class="status-pill"><span></span> Connected</span>
-      <span style="margin-left: 12px;">Need audio in OBS? Use <code>/player/stream</code>.</span>
       <button id="logout" class="secondary" style="float: right;">Logout</button>
     </footer>
 
@@ -209,12 +253,35 @@
       const settingsVoteOptions = document.getElementById("settings-vote-options");
       const settingsVoteDuration = document.getElementById("settings-vote-duration");
       const settingsVoteLead = document.getElementById("settings-vote-lead");
+      const settingsTwitchWelcome = document.getElementById("settings-twitch-welcome");
+      const settingsTwitchVoteStart = document.getElementById("settings-twitch-vote-start");
+      const settingsTwitchVoteOption = document.getElementById("settings-twitch-vote-option");
+      const settingsTwitchVoteEnd = document.getElementById("settings-twitch-vote-end");
+      const settingsTwitchNowPlaying = document.getElementById("settings-twitch-now-playing");
+      const settingsTwitchNoActive = document.getElementById("settings-twitch-no-active");
+      const settingsTwitchVoteClosed = document.getElementById("settings-twitch-vote-closed");
+      const settingsTwitchInvalidVote = document.getElementById("settings-twitch-invalid-vote");
+      const settingsTwitchSkip = document.getElementById("settings-twitch-skip");
+      const settingsTwitchPause = document.getElementById("settings-twitch-pause");
+      const settingsTwitchResume = document.getElementById("settings-twitch-resume");
       let playlistsCache = [];
       let selectedPlaylistId = null;
       let renameTrackId = null;
       let activeVote = null;
       let voteTimer = null;
       const chatMessages = [];
+      const DEFAULT_TWITCH_MESSAGES = {
+        vote_start: "Vote time! Choose the next track with {command}vote <number>.",
+        vote_option: "{number}. {title}{channel}",
+        vote_end: "Vote ended! Winner: {winner}",
+        now_playing: "Now playing: {track}",
+        no_active: "No active vote right now.",
+        vote_closed: "Voting is closed.",
+        invalid_vote: "Invalid vote. Choose 1-{max}.",
+        skip: "Skipped to the next track.",
+        pause: "Playback paused.",
+        resume: "Playback resumed."
+      };
 
       document.querySelectorAll(".tab-link").forEach((link) => {
         link.addEventListener("click", (event) => {
@@ -485,6 +552,27 @@
         settingsVoteOptions.value = settings.vote_options ?? settings.voteOptions ?? 5;
         settingsVoteDuration.value = settings.vote_duration ?? settings.voteDuration ?? 30;
         settingsVoteLead.value = settings.vote_lead_time ?? settings.voteLeadTime ?? 20;
+        settingsTwitchWelcome.value = settings.twitch_welcome_message ?? settings.twitchWelcomeMessage ?? "";
+        settingsTwitchVoteStart.value =
+          settings.twitch_vote_start_message ?? settings.twitchVoteStartMessage ?? DEFAULT_TWITCH_MESSAGES.vote_start;
+        settingsTwitchVoteOption.value =
+          settings.twitch_vote_option_message ?? settings.twitchVoteOptionMessage ?? DEFAULT_TWITCH_MESSAGES.vote_option;
+        settingsTwitchVoteEnd.value =
+          settings.twitch_vote_end_message ?? settings.twitchVoteEndMessage ?? DEFAULT_TWITCH_MESSAGES.vote_end;
+        settingsTwitchNowPlaying.value =
+          settings.twitch_now_playing_message ?? settings.twitchNowPlayingMessage ?? DEFAULT_TWITCH_MESSAGES.now_playing;
+        settingsTwitchNoActive.value =
+          settings.twitch_no_active_vote_message ?? settings.twitchNoActiveVoteMessage ?? DEFAULT_TWITCH_MESSAGES.no_active;
+        settingsTwitchVoteClosed.value =
+          settings.twitch_vote_closed_message ?? settings.twitchVoteClosedMessage ?? DEFAULT_TWITCH_MESSAGES.vote_closed;
+        settingsTwitchInvalidVote.value =
+          settings.twitch_invalid_vote_message ?? settings.twitchInvalidVoteMessage ?? DEFAULT_TWITCH_MESSAGES.invalid_vote;
+        settingsTwitchSkip.value =
+          settings.twitch_skip_message ?? settings.twitchSkipMessage ?? DEFAULT_TWITCH_MESSAGES.skip;
+        settingsTwitchPause.value =
+          settings.twitch_pause_message ?? settings.twitchPauseMessage ?? DEFAULT_TWITCH_MESSAGES.pause;
+        settingsTwitchResume.value =
+          settings.twitch_resume_message ?? settings.twitchResumeMessage ?? DEFAULT_TWITCH_MESSAGES.resume;
       }
 
       async function fetchActiveVote() {
@@ -717,7 +805,18 @@
           body: JSON.stringify({
             vote_options: Number(settingsVoteOptions.value || 5),
             vote_duration: Number(settingsVoteDuration.value || 30),
-            vote_lead_time: Number(settingsVoteLead.value || 20)
+            vote_lead_time: Number(settingsVoteLead.value || 20),
+            twitch_welcome_message: settingsTwitchWelcome.value,
+            twitch_vote_start_message: settingsTwitchVoteStart.value,
+            twitch_vote_option_message: settingsTwitchVoteOption.value,
+            twitch_vote_end_message: settingsTwitchVoteEnd.value,
+            twitch_now_playing_message: settingsTwitchNowPlaying.value,
+            twitch_no_active_vote_message: settingsTwitchNoActive.value,
+            twitch_vote_closed_message: settingsTwitchVoteClosed.value,
+            twitch_invalid_vote_message: settingsTwitchInvalidVote.value,
+            twitch_skip_message: settingsTwitchSkip.value,
+            twitch_pause_message: settingsTwitchPause.value,
+            twitch_resume_message: settingsTwitchResume.value
           })
         });
         settingsStatus.textContent = "Settings saved.";

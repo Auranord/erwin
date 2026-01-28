@@ -45,6 +45,27 @@ main {
   margin-top: 0;
 }
 
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.card-header h2 {
+  margin: 0;
+}
+
+.card-header button {
+  width: auto;
+}
+
+.form-section-title {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+}
+
 .player-panel {
   display: grid;
   gap: 12px;
