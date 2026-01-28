@@ -68,7 +68,7 @@
       </section>
 
       <section class="tab-panel" data-tab-panel="playlists">
-        <div class="grid two">
+        <div class="grid two playlist-grid">
           <div class="card">
             <h2>Playlist Editor</h2>
             <div class="section-title">Create Playlist</div>
@@ -108,7 +108,7 @@
             </div>
           </div>
 
-          <div class="card">
+          <div class="card track-editor-card">
             <div class="track-editor-header">
               <div>
                 <h2>Track Editor</h2>
@@ -338,13 +338,14 @@
             const inPool = poolTrackIds.has(track.id);
             const poolDisabled = inPool ? "disabled" : "";
             const poolLabel = inPool ? "In pool" : "Add to pool";
+            const poolIcon = inPool ? "✅" : "➕";
             return `<div class="list-item ${disabled ? "disabled" : ""}" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
                   <div style="display: flex; gap: 8px; align-items: center;">${label} ${disabledLabel}</div>
                 </div>
                 <div class="actions">
-                  <button class="secondary" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">Queue end</button>
-                  <button class="secondary" data-action="pool-add" ${poolDisabled} title="${poolLabel}" aria-label="${poolLabel}">${poolLabel}</button>
+                  <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">⏭️</button>
+                  <button class="secondary icon-only" data-action="pool-add" ${poolDisabled} title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
                   <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">✏️</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${toggleIcon}</button>
                   <button class="secondary icon-only" data-action="up" ${trackIndex === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">⬆️</button>
