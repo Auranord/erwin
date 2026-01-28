@@ -722,6 +722,23 @@ function insertPoolEntries(trackIds) {
   });
 }
 
+function addToPool(trackId) {
+  const existing = db
+    .prepare("SELECT id FROM play_pool WHERE track_id = ? LIMIT 1")
+    .get(trackId);
+  if (existing) {
+    return { added: false };
+  }
+  const now = new Date().toISOString();
+  db.prepare("INSERT INTO play_pool (id, track_id, created_at) VALUES (?, ?, ?)").run(
+    nanoid(),
+    trackId,
+    now
+  );
+  broadcast("POOL_UPDATE", { action: "added", trackId });
+  return { added: true };
+}
+
 function getQueueNextPosition() {
   return (
     db.prepare("SELECT MAX(position) as maxPosition FROM queue").get().maxPosition || 0
@@ -1593,6 +1610,19 @@ app.post("/api/pool/enqueue", requireAuth, requireRole("admin", "mod"), (req, re
   res.json(entry);
 });
 
+app.post("/api/pool/add", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const result = addToPool(trackId);
+  res.json(result);
+});
+
 app.get("/api/playlists", requireAuth, (req, res) => {
   const playlists = db.prepare("SELECT * FROM playlists ORDER BY created_at DESC").all();
   const playlistTracks = db
@@ -1887,6 +1917,7 @@ app.put("/api/settings", requireAuth, requireRole("admin"), (req, res) => {
     }
   });
   transaction(settings);
+  broadcast("SETTINGS_UPDATE", { keys: Object.keys(settings) });
   res.json({ ok: true });
 });
 

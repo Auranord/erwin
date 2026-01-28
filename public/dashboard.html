@@ -276,6 +276,7 @@
       let renameTrackId = null;
       let activeVote = null;
       let voteTimer = null;
+      let poolTrackIds = new Set();
       const chatMessages = [];
       const DEFAULT_TWITCH_MESSAGES = {
         vote_start: "Vote time! Choose the next track with {command}vote <number>.",
@@ -334,12 +335,16 @@
             const disabledLabel = disabled ? '<span class="badge">Disabled</span>' : "";
             const toggleLabel = disabled ? "Enable track" : "Disable track";
             const toggleIcon = disabled ? "✅" : "🚫";
+            const inPool = poolTrackIds.has(track.id);
+            const poolDisabled = inPool ? "disabled" : "";
+            const poolLabel = inPool ? "In pool" : "Add to pool";
             return `<div class="list-item ${disabled ? "disabled" : ""}" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
                   <div style="display: flex; gap: 8px; align-items: center;">${label} ${disabledLabel}</div>
                 </div>
                 <div class="actions">
-                  <button class="secondary icon-only" data-action="enqueue" title="Enqueue track" aria-label="Enqueue track">➕</button>
+                  <button class="secondary" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">Queue end</button>
+                  <button class="secondary" data-action="pool-add" ${poolDisabled} title="${poolLabel}" aria-label="${poolLabel}">${poolLabel}</button>
                   <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">✏️</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${toggleIcon}</button>
                   <button class="secondary icon-only" data-action="up" ${trackIndex === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">⬆️</button>
@@ -489,8 +494,10 @@
         const response = await fetch("/api/pool");
         if (!response.ok) return;
         const pool = await response.json();
+        poolTrackIds = new Set(pool.map((item) => item.track_id));
         if (!pool.length) {
           poolEl.innerHTML = '<div class="list-item">Pool is empty.</div>';
+          renderTracks();
           return;
         }
         poolEl.innerHTML = pool
@@ -504,6 +511,7 @@
               </div>`
           )
           .join("");
+        renderTracks();
       }
 
       async function fetchPlaylists() {
@@ -666,6 +674,13 @@
         }
         if (action === "remove") {
           await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}`, { method: "DELETE" });
+        }
+        if (action === "pool-add") {
+          await fetch("/api/pool/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trackId })
+          });
         }
         if (action === "rename") {
           renameTrackId = trackId;
@@ -861,6 +876,10 @@
         }
         if (message.event === "POOL_UPDATE") {
           fetchPool();
+          return;
+        }
+        if (message.event === "SETTINGS_UPDATE") {
+          fetchSettings();
           return;
         }
         if (message.event === "VOTE_START") {
