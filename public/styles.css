@@ -45,6 +45,47 @@ main {
   margin-top: 0;
 }
 
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.card-header h2 {
+  margin: 0;
+}
+
+.card-header button {
+  width: auto;
+}
+
+.card-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #cbd5f5;
+  white-space: nowrap;
+}
+
+.card-toggle input {
+  width: auto;
+  margin: 0;
+}
+
+.form-section-title {
+  grid-column: 1 / -1;
+  margin-top: 8px;
+}
+
 .player-panel {
   display: grid;
   gap: 12px;
