@@ -1137,6 +1137,10 @@ function tickVoting() {
   if (lastVoteTrackId === playState.current_track_id) {
     return;
   }
+  const { options } = getVotingSettings();
+  if (getPoolTracks().length < options * 2) {
+    return;
+  }
   const currentTrack = getCurrentTrack(playState);
   if (!currentTrack?.duration_sec || !playState.started_at_ms) {
     return;
@@ -1794,6 +1798,30 @@ app.get("/api/votes/active", requireAuth, (req, res) => {
       options: round.options,
       counts
     }
+  });
+});
+
+app.post("/api/votes/start", requireAuth, requireRole("admin", "mod"), (req, res) => {
+  const active = getLatestOpenVoteRound();
+  if (active && new Date(active.endsAt).getTime() > Date.now()) {
+    return res.status(409).json({ error: "Vote already active" });
+  }
+  if (getQueue().length > 0) {
+    return res.status(409).json({ error: "Queue is not empty" });
+  }
+  const { options } = getVotingSettings();
+  if (getPoolTracks().length < options * 2) {
+    return res.status(409).json({ error: "Not enough tracks in pool" });
+  }
+  const round = startVoteRound();
+  if (!round) {
+    return res.status(500).json({ error: "Unable to start vote" });
+  }
+  res.json({
+    roundId: round.id,
+    startedAt: round.startedAt,
+    endsAt: round.endsAt,
+    options: round.options
   });
 });
 

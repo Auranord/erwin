@@ -29,12 +29,13 @@
             <div id="queue" class="list">
               <div class="list-item">Queue is empty.</div>
             </div>
-            <div class="section-title" style="margin-top: 16px;">Candidate Pool</div>
+            <div class="section-title" style="margin-top: 16px;">Pool</div>
             <div id="pool" class="list">
               <div class="list-item">Pool is empty.</div>
             </div>
             <div class="grid">
               <button id="open-stream" class="secondary">Open Stream Player</button>
+              <button id="start-vote" class="secondary">Start Vote</button>
             </div>
             <p class="notice">Stream player view: <code>/player/stream</code></p>
           </div>
@@ -201,6 +202,7 @@
       const voteStatus = document.getElementById("vote-status");
       const voteWindow = document.getElementById("vote-window");
       const voteOptionsEl = document.getElementById("vote-options");
+      const startVoteButton = document.getElementById("start-vote");
       const chatFeed = document.getElementById("chat-feed");
       const settingsForm = document.getElementById("settings-form");
       const settingsStatus = document.getElementById("settings-status");
@@ -654,6 +656,11 @@
 
       document.getElementById("open-stream").addEventListener("click", () => {
         window.open("/player/stream", "erwin-stream", "width=1100,height=720");
+      });
+
+      startVoteButton.addEventListener("click", async () => {
+        await fetch("/api/votes/start", { method: "POST" });
+        fetchActiveVote();
       });
 
       playlistForm.addEventListener("submit", async (event) => {
