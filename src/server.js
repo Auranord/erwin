@@ -905,8 +905,15 @@ function skipQueue() {
     ).run(next.track_id, Date.now(), new Date().toISOString());
   } else {
     const poolTracks = getPoolTracks();
-    if (poolTracks.length > 0) {
-      const nextTrack = pickRandom(poolTracks);
+    const activeVote = getLatestOpenVoteRound();
+    const excludedVoteTrackIds = new Set(
+      activeVote?.options?.map((option) => option.trackId) || []
+    );
+    const eligiblePool = poolTracks.filter(
+      (track) => !excludedVoteTrackIds.has(track.track_id)
+    );
+    if (eligiblePool.length > 0) {
+      const nextTrack = pickRandom(eligiblePool);
       if (nextTrack) {
         removeFromPool(nextTrack.track_id);
         db.prepare(
@@ -1114,6 +1121,9 @@ function tickVoting() {
     if (new Date(active.endsAt).getTime() <= Date.now()) {
       endVoteRound(active);
     }
+    return;
+  }
+  if (getQueue().length > 0) {
     return;
   }
   const playState = getPlayState();
