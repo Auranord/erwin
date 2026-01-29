@@ -86,6 +86,11 @@ If you see errors about a missing JavaScript runtime or `ffprobe`/`ffmpeg`, ensu
 - `ERWIN_YTDL_JS_RUNTIME=node:/path/to/node`
 - `ERWIN_YTDL_FFMPEG_LOCATION=/path/to/ffmpeg`
 
+Recent YouTube downloads may require yt-dlp's remote component solver. Erwin enables it by default. You can override with:
+
+- `ERWIN_YTDL_REMOTE_COMPONENTS=ejs:github` (default)
+- Set `ERWIN_YTDL_REMOTE_COMPONENTS=` to disable remote components.
+
 ## License
 
 TBD.
