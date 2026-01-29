@@ -28,6 +28,7 @@ const LOG_FILE = path.join(LOG_DIR, "erwin.log");
 const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtube.cookie";
 const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 const YTDL_JS_RUNTIME = process.env.ERWIN_YTDL_JS_RUNTIME || `node:${process.execPath}`;
+const YTDL_REMOTE_COMPONENTS = process.env.ERWIN_YTDL_REMOTE_COMPONENTS ?? "ejs:github";
 const YTDL_FFMPEG_LOCATION = process.env.ERWIN_YTDL_FFMPEG_LOCATION || "";
 const TWITCH_BOT_USERNAME = process.env.TWITCH_BOT_USERNAME || "";
 const TWITCH_OAUTH_TOKEN = process.env.TWITCH_OAUTH_TOKEN || "";
@@ -103,12 +104,15 @@ function broadcast(event, payload) {
 function runYtDlp(args) {
   return new Promise((resolve, reject) => {
     const runtimeArgs = ["--js-runtimes", YTDL_JS_RUNTIME];
+    const remoteComponentsArgs = YTDL_REMOTE_COMPONENTS
+      ? ["--remote-components", YTDL_REMOTE_COMPONENTS]
+      : [];
     const ffmpegArgs = YTDL_FFMPEG_LOCATION
       ? ["--ffmpeg-location", YTDL_FFMPEG_LOCATION]
       : [];
     execFile(
       "yt-dlp",
-      [...runtimeArgs, ...ffmpegArgs, ...args],
+      [...runtimeArgs, ...remoteComponentsArgs, ...ffmpegArgs, ...args],
       { maxBuffer: 1024 * 1024 * 10 },
       (error, stdout, stderr) => {
         if (error) {
