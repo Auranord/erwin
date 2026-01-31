@@ -341,9 +341,11 @@ function initDb() {
   `);
 
   const existing = db.prepare("SELECT COUNT(*) as count FROM users").get();
+  const envUsername = process.env.ERWIN_ADMIN_USER;
+  const envPassword = process.env.ERWIN_ADMIN_PASSWORD;
+  const username = envUsername || "admin";
+  const password = envPassword || "admin123";
   if (existing.count === 0) {
-    const username = process.env.ERWIN_ADMIN_USER || "admin";
-    const password = process.env.ERWIN_ADMIN_PASSWORD || "admin123";
     const password_hash = bcrypt.hashSync(password, 10);
     db.prepare(
       "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)"
@@ -352,6 +354,26 @@ function initDb() {
       `Seeded admin user: ${username}. Set ERWIN_ADMIN_USER/ERWIN_ADMIN_PASSWORD to change.`
     );
     log("info", "seeded admin user", { username });
+  } else if (envUsername || envPassword) {
+    const existingAdmin = db
+      .prepare("SELECT id, username FROM users WHERE username = ?")
+      .get(username);
+    if (existingAdmin) {
+      if (envPassword) {
+        const password_hash = bcrypt.hashSync(password, 10);
+        db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(
+          password_hash,
+          existingAdmin.id
+        );
+        log("info", "updated admin password from env", { username: existingAdmin.username });
+      }
+    } else {
+      const password_hash = bcrypt.hashSync(password, 10);
+      db.prepare(
+        "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)"
+      ).run(nanoid(), username, password_hash, "admin", new Date().toISOString());
+      log("info", "created admin user from env", { username });
+    }
   }
 
   const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
