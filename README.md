@@ -61,6 +61,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Docker Compose reads `.env` for variable substitution in `docker-compose.yml`.
+
 ### Docker watch (optional)
 
 Use Compose file watch to sync changes without opening another terminal:

@@ -47,6 +47,39 @@ Map the `.env.example` values into TrueNAS App settings:
 
 Store sensitive values in the TrueNAS secrets UI so they are not in plain text.
 
+### Docker Compose example (TrueNAS-friendly)
+
+If you deploy via Docker Compose, keep settings inline and drive them via `.env`
+substitution:
+
+```yaml
+services:
+  erwin:
+    image: ghcr.io/auranord/erwin:main
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      TZ: ${TZ:-UTC}
+      ERWIN_BASE_URL: ${ERWIN_BASE_URL:-https://erwin.yourdomain.tld}
+      DB_URL: ${DB_URL:-/app/data/erwin.sqlite}
+      SESSION_SECRET: ${SESSION_SECRET:-CHANGE_ME_LONG_RANDOM}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TWITCH_BOT_USERNAME: ${TWITCH_BOT_USERNAME:-your_bot}
+      TWITCH_OAUTH_TOKEN: ${TWITCH_OAUTH_TOKEN:-oauth:token}
+      TWITCH_CHANNEL: ${TWITCH_CHANNEL:-channel}
+      TWITCH_IRC_HOST: ${TWITCH_IRC_HOST:-raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com}
+      ERWIN_ADMIN_USER: ${ERWIN_ADMIN_USER:-admin}
+      ERWIN_ADMIN_PASSWORD: ${ERWIN_ADMIN_PASSWORD:-CHANGE_ME}
+      ERWIN_YTDL_COOKIE_FILE: ${ERWIN_YTDL_COOKIE_FILE:-/app/data/youtube.cookie}
+      ERWIN_DOWNLOAD_CONCURRENCY: ${ERWIN_DOWNLOAD_CONCURRENCY:-1}
+      ERWIN_AUDIO_RETENTION_DAYS: ${ERWIN_AUDIO_RETENTION_DAYS:-7}
+      ERWIN_AUDIO_RETENTION_MAX_GB: ${ERWIN_AUDIO_RETENTION_MAX_GB:-5}
+    volumes:
+      - /mnt/<POOL>/apps/erwin/data:/app/data
+```
+
 ## Operational readiness features
 
 ### Logs
