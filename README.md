@@ -15,6 +15,9 @@ See the detailed product framing and acceptance criteria in [docs/mvp-spec.md](d
 
 For a wide architecture overview and a delivery plan, see [docs/architecture-plan.md](docs/architecture-plan.md).
 
+For deployment guidance on TrueNAS SCALE, including update workflows, see
+[docs/deployment-truenas.md](docs/deployment-truenas.md).
+
 ## Architecture (planned)
 
 - **Backend**: Orchestrator + Twitch bot (IRC), REST + WebSocket APIs.
@@ -58,6 +61,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Docker Compose reads `.env` for variable substitution in `docker-compose.yml`.
+
 ### Docker watch (optional)
 
 Use Compose file watch to sync changes without opening another terminal:
@@ -69,7 +74,7 @@ docker compose watch
 ## Logs
 
 - Docker: `docker compose logs -f erwin`
-- Local file: `./data/logs/erwin.log`
+- Set `LOG_LEVEL=debug` for verbose output.
 
 ## YouTube download troubleshooting
 
