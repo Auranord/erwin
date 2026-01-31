@@ -23,8 +23,7 @@ const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || "erwin-dev-secret";
 const DB_URL = process.env.DB_URL || "./data/erwin.sqlite";
 const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
-const LOG_DIR = process.env.ERWIN_LOG_DIR || "./data/logs";
-const LOG_FILE = path.join(LOG_DIR, "erwin.log");
+const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtube.cookie";
 const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 const YTDL_JS_RUNTIME = process.env.ERWIN_YTDL_JS_RUNTIME || `node:${process.execPath}`;
@@ -37,15 +36,30 @@ const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
 const TWITCH_IRC_HOST =
   process.env.TWITCH_IRC_HOST ||
   "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com";
+const DOWNLOAD_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.ERWIN_DOWNLOAD_CONCURRENCY || 1)
+);
+const AUDIO_RETENTION_DAYS = Number(process.env.ERWIN_AUDIO_RETENTION_DAYS || 0);
+const AUDIO_RETENTION_MAX_GB = Number(process.env.ERWIN_AUDIO_RETENTION_MAX_GB || 0);
 
 const app = express();
 const db = new Database(DB_URL);
 
-function ensureLogs() {
-  fs.mkdirSync(LOG_DIR, { recursive: true });
-}
+const LOG_LEVELS = {
+  error: 0,
+  warn: 1,
+  info: 2,
+  debug: 3
+};
+const LOG_LEVEL_THRESHOLD =
+  LOG_LEVELS[LOG_LEVEL?.toLowerCase?.()] ?? LOG_LEVELS.info;
 
 function log(level, message, meta = {}) {
+  const numericLevel = LOG_LEVELS[level] ?? LOG_LEVELS.info;
+  if (numericLevel > LOG_LEVEL_THRESHOLD) {
+    return;
+  }
   const entry = {
     time: new Date().toISOString(),
     level,
@@ -58,7 +72,6 @@ function log(level, message, meta = {}) {
   } else {
     console.log(line);
   }
-  fs.appendFile(LOG_FILE, `${line}\n`, () => {});
 }
 
 app.use(cookieParser());
@@ -77,9 +90,13 @@ app.use(
 );
 
 app.use((req, res, next) => {
+  const requestId = req.headers["x-request-id"] || nanoid();
+  req.requestId = requestId;
+  res.setHeader("x-request-id", requestId);
   const start = Date.now();
   res.on("finish", () => {
     log("info", "request", {
+      requestId,
       method: req.method,
       path: req.originalUrl,
       status: res.statusCode,
@@ -224,7 +241,6 @@ async function buildYtDlpCookieArgs() {
 }
 
 function initDb() {
-  ensureLogs();
   fs.mkdirSync(AUDIO_DIR, { recursive: true });
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -468,15 +484,15 @@ async function downloadTrackAudio(track) {
   }
 }
 
-async function downloadWorker() {
+async function claimNextDownload() {
   const pending = db
     .prepare(
       "SELECT download_queue.id as queue_id, download_queue.playlist_id, download_queue.track_id, download_queue.attempts, download_queue.retry_after, tracks.youtube_id FROM download_queue JOIN tracks ON tracks.id = download_queue.track_id WHERE download_queue.status IN ('pending', 'failed') ORDER BY download_queue.created_at ASC LIMIT 1"
     )
     .get();
-  if (!pending) return;
+  if (!pending) return null;
   if (pending.retry_after && new Date(pending.retry_after) > new Date()) {
-    return;
+    return null;
   }
   db.prepare(
     "UPDATE download_queue SET status = 'downloading', error = NULL, attempts = attempts + 1, updated_at = ? WHERE id = ?"
@@ -484,7 +500,11 @@ async function downloadWorker() {
   db.prepare("UPDATE tracks SET download_status = 'downloading', download_error = NULL WHERE id = ?").run(
     pending.track_id
   );
-  console.log(`Downloading audio for track ${pending.track_id}...`);
+  return pending;
+}
+
+async function processDownload(pending) {
+  log("info", "download start", { trackId: pending.track_id });
   try {
     await downloadTrackAudio({ id: pending.track_id, youtube_id: pending.youtube_id });
     const entries = db
@@ -502,14 +522,17 @@ async function downloadWorker() {
       });
     });
     transaction();
-    console.log(`Download ready for track ${pending.track_id}.`);
+    log("info", "download ready", { trackId: pending.track_id });
     broadcast("DOWNLOAD_UPDATE", {
       trackId: pending.track_id,
       playlistId: pending.playlist_id,
       status: "ready"
     });
   } catch (error) {
-    console.error(`Download failed for track ${pending.track_id}:`, error);
+    log("error", "download failed", {
+      trackId: pending.track_id,
+      error: String(error?.message || error)
+    });
     const statusCode = error?.statusCode || error?.status;
     const isBlocked = statusCode === 403 || String(error?.message || "").includes("403");
     const backoffMinutes = Math.min(30, 2 ** Math.min(5, (pending.attempts || 0) + 1));
@@ -553,11 +576,33 @@ async function downloadWorker() {
   }
 }
 
-setInterval(() => {
-  downloadWorker();
+const activeDownloads = new Set();
+
+async function scheduleDownloads() {
+  while (activeDownloads.size < DOWNLOAD_CONCURRENCY) {
+    const pending = await claimNextDownload();
+    if (!pending) {
+      break;
+    }
+    activeDownloads.add(pending.queue_id);
+    processDownload(pending)
+      .catch((error) => {
+        log("error", "download worker error", {
+          queueId: pending.queue_id,
+          error: String(error?.message || error)
+        });
+      })
+      .finally(() => {
+        activeDownloads.delete(pending.queue_id);
+      });
+  }
+}
+
+const downloadInterval = setInterval(() => {
+  scheduleDownloads();
 }, 5000);
 
-setInterval(() => {
+const voteInterval = setInterval(() => {
   tickVoting();
 }, 1000);
 
@@ -1422,6 +1467,40 @@ function connectTwitchBot() {
   });
 }
 
+function checkDbReady() {
+  try {
+    db.prepare("SELECT 1").get();
+    return true;
+  } catch (error) {
+    log("error", "database readiness check failed", {
+      error: String(error?.message || error)
+    });
+    return false;
+  }
+}
+
+function checkTwitchReady() {
+  if (!TWITCH_BOT_USERNAME || !TWITCH_OAUTH_TOKEN || !TWITCH_CHANNEL) {
+    return true;
+  }
+  return twitchConnected;
+}
+
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+app.get("/ready", (req, res) => {
+  const dbReady = checkDbReady();
+  const twitchReady = checkTwitchReady();
+  const ready = dbReady && twitchReady;
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "ready" : "not_ready",
+    db: dbReady,
+    twitch: twitchReady
+  });
+});
+
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
@@ -1996,7 +2075,7 @@ app.get("/", (req, res) => {
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`Erwin server listening on port ${PORT}`);
+  log("info", "server listening", { port: PORT });
 });
 
 server.on("upgrade", (request, socket, head) => {
@@ -2014,3 +2093,135 @@ wss.on("connection", (ws) => {
 });
 
 connectTwitchBot();
+
+function cleanupAudioCache() {
+  if (!Number.isFinite(AUDIO_RETENTION_DAYS) || AUDIO_RETENTION_DAYS <= 0) {
+    return;
+  }
+  const cutoff = new Date(Date.now() - AUDIO_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  const candidates = db
+    .prepare(
+      "SELECT id, audio_path, downloaded_at FROM tracks WHERE audio_path IS NOT NULL AND downloaded_at IS NOT NULL"
+    )
+    .all();
+  const toRemove = candidates.filter((track) => {
+    const downloadedAt = new Date(track.downloaded_at);
+    return Number.isFinite(downloadedAt.getTime()) && downloadedAt < cutoff;
+  });
+  if (toRemove.length === 0) {
+    return;
+  }
+  const now = new Date().toISOString();
+  toRemove.forEach((track) => {
+    try {
+      if (track.audio_path && fs.existsSync(track.audio_path)) {
+        fs.unlinkSync(track.audio_path);
+      }
+    } catch (error) {
+      log("warn", "audio retention cleanup failed", {
+        trackId: track.id,
+        error: String(error?.message || error)
+      });
+      return;
+    }
+    db.prepare(
+      "UPDATE tracks SET audio_path = NULL, download_status = 'pending', download_error = NULL, downloaded_at = NULL WHERE id = ?"
+    ).run(track.id);
+    log("info", "audio retention removed", { trackId: track.id });
+  });
+  log("info", "audio retention completed", { removed: toRemove.length, now });
+}
+
+function cleanupAudioCacheBySize() {
+  if (!Number.isFinite(AUDIO_RETENTION_MAX_GB) || AUDIO_RETENTION_MAX_GB <= 0) {
+    return;
+  }
+  const maxBytes = AUDIO_RETENTION_MAX_GB * 1024 * 1024 * 1024;
+  let entries = [];
+  try {
+    entries = fs
+      .readdirSync(AUDIO_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => {
+        const filePath = path.join(AUDIO_DIR, entry.name);
+        const stat = fs.statSync(filePath);
+        return { path: filePath, size: stat.size, mtime: stat.mtimeMs };
+      })
+      .sort((a, b) => a.mtime - b.mtime);
+  } catch (error) {
+    log("warn", "audio retention size scan failed", {
+      error: String(error?.message || error)
+    });
+    return;
+  }
+  const totalBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+  if (totalBytes <= maxBytes) {
+    return;
+  }
+  let bytesToFree = totalBytes - maxBytes;
+  const removed = [];
+  for (const entry of entries) {
+    if (bytesToFree <= 0) break;
+    try {
+      fs.unlinkSync(entry.path);
+      bytesToFree -= entry.size;
+      removed.push(entry.path);
+    } catch (error) {
+      log("warn", "audio retention size cleanup failed", {
+        path: entry.path,
+        error: String(error?.message || error)
+      });
+    }
+  }
+  if (removed.length > 0) {
+    removed.forEach((filePath) => {
+      db.prepare(
+        "UPDATE tracks SET audio_path = NULL, download_status = 'pending', download_error = NULL, downloaded_at = NULL WHERE audio_path = ?"
+      ).run(filePath);
+    });
+    log("info", "audio retention size cleanup", {
+      removed: removed.length,
+      freedBytes: totalBytes - maxBytes - Math.max(0, bytesToFree)
+    });
+  }
+}
+
+const retentionInterval = setInterval(() => {
+  cleanupAudioCache();
+  cleanupAudioCacheBySize();
+}, 60 * 60 * 1000);
+
+function shutdown(signal) {
+  log("info", "shutdown start", { signal });
+  clearInterval(downloadInterval);
+  clearInterval(voteInterval);
+  clearInterval(retentionInterval);
+  if (twitchSocket) {
+    try {
+      twitchSocket.write("QUIT\r\n");
+      twitchSocket.end();
+    } catch (error) {
+      log("warn", "twitch bot shutdown error", {
+        error: String(error?.message || error)
+      });
+    }
+  }
+  server.close(() => {
+    log("info", "http server closed");
+  });
+  wss.close(() => {
+    log("info", "websocket server closed");
+  });
+  try {
+    db.close();
+  } catch (error) {
+    log("warn", "database close error", { error: String(error?.message || error) });
+  }
+  setTimeout(() => {
+    log("info", "shutdown complete");
+    process.exit(0);
+  }, 5000).unref();
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
