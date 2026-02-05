@@ -44,6 +44,9 @@ Map the `.env.example` values into TrueNAS App settings:
 | `ERWIN_ADMIN_PASSWORD` | Seed admin password |
 | `ERWIN_YTDL_COOKIE_FILE` | `/app/data/youtube.cookie` |
 | `ERWIN_YTDL_COOKIE` | Optional cookie header |
+| `ERWIN_YTDL_JS_RUNTIME` | Optional override (example: `node:/usr/bin/node`) |
+| `ERWIN_YTDL_REMOTE_COMPONENTS` | Optional override (example: `ejs:github`) |
+| `ERWIN_YTDL_FFMPEG_LOCATION` | Optional override (example: `/usr/bin/ffmpeg`) |
 
 Store sensitive values in the TrueNAS secrets UI so they are not in plain text.
 
@@ -73,12 +76,45 @@ services:
       ERWIN_ADMIN_USER: ${ERWIN_ADMIN_USER:-admin}
       ERWIN_ADMIN_PASSWORD: ${ERWIN_ADMIN_PASSWORD:-CHANGE_ME}
       ERWIN_YTDL_COOKIE_FILE: ${ERWIN_YTDL_COOKIE_FILE:-/app/data/youtube.cookie}
+      ERWIN_YTDL_JS_RUNTIME: ${ERWIN_YTDL_JS_RUNTIME:-node:/usr/bin/node}
+      ERWIN_YTDL_REMOTE_COMPONENTS: ${ERWIN_YTDL_REMOTE_COMPONENTS:-ejs:github}
+      ERWIN_YTDL_FFMPEG_LOCATION: ${ERWIN_YTDL_FFMPEG_LOCATION:-/usr/bin/ffmpeg}
       ERWIN_DOWNLOAD_CONCURRENCY: ${ERWIN_DOWNLOAD_CONCURRENCY:-1}
       ERWIN_AUDIO_RETENTION_DAYS: ${ERWIN_AUDIO_RETENTION_DAYS:-7}
       ERWIN_AUDIO_RETENTION_MAX_GB: ${ERWIN_AUDIO_RETENTION_MAX_GB:-5}
     volumes:
       - /mnt/<POOL>/apps/erwin/data:/app/data
 ```
+
+### yt-dlp challenge/solver errors on TrueNAS
+
+If downloads fail with messages like `Error solving challenge requests`,
+`Signature solving failed`, or `Only images are available`, update your app
+environment in the TrueNAS YAML/Compose file:
+
+1. Make sure the container has a recent `yt-dlp` build (upgrade the app image
+   tag and redeploy).
+2. Ensure Node is available in the container and set the runtime explicitly:
+   `ERWIN_YTDL_JS_RUNTIME=node:/usr/bin/node`.
+3. Keep remote components enabled: `ERWIN_YTDL_REMOTE_COMPONENTS=ejs:github`.
+4. Clear the cache by running in the container shell: `yt-dlp --rm-cache-dir`.
+
+After changing the YAML, redeploy the app so the new environment variables take
+effect.
+
+### Keeping yt-dlp fresh without manual redeploys
+
+The root cause of these errors is usually a YouTube change that requires a
+newer yt-dlp build or solver component. The most reliable “automatic” approach
+on TrueNAS is to keep the app image updated:
+
+- Enable TrueNAS app auto-updates (or schedule updates) so the container is
+  recreated with the latest image on your maintenance window.
+- If you manage the container yourself, use an image update tool (for example,
+  Watchtower) to pull and restart on a cadence.
+
+You can run `yt-dlp -U` inside a running container for a temporary fix, but the
+binary update will be lost on the next restart because it lives in the image.
 
 ## Operational readiness features
 
