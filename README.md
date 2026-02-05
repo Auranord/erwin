@@ -96,6 +96,13 @@ Recent YouTube downloads may require yt-dlp's remote component solver. Erwin ena
 - `ERWIN_YTDL_REMOTE_COMPONENTS=ejs:github` (default)
 - Set `ERWIN_YTDL_REMOTE_COMPONENTS=` to disable remote components.
 
+If you see errors like `Error solving challenge requests`, `Signature solving failed`, or `Only images are available`, try the following:
+
+1. Update to the latest `yt-dlp` release (Docker users should rebuild the image).
+2. Ensure `node` is available (Node 18+ recommended), or set `ERWIN_YTDL_JS_RUNTIME=node:/path/to/node`.
+3. Clear the `yt-dlp` cache: `yt-dlp --rm-cache-dir`.
+4. Re-enable remote components explicitly: `ERWIN_YTDL_REMOTE_COMPONENTS=ejs:github`.
+
 ## License
 
 TBD.
