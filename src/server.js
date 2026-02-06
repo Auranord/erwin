@@ -669,6 +669,49 @@ function parseYouTubeId(input) {
   return null;
 }
 
+function parseYouTubePlaylistId(input) {
+  const trimmed = input.trim();
+  try {
+    const url = new URL(trimmed);
+    const listId = url.searchParams.get("list");
+    if (listId) {
+      return listId;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function playlistEntryToUrl(entry) {
+  if (!entry) return null;
+  if (typeof entry.url === "string" && entry.url.startsWith("http")) {
+    return entry.url;
+  }
+  const id = entry.id || entry.url;
+  if (typeof id === "string" && id.trim()) {
+    return `https://www.youtube.com/watch?v=${id.trim()}`;
+  }
+  return null;
+}
+
+async function fetchPlaylistTrackUrls(playlistUrl) {
+  const { args: cookieArgs, cleanup } = await buildYtDlpCookieArgs();
+  try {
+    const playlistRaw = await runYtDlp([
+      "--flat-playlist",
+      "--dump-single-json",
+      ...cookieArgs,
+      playlistUrl
+    ]);
+    const playlistData = JSON.parse(playlistRaw);
+    const entries = Array.isArray(playlistData?.entries) ? playlistData.entries : [];
+    return entries.map(playlistEntryToUrl).filter(Boolean);
+  } finally {
+    await cleanup();
+  }
+}
+
 function normalizePlaylistPositions(playlistId) {
   const tracks = db
     .prepare(
@@ -1812,7 +1855,7 @@ app.delete("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) =
   res.json({ ok: true });
 });
 
-app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, res) => {
+app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), async (req, res) => {
   const { urls } = req.body || {};
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: "URLs array required" });
@@ -1827,29 +1870,69 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), (req, r
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
   const imported = [];
-  const transaction = db.transaction((items) => {
-    for (const url of items) {
-      const youtubeId = parseYouTubeId(url);
-      if (!youtubeId) {
-        continue;
+  const errors = [];
+  const expandedUrls = [];
+
+  for (const rawUrl of urls) {
+    const url = String(rawUrl || "").trim();
+    if (!url) {
+      continue;
+    }
+    if (parseYouTubePlaylistId(url)) {
+      try {
+        const playlistUrls = await fetchPlaylistTrackUrls(url);
+        if (playlistUrls.length === 0) {
+          errors.push({ url, error: "Playlist returned no entries" });
+          continue;
+        }
+        expandedUrls.push(...playlistUrls);
+      } catch (error) {
+        errors.push({ url, error: error.message });
       }
-      const existing = findTrack.get(youtubeId);
+      continue;
+    }
+    const youtubeId = parseYouTubeId(url);
+    if (!youtubeId) {
+      errors.push({ url, error: "Invalid YouTube URL or ID" });
+      continue;
+    }
+    expandedUrls.push(url);
+  }
+
+  if (expandedUrls.length === 0) {
+    return res.status(400).json({ error: "No valid track URLs found", errors });
+  }
+
+  const transaction = db.transaction((items) => {
+    for (const item of items) {
+      const existing = findTrack.get(item.youtubeId);
       const trackId = existing ? existing.id : nanoid();
       if (!existing) {
-        insertTrack.run(trackId, youtubeId, url, now);
+        insertTrack.run(trackId, item.youtubeId, item.url, now);
       }
       enqueueDownload(req.params.id, trackId);
-      imported.push({ id: trackId, youtubeId, url, reused: Boolean(existing) });
+      imported.push({
+        id: trackId,
+        youtubeId: item.youtubeId,
+        url: item.url,
+        reused: Boolean(existing)
+      });
     }
   });
-  transaction(urls);
+
+  const items = expandedUrls
+    .map((url) => ({ url, youtubeId: parseYouTubeId(url) }))
+    .filter((item) => item.youtubeId);
+  transaction(items);
   log("info", "playlist import queued", {
     playlistId: req.params.id,
     requested: urls.length,
-    queued: imported.length
+    queued: imported.length,
+    expanded: expandedUrls.length,
+    errors: errors.length
   });
   broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "imported" });
-  res.json({ importedCount: imported.length, imported });
+  res.json({ importedCount: imported.length, imported, errors });
 });
 
 app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
