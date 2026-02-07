@@ -1332,15 +1332,15 @@ function endVoteRound(round) {
 let lastVoteTrackId = null;
 
 function tickVoting() {
-  const autoEnabled = getSettingBoolean("vote_auto_enabled", true);
-  if (!autoEnabled) {
-    return;
-  }
   const active = getLatestOpenVoteRound();
   if (active) {
     if (new Date(active.endsAt).getTime() <= Date.now()) {
       endVoteRound(active);
     }
+    return;
+  }
+  const autoEnabled = getSettingBoolean("vote_auto_enabled", true);
+  if (!autoEnabled) {
     return;
   }
   if (getQueue().length > 0) {
