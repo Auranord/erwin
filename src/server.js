@@ -31,6 +31,9 @@ const YTDL_REMOTE_COMPONENTS = process.env.ERWIN_YTDL_REMOTE_COMPONENTS ?? "ejs:
 const YTDL_FFMPEG_LOCATION = process.env.ERWIN_YTDL_FFMPEG_LOCATION || "";
 const TWITCH_BOT_USERNAME = process.env.TWITCH_BOT_USERNAME || "";
 const TWITCH_OAUTH_TOKEN = process.env.TWITCH_OAUTH_TOKEN || "";
+const TWITCH_REFRESH_TOKEN = process.env.TWITCH_REFRESH_TOKEN || "";
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID || "";
+const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "";
 const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
 const TWITCH_IRC_HOST =
@@ -1375,6 +1378,116 @@ function tickVoting() {
 
 let twitchSocket = null;
 let twitchConnected = false;
+let twitchOauthToken = TWITCH_OAUTH_TOKEN;
+let twitchRefreshToken = TWITCH_REFRESH_TOKEN;
+let twitchTokenRefreshTimer = null;
+let twitchRefreshInFlight = null;
+
+function normalizeOauthToken(token) {
+  if (!token) return "";
+  return token.startsWith("oauth:") ? token : `oauth:${token}`;
+}
+
+function scheduleTwitchTokenRefresh(expiresInSeconds) {
+  if (twitchTokenRefreshTimer) {
+    clearTimeout(twitchTokenRefreshTimer);
+    twitchTokenRefreshTimer = null;
+  }
+  if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+    return;
+  }
+  const refreshInMs = Math.max(30_000, (expiresInSeconds - 300) * 1000);
+  twitchTokenRefreshTimer = setTimeout(() => {
+    refreshTwitchAccessToken("scheduled");
+  }, refreshInMs);
+  twitchTokenRefreshTimer.unref?.();
+  log("info", "twitch token refresh scheduled", {
+    refreshInSeconds: Math.round(refreshInMs / 1000)
+  });
+}
+
+async function refreshTwitchAccessToken(reason = "manual") {
+  if (!twitchRefreshToken || !TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+    log("warn", "twitch token refresh unavailable - missing credentials", {
+      reason,
+      hasRefreshToken: Boolean(twitchRefreshToken),
+      hasClientId: Boolean(TWITCH_CLIENT_ID),
+      hasClientSecret: Boolean(TWITCH_CLIENT_SECRET)
+    });
+    return false;
+  }
+  if (twitchRefreshInFlight) {
+    return twitchRefreshInFlight;
+  }
+  twitchRefreshInFlight = (async () => {
+    try {
+      const body = new URLSearchParams({
+        client_id: TWITCH_CLIENT_ID,
+        client_secret: TWITCH_CLIENT_SECRET,
+        grant_type: "refresh_token",
+        refresh_token: twitchRefreshToken
+      });
+      const response = await fetch("https://id.twitch.tv/oauth2/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        log("error", "twitch token refresh failed", {
+          reason,
+          status: response.status,
+          body: text.slice(0, 500)
+        });
+        return false;
+      }
+      const payload = await response.json();
+      if (!payload?.access_token) {
+        log("error", "twitch token refresh missing access token", { reason });
+        return false;
+      }
+      twitchOauthToken = normalizeOauthToken(payload.access_token);
+      if (payload.refresh_token) {
+        twitchRefreshToken = payload.refresh_token;
+      }
+      scheduleTwitchTokenRefresh(Number(payload.expires_in));
+      log("info", "twitch token refreshed", {
+        reason,
+        expiresInSeconds: Number(payload.expires_in) || null,
+        hasNewRefreshToken: Boolean(payload.refresh_token)
+      });
+      return true;
+    } catch (error) {
+      log("error", "twitch token refresh request error", {
+        reason,
+        error: String(error?.message || error)
+      });
+      return false;
+    }
+  })();
+  const refreshed = await twitchRefreshInFlight;
+  twitchRefreshInFlight = null;
+  return refreshed;
+}
+
+function closeTwitchConnection() {
+  if (!twitchSocket) {
+    return;
+  }
+  try {
+    twitchSocket.removeAllListeners();
+    twitchSocket.write("QUIT\r\n");
+    twitchSocket.end();
+  } catch (error) {
+    log("warn", "twitch bot close error", {
+      error: String(error?.message || error)
+    });
+  }
+  twitchSocket = null;
+  twitchConnected = false;
+}
 
 function sendTwitchMessage(message) {
   if (!twitchConnected || !twitchSocket) return;
@@ -1423,7 +1536,7 @@ function handleVoteCommand({ user, optionIndex }) {
 }
 
 function connectTwitchBot() {
-  if (!TWITCH_BOT_USERNAME || !TWITCH_OAUTH_TOKEN || !TWITCH_CHANNEL) {
+  if (!TWITCH_BOT_USERNAME || !twitchOauthToken || !TWITCH_CHANNEL) {
     log("warn", "twitch bot disabled - missing credentials", {
       TWITCH_BOT_USERNAME,
       TWITCH_CHANNEL
@@ -1442,10 +1555,7 @@ function connectTwitchBot() {
     },
     () => {
       twitchConnected = true;
-      const token = TWITCH_OAUTH_TOKEN.startsWith("oauth:")
-        ? TWITCH_OAUTH_TOKEN
-        : `oauth:${TWITCH_OAUTH_TOKEN}`;
-      twitchSocket.write(`PASS ${token}\r\n`);
+      twitchSocket.write(`PASS ${normalizeOauthToken(twitchOauthToken)}\r\n`);
       twitchSocket.write(`NICK ${TWITCH_BOT_USERNAME}\r\n`);
       twitchSocket.write(
         "CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n"
@@ -1463,6 +1573,16 @@ function connectTwitchBot() {
     messages.forEach((line) => {
       if (line.startsWith("PING")) {
         twitchSocket.write(`PONG ${line.slice(5)}\r\n`);
+        return;
+      }
+      if (line.includes("Login authentication failed")) {
+        log("warn", "twitch authentication failed; attempting token refresh");
+        closeTwitchConnection();
+        refreshTwitchAccessToken("irc-auth-failed").then((refreshed) => {
+          if (refreshed) {
+            connectTwitchBot();
+          }
+        });
         return;
       }
       const parsed = parseIrcMessage(line);
@@ -1545,7 +1665,7 @@ function checkDbReady() {
 }
 
 function checkTwitchReady() {
-  if (!TWITCH_BOT_USERNAME || !TWITCH_OAUTH_TOKEN || !TWITCH_CHANNEL) {
+  if (!TWITCH_BOT_USERNAME || !twitchOauthToken || !TWITCH_CHANNEL) {
     return true;
   }
   return twitchConnected;
@@ -2197,7 +2317,17 @@ wss.on("connection", (ws) => {
   ws.send(JSON.stringify({ event: "CONNECTED", payload: {} }));
 });
 
-connectTwitchBot();
+async function startTwitchBot() {
+  if (!twitchOauthToken && twitchRefreshToken && TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET) {
+    await refreshTwitchAccessToken("startup");
+  }
+  if (twitchRefreshToken && TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET) {
+    scheduleTwitchTokenRefresh(3600);
+  }
+  connectTwitchBot();
+}
+
+startTwitchBot();
 
 function cleanupAudioCache() {
   if (!Number.isFinite(AUDIO_RETENTION_DAYS) || AUDIO_RETENTION_DAYS <= 0) {
@@ -2301,6 +2431,10 @@ function shutdown(signal) {
   clearInterval(downloadInterval);
   clearInterval(voteInterval);
   clearInterval(retentionInterval);
+  if (twitchTokenRefreshTimer) {
+    clearTimeout(twitchTokenRefreshTimer);
+    twitchTokenRefreshTimer = null;
+  }
   if (twitchSocket) {
     try {
       twitchSocket.write("QUIT\r\n");
