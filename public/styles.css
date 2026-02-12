@@ -316,6 +316,26 @@ button.ghost {
   font-size: 14px;
 }
 
+
+.draggable-item {
+  cursor: grab;
+}
+
+.draggable-item.is-dragging {
+  opacity: 0.45;
+}
+
+.draggable-item.drag-over {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 1px #6366f1 inset;
+}
+
+.drag-handle {
+  color: #64748b;
+  font-size: 12px;
+  letter-spacing: -1px;
+}
+
 .list-item.disabled {
   opacity: 0.6;
 }
