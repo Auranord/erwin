@@ -98,7 +98,10 @@ app.use((req, res, next) => {
   res.setHeader("x-request-id", requestId);
   const start = Date.now();
   res.on("finish", () => {
-    log("info", "request", {
+    const requestPath = req.path || req.originalUrl;
+    const isHealthCheckRequest =
+      requestPath === "/health" || requestPath === "/api/health";
+    log(isHealthCheckRequest ? "debug" : "info", "request", {
       requestId,
       method: req.method,
       path: req.originalUrl,
@@ -1405,6 +1408,19 @@ function normalizeOauthToken(token) {
   return token.startsWith("oauth:") ? token : `oauth:${token}`;
 }
 
+function normalizeRefreshToken(token) {
+  if (!token) return "";
+  const withoutOauthPrefix = token.startsWith("oauth:") ? token.slice(6) : token;
+  if (!withoutOauthPrefix.includes("%")) {
+    return withoutOauthPrefix;
+  }
+  try {
+    return decodeURIComponent(withoutOauthPrefix);
+  } catch {
+    return withoutOauthPrefix;
+  }
+}
+
 function scheduleTwitchTokenRefresh(expiresInSeconds) {
   if (twitchTokenRefreshTimer) {
     clearTimeout(twitchTokenRefreshTimer);
@@ -1442,7 +1458,7 @@ async function refreshTwitchAccessToken(reason = "manual") {
         client_id: TWITCH_CLIENT_ID,
         client_secret: TWITCH_CLIENT_SECRET,
         grant_type: "refresh_token",
-        refresh_token: twitchRefreshToken
+        refresh_token: normalizeRefreshToken(twitchRefreshToken)
       });
       const response = await fetch("https://id.twitch.tv/oauth2/token", {
         method: "POST",
