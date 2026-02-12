@@ -79,18 +79,18 @@ function log(level, message, meta = {}) {
 
 app.use(cookieParser());
 app.use(express.json());
-app.use(
-  session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: false
-    }
-  })
-);
+const sessionMiddleware = session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: false
+  }
+});
+
+app.use(sessionMiddleware);
 
 app.use((req, res, next) => {
   const requestId = req.headers["x-request-id"] || nanoid();
@@ -441,6 +441,16 @@ function initDb() {
     });
     transaction(queueEntries);
   }
+  if (!queueColumnNames.has("added_by_user_id")) {
+    try {
+      db.prepare("ALTER TABLE queue ADD COLUMN added_by_user_id TEXT").run();
+    } catch (error) {
+      const message = String(error?.message || error).toLowerCase();
+      if (!message.includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
 
   const poolColumns = db.prepare("PRAGMA table_info(play_pool)").all();
   if (poolColumns.length === 0) {
@@ -644,13 +654,15 @@ function requireAuth(req, res, next) {
   res.status(401).json({ error: "Unauthorized" });
 }
 
-function requireRole(...roles) {
-  return (req, res, next) => {
-    if (req.session?.user && roles.includes(req.session.user.role)) {
-      return next();
-    }
-    res.status(403).json({ error: "Forbidden" });
-  };
+function isAdminUser(user) {
+  return user?.role === "admin";
+}
+
+function requireAdmin(req, res, next) {
+  if (isAdminUser(req.session?.user)) {
+    return next();
+  }
+  res.status(403).json({ error: "Forbidden" });
 }
 
 function parseYouTubeId(input) {
@@ -797,7 +809,7 @@ function getCurrentTrack(playState) {
 function getQueue() {
   return db
     .prepare(
-      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
+      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, queue.added_by_user_id, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
     )
     .all();
 }
@@ -1034,17 +1046,18 @@ function buildVoteSummary(options) {
     .join(" | ");
 }
 
-function enqueueTrack(trackId, source) {
+function enqueueTrack(trackId, source, addedByUserId = null) {
   const entry = {
     id: nanoid(),
     track_id: trackId,
     source,
     position: getQueueNextPosition(),
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
+    added_by_user_id: addedByUserId
   };
   db.prepare(
-    "INSERT INTO queue (id, track_id, source, position, created_at) VALUES (?, ?, ?, ?, ?)"
-  ).run(entry.id, entry.track_id, entry.source, entry.position, entry.created_at);
+    "INSERT INTO queue (id, track_id, source, position, created_at, added_by_user_id) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(entry.id, entry.track_id, entry.source, entry.position, entry.created_at, entry.added_by_user_id);
   broadcast("QUEUE_UPDATE", { entry });
   removeFromPool(trackId);
   return entry;
@@ -1330,7 +1343,7 @@ function endVoteRound(round) {
     winnerEntry.option.trackId,
     round.id
   );
-  const queueEntry = enqueueTrack(winnerEntry.option.trackId, "vote");
+  const queueEntry = enqueueTrack(winnerEntry.option.trackId, "vote", null);
   broadcast("VOTE_END", {
     roundId: round.id,
     startedAt: round.startedAt,
@@ -1747,6 +1760,61 @@ app.post("/api/auth/logout", (req, res) => {
   });
 });
 
+app.get("/api/me", requireAuth, (req, res) => {
+  const user = req.session.user;
+  res.json({
+    id: user.id,
+    username: user.username,
+    isAdmin: isAdminUser(user)
+  });
+});
+
+app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
+  const users = db
+    .prepare(
+      "SELECT id, username, created_at, role FROM users ORDER BY created_at ASC"
+    )
+    .all()
+    .map((user) => ({
+      id: user.id,
+      username: user.username,
+      created_at: user.created_at,
+      isAdmin: user.role === "admin"
+    }));
+  res.json(users);
+});
+
+app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
+  const usernameRaw = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!usernameRaw) {
+    return res.status(400).json({ error: "username is required" });
+  }
+  if (usernameRaw.length < 3 || usernameRaw.length > 64) {
+    return res.status(400).json({ error: "username must be between 3 and 64 characters" });
+  }
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: "password must be at least 8 characters" });
+  }
+
+  const passwordHash = bcrypt.hashSync(password, 10);
+  const id = nanoid();
+  const createdAt = new Date().toISOString();
+  try {
+    db.prepare(
+      "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(id, usernameRaw, passwordHash, "user", createdAt);
+  } catch (error) {
+    const message = String(error?.message || error).toLowerCase();
+    if (message.includes("unique")) {
+      return res.status(409).json({ error: "username already exists" });
+    }
+    throw error;
+  }
+
+  res.status(201).json({ id, username: usernameRaw, created_at: createdAt, isAdmin: false });
+});
+
 app.get("/api/state", requireAuth, (req, res) => {
   const playState = getPlayState();
   const currentTrack = getCurrentTrack(playState);
@@ -1754,7 +1822,7 @@ app.get("/api/state", requireAuth, (req, res) => {
   res.json({ playState, currentTrack, queue });
 });
 
-app.post("/api/session/start", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/session/start", requireAuth, (req, res) => {
   const { trackId } = req.body || {};
   const track = trackId
     ? db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId)
@@ -1767,17 +1835,17 @@ app.post("/api/session/start", requireAuth, requireRole("admin", "mod"), (req, r
   res.json({ playState });
 });
 
-app.post("/api/session/pause", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/session/pause", requireAuth, (req, res) => {
   const { playState } = pauseSession();
   res.json({ playState });
 });
 
-app.post("/api/session/resume", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/session/resume", requireAuth, (req, res) => {
   const { playState } = resumeSession();
   res.json({ playState });
 });
 
-app.post("/api/session/seek", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/session/seek", requireAuth, (req, res) => {
   const { positionSeconds } = req.body || {};
   if (typeof positionSeconds !== "number" || Number.isNaN(positionSeconds)) {
     return res.status(400).json({ error: "positionSeconds must be a number" });
@@ -1797,7 +1865,7 @@ app.post("/api/session/seek", requireAuth, requireRole("admin", "mod"), (req, re
   res.json({ playState: updated });
 });
 
-app.post("/api/session/stop", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/session/stop", requireAuth, (req, res) => {
   db.prepare(
     "UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE id = 1"
   ).run(new Date().toISOString());
@@ -1806,7 +1874,7 @@ app.post("/api/session/stop", requireAuth, requireRole("admin", "mod"), (req, re
   res.json({ playState });
 });
 
-app.post("/api/queue/skip", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/queue/skip", requireAuth, (req, res) => {
   const { playState, queue } = skipQueue();
   res.json({ playState, queue });
 });
@@ -1851,7 +1919,7 @@ app.get("/api/audio/:trackId", requireAuth, (req, res) => {
     });
 });
 
-app.post("/api/queue/enqueue", requireAuth, requireRole("admin"), (req, res) => {
+app.post("/api/queue/enqueue", requireAuth, (req, res) => {
   const { trackId, source } = req.body || {};
   const track = db
     .prepare("SELECT id, disabled, download_status, audio_path FROM tracks WHERE id = ?")
@@ -1864,11 +1932,11 @@ app.post("/api/queue/enqueue", requireAuth, requireRole("admin"), (req, res) => 
       error: "Track is not playable yet (audio must be downloaded and enabled)."
     });
   }
-  const entry = enqueueTrack(track.id, source || "admin");
+  const entry = enqueueTrack(track.id, source || "manual", req.session.user.id);
   res.json(entry);
 });
 
-app.post("/api/queue/:id/move", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/queue/:id/move", requireAuth, (req, res) => {
   const { direction } = req.body || {};
   if (!["up", "down"].includes(direction)) {
     return res.status(400).json({ error: "direction must be up or down" });
@@ -1905,7 +1973,7 @@ app.get("/api/pool", requireAuth, (req, res) => {
   res.json(getPoolTracks());
 });
 
-app.post("/api/pool/enqueue", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/pool/enqueue", requireAuth, (req, res) => {
   const { trackId } = req.body || {};
   if (!trackId) {
     return res.status(400).json({ error: "trackId required" });
@@ -1914,11 +1982,11 @@ app.post("/api/pool/enqueue", requireAuth, requireRole("admin", "mod"), (req, re
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
   }
-  const entry = enqueueTrack(trackId, "pool");
+  const entry = enqueueTrack(trackId, "pool", null);
   res.json(entry);
 });
 
-app.post("/api/pool/add", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/pool/add", requireAuth, (req, res) => {
   const { trackId } = req.body || {};
   if (!trackId) {
     return res.status(400).json({ error: "trackId required" });
@@ -1960,7 +2028,7 @@ app.get("/api/downloads", requireAuth, (req, res) => {
   res.json(downloads);
 });
 
-app.post("/api/downloads/clear", requireAuth, requireRole("admin"), (req, res) => {
+app.post("/api/downloads/clear", requireAuth, (req, res) => {
   const result = db
     .prepare("DELETE FROM download_queue WHERE status IN ('ready', 'failed', 'blocked')")
     .run();
@@ -1969,7 +2037,7 @@ app.post("/api/downloads/clear", requireAuth, requireRole("admin"), (req, res) =
   res.json({ cleared: result.changes });
 });
 
-app.post("/api/playlists", requireAuth, requireRole("admin"), (req, res) => {
+app.post("/api/playlists", requireAuth, (req, res) => {
   const { name } = req.body || {};
   if (!name) {
     return res.status(400).json({ error: "Playlist name required" });
@@ -1988,7 +2056,7 @@ app.post("/api/playlists", requireAuth, requireRole("admin"), (req, res) => {
   res.status(201).json(playlist);
 });
 
-app.put("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) => {
+app.put("/api/playlists/:id", requireAuth, (req, res) => {
   const { name } = req.body || {};
   if (!name) {
     return res.status(400).json({ error: "Playlist name required" });
@@ -2004,7 +2072,7 @@ app.put("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) => {
   res.json({ id: req.params.id, name, updated_at });
 });
 
-app.delete("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) => {
+app.delete("/api/playlists/:id", requireAuth, (req, res) => {
   const result = db.prepare("DELETE FROM playlists WHERE id = ?").run(req.params.id);
   if (result.changes === 0) {
     return res.status(404).json({ error: "Playlist not found" });
@@ -2015,7 +2083,7 @@ app.delete("/api/playlists/:id", requireAuth, requireRole("admin"), (req, res) =
   res.json({ ok: true });
 });
 
-app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), async (req, res) => {
+app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
   const { urls } = req.body || {};
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: "URLs array required" });
@@ -2095,7 +2163,7 @@ app.post("/api/playlists/:id/import", requireAuth, requireRole("admin"), async (
   res.json({ importedCount: imported.length, imported, errors });
 });
 
-app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
+app.post("/api/tracks", requireAuth, (req, res) => {
   const { playlistId, url } = req.body || {};
   if (!playlistId || !url) {
     return res.status(400).json({ error: "playlistId and url required" });
@@ -2122,7 +2190,7 @@ app.post("/api/tracks", requireAuth, requireRole("admin"), (req, res) => {
   res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
 });
 
-app.put("/api/tracks/:id", requireAuth, requireRole("admin"), (req, res) => {
+app.put("/api/tracks/:id", requireAuth, (req, res) => {
   const { title } = req.body || {};
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "title required" });
@@ -2139,7 +2207,7 @@ app.put("/api/tracks/:id", requireAuth, requireRole("admin"), (req, res) => {
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/tracks/:id/disable", requireAuth, requireRole("admin"), (req, res) => {
+app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
   const { disabled } = req.body || {};
   const value = disabled ? 1 : 0;
   const result = db
@@ -2154,7 +2222,6 @@ app.put("/api/tracks/:id/disable", requireAuth, requireRole("admin"), (req, res)
 app.post(
   "/api/playlists/:id/play",
   requireAuth,
-  requireRole("admin", "mod"),
   (req, res) => {
     const tracks = db
       .prepare(
@@ -2192,7 +2259,6 @@ app.post(
 app.delete(
   "/api/playlists/:playlistId/tracks/:trackId",
   requireAuth,
-  requireRole("admin"),
   (req, res) => {
     const result = db
       .prepare(
@@ -2215,7 +2281,6 @@ app.delete(
 app.post(
   "/api/playlists/:playlistId/tracks/:trackId/move",
   requireAuth,
-  requireRole("admin"),
   (req, res) => {
     const { direction } = req.body || {};
     if (!["up", "down"].includes(direction)) {
@@ -2256,7 +2321,7 @@ app.post(
   }
 );
 
-app.put("/api/settings", requireAuth, requireRole("admin"), (req, res) => {
+app.put("/api/settings", requireAuth, (req, res) => {
   const settings = req.body || {};
   const insert = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
   const transaction = db.transaction((entries) => {
@@ -2296,7 +2361,7 @@ app.get("/api/votes/active", requireAuth, (req, res) => {
   });
 });
 
-app.post("/api/votes/start", requireAuth, requireRole("admin", "mod"), (req, res) => {
+app.post("/api/votes/start", requireAuth, (req, res) => {
   const active = getLatestOpenVoteRound();
   if (active && new Date(active.endsAt).getTime() > Date.now()) {
     return res.status(409).json({ error: "Vote already active" });
@@ -2331,9 +2396,6 @@ app.get("/player/stream", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "stream.html"));
 });
 
-app.get("/player/listen", requireAuth, (req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "listen.html"));
-});
 
 app.get("/", (req, res) => {
   res.redirect("/dashboard");
@@ -2344,13 +2406,22 @@ const server = app.listen(PORT, () => {
 });
 
 server.on("upgrade", (request, socket, head) => {
-  if (request.url === "/ws") {
+  if (request.url !== "/ws") {
+    socket.destroy();
+    return;
+  }
+
+  sessionMiddleware(request, {}, () => {
+    if (!request.session?.user) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit("connection", ws, request);
     });
-  } else {
-    socket.destroy();
-  }
+  });
 });
 
 wss.on("connection", (ws) => {
