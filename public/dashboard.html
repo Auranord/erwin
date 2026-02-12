@@ -15,6 +15,7 @@
         </div>
         <div class="header-actions">
           <span class="status-pill"><span></span> Connected</span>
+          <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Toggle Dark Wood mode">🌒 Dark Wood</button>
           <button id="logout" class="secondary">Logout</button>
         </div>
       </div>
@@ -287,6 +288,8 @@
       const settingsTwitchSkip = document.getElementById("settings-twitch-skip");
       const settingsTwitchPause = document.getElementById("settings-twitch-pause");
       const settingsTwitchResume = document.getElementById("settings-twitch-resume");
+      const themeToggle = document.getElementById("theme-toggle");
+      const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
       let queueOrder = [];
       let selectedPlaylistId = null;
@@ -297,6 +300,27 @@
       let draggedTrackId = null;
       let draggedQueueId = null;
       const chatMessages = [];
+
+      function getThemeStorageKey() {
+        const storedUser = localStorage.getItem(themeUserKeyBase) || "guest";
+        return `erwin_theme_${storedUser}`;
+      }
+
+      function applyTheme(theme) {
+        const nextTheme = theme === "darkwood" ? "darkwood" : "guild";
+        document.body.dataset.theme = nextTheme;
+        themeToggle.setAttribute("aria-pressed", String(nextTheme === "darkwood"));
+        themeToggle.textContent = nextTheme === "darkwood" ? "🌘 Guild Light" : "🌒 Dark Wood";
+        themeToggle.title = nextTheme === "darkwood" ? "Return to Guild Light" : "Switch to Dark Wood mode";
+      }
+
+      const savedTheme = localStorage.getItem(getThemeStorageKey()) || "guild";
+      applyTheme(savedTheme);
+      themeToggle.addEventListener("click", () => {
+        const nextTheme = document.body.dataset.theme === "darkwood" ? "guild" : "darkwood";
+        applyTheme(nextTheme);
+        localStorage.setItem(getThemeStorageKey(), nextTheme);
+      });
       const DEFAULT_TWITCH_MESSAGES = {
         vote_start: "Vote time! Choose the next track with {command}vote <number>.",
         vote_option: "{number}. {title}{channel}",

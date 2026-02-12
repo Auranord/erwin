@@ -54,6 +54,52 @@ body {
   line-height: 1.45;
 }
 
+body[data-theme="darkwood"] {
+  --panel: #5e4932;
+  --panel-2: #43331f;
+  --ink: #f2e4cb;
+  --muted-ink: #d4c1a0;
+  --line: rgba(216, 182, 126, 0.38);
+}
+
+body[data-theme="darkwood"] .card,
+body[data-theme="darkwood"] .list-item,
+body[data-theme="darkwood"] .modal-card,
+body[data-theme="darkwood"] input,
+body[data-theme="darkwood"] textarea,
+body[data-theme="darkwood"] select {
+  color: var(--ink);
+  border-color: rgba(211, 169, 104, 0.38);
+}
+
+body[data-theme="darkwood"] .card {
+  background:
+    radial-gradient(circle at 18% 12%, rgba(248, 220, 169, 0.08), transparent 30%),
+    linear-gradient(165deg, #5d4731, #443320 58%, #342517);
+}
+
+body[data-theme="darkwood"] .list-item {
+  background: linear-gradient(180deg, rgba(90, 68, 44, 0.95), rgba(63, 46, 29, 0.97));
+}
+
+body[data-theme="darkwood"] input,
+body[data-theme="darkwood"] textarea,
+body[data-theme="darkwood"] select {
+  background: linear-gradient(180deg, #5a452f, #3e2d1c);
+  box-shadow: inset 0 1px 0 rgba(249, 225, 176, 0.1), inset 0 -2px 8px rgba(0, 0, 0, 0.24);
+}
+
+body[data-theme="darkwood"] .badge {
+  color: #f1dfbf;
+  background: rgba(41, 27, 13, 0.55);
+}
+
+body[data-theme="darkwood"] .notice,
+body[data-theme="darkwood"] label,
+body[data-theme="darkwood"] .card-toggle {
+  color: #dbc9a9;
+}
+
 header {
   padding: clamp(1.05rem, 2vw, 1.5rem) clamp(1rem, 3vw, 2rem);
   border-bottom: 1px solid rgba(200, 164, 90, 0.34);
@@ -79,6 +125,26 @@ header {
 
 .header-actions button {
   width: auto;
+}
+
+.theme-toggle {
+  width: auto;
+  min-height: 2.4rem;
+  padding: 0.48rem 0.95rem;
+  border-radius: 0.8rem;
+  border: 1px solid #4e3820;
+  background:
+    linear-gradient(180deg, #5c3f24, #3f2918 68%, #2d1b10),
+    radial-gradient(circle at top, rgba(231, 193, 131, 0.18), transparent 48%);
+  color: #f2deba;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 230, 190, 0.22),
+    inset 0 -1px 0 rgba(20, 11, 6, 0.55),
+    0 6px 12px rgba(3, 4, 8, 0.38);
+}
+
+.theme-toggle:hover {
+  filter: brightness(1.05);
 }
 
 h1,

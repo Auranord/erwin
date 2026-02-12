@@ -44,6 +44,8 @@
           error.style.display = "block";
           return;
         }
+        const payload = await response.json().catch(() => ({}));
+        localStorage.setItem("erwin_last_user", payload.username || body.username);
         window.location.href = "/dashboard";
       });
     </script>
