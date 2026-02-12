@@ -82,7 +82,23 @@
       </section>
 
       <section class="tab-panel" data-tab-panel="playlists">
-        <div class="grid two">
+        <div class="grid playlist-editor-grid">
+          <div class="card">
+            <div class="track-editor-header">
+              <div>
+                <h2>Track Editor</h2>
+              </div>
+              <div class="track-editor-tools">
+                <label for="track-filter">Filter</label>
+                <input id="track-filter" type="search" placeholder="Search tracks..." />
+                <div id="track-count" class="notice">0 tracks</div>
+              </div>
+            </div>
+            <div id="tracks" class="list track-list">
+              <div class="list-item">Select a playlist to view tracks.</div>
+            </div>
+          </div>
+
           <div class="card">
             <h2>Playlist Editor</h2>
             <div class="section-title">Create Playlist</div>
@@ -123,22 +139,6 @@
             </div>
             <div id="download-queue" class="list">
               <div class="list-item">No downloads yet.</div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="track-editor-header">
-              <div>
-                <h2>Track Editor</h2>
-              </div>
-              <div class="track-editor-tools">
-                <label for="track-filter">Filter</label>
-                <input id="track-filter" type="search" placeholder="Search tracks..." />
-                <div id="track-count" class="notice">0 tracks</div>
-              </div>
-            </div>
-            <div id="tracks" class="list track-list">
-              <div class="list-item">Select a playlist to view tracks.</div>
             </div>
           </div>
         </div>
@@ -288,11 +288,14 @@
       const settingsTwitchPause = document.getElementById("settings-twitch-pause");
       const settingsTwitchResume = document.getElementById("settings-twitch-resume");
       let playlistsCache = [];
+      let queueOrder = [];
       let selectedPlaylistId = null;
       let renameTrackId = null;
       let activeVote = null;
       let voteTimer = null;
       let poolTrackIds = new Set();
+      let draggedTrackId = null;
+      let draggedQueueId = null;
       const chatMessages = [];
       const DEFAULT_TWITCH_MESSAGES = {
         vote_start: "Vote time! Choose the next track with {command}vote <number>.",
@@ -333,7 +336,6 @@
           return;
         }
         const query = trackFilter.value.trim().toLowerCase();
-        const positions = new Map(playlist.tracks.map((track, index) => [track.id, index]));
         const filtered = playlist.tracks.filter((track) => {
           if (!query) return true;
           return (
@@ -346,7 +348,6 @@
         tracksEl.innerHTML = filtered
           .map((track, index) => {
             const label = track.title || "Untitled track";
-            const trackIndex = positions.get(track.id) ?? index;
             const disabled = Boolean(track.disabled);
             const disabledLabel = disabled ? '<span class="badge">Disabled</span>' : "";
             const toggleLabel = disabled ? "Enable track" : "Disable track";
@@ -355,17 +356,15 @@
             const poolDisabled = inPool ? "disabled" : "";
             const poolLabel = inPool ? "In pool" : "Add to pool";
             const poolIcon = inPool ? "✅" : "➕";
-            return `<div class="list-item ${disabled ? "disabled" : ""}" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
+            return `<div class="list-item draggable-item ${disabled ? "disabled" : ""}" draggable="true" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
-                  <div style="display: flex; gap: 8px; align-items: center;">${label} ${disabledLabel}</div>
+                  <div style="display: flex; gap: 8px; align-items: center;"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${label} ${disabledLabel}</div>
                 </div>
                 <div class="actions">
                   <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">⏭️</button>
                   <button class="secondary icon-only" data-action="pool-add" ${poolDisabled} title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
                   <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">✏️</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${toggleIcon}</button>
-                  <button class="secondary icon-only" data-action="up" ${trackIndex === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">⬆️</button>
-                  <button class="secondary icon-only" data-action="down" ${trackIndex === playlist.tracks.length - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">⬇️</button>
                   <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">🗑️</button>
                 </div>
               </div>`;
@@ -491,22 +490,56 @@
           nowPlayingText.textContent = "Nothing is playing.";
           nowPlayingIndicator.classList.remove("active");
         }
+        queueOrder = (queue || []).map((item) => item.id);
         if (!queue || queue.length === 0) {
           queueEl.innerHTML = '<div class="list-item">Queue is empty.</div>';
         } else {
           queueEl.innerHTML = queue
             .map(
-              (item, index) =>
-                `<div class="list-item" data-queue-id="${item.id}">
+              (item) =>
+                `<div class="list-item draggable-item" draggable="true" data-queue-id="${item.id}">
                   <span>${item.title || item.track_id}</span>
                   <div class="actions">
+                    <span class="drag-handle" aria-hidden="true">⋮⋮</span>
                     <span class="badge">${item.source}</span>
-                    <button class="secondary icon-only" data-action="queue-up" ${index === 0 ? "disabled" : ""} title="Move up" aria-label="Move up">⬆️</button>
-                    <button class="secondary icon-only" data-action="queue-down" ${index === queue.length - 1 ? "disabled" : ""} title="Move down" aria-label="Move down">⬇️</button>
                   </div>
                 </div>`
             )
             .join("");
+        }
+      }
+
+      async function moveTrackToTarget(sourceTrackId, targetTrackId) {
+        if (!selectedPlaylistId || !sourceTrackId || !targetTrackId || sourceTrackId === targetTrackId) return;
+        const playlist = playlistsCache.find((item) => item.id === selectedPlaylistId);
+        if (!playlist) return;
+        const sourceIndex = playlist.tracks.findIndex((track) => track.id === sourceTrackId);
+        const targetIndex = playlist.tracks.findIndex((track) => track.id === targetTrackId);
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
+        const direction = sourceIndex < targetIndex ? "down" : "up";
+        const steps = Math.abs(targetIndex - sourceIndex);
+        for (let i = 0; i < steps; i += 1) {
+          await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${sourceTrackId}/move`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction })
+          });
+        }
+      }
+
+      async function moveQueueToTarget(sourceQueueId, targetQueueId) {
+        if (!sourceQueueId || !targetQueueId || sourceQueueId === targetQueueId) return;
+        const sourceIndex = queueOrder.indexOf(sourceQueueId);
+        const targetIndex = queueOrder.indexOf(targetQueueId);
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return;
+        const direction = sourceIndex < targetIndex ? "down" : "up";
+        const steps = Math.abs(targetIndex - sourceIndex);
+        for (let i = 0; i < steps; i += 1) {
+          await fetch(`/api/queue/${sourceQueueId}/move`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction })
+          });
         }
       }
 
@@ -708,13 +741,6 @@
           renameModal.classList.remove("hidden");
           renameInput.focus();
         }
-        if (action === "up" || action === "down") {
-          await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}/move`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ direction: action })
-          });
-        }
         if (action === "toggle-disabled") {
           await fetch(`/api/tracks/${trackId}/disable`, {
             method: "PUT",
@@ -725,21 +751,76 @@
         fetchPlaylists();
       });
 
-      queueEl.addEventListener("click", async (event) => {
-        const button = event.target.closest("button");
-        if (!button) return;
-        const action = button.dataset.action;
-        const wrapper = button.closest(".list-item");
-        const queueId = wrapper?.dataset.queueId;
-        if (!queueId) return;
-        if (action === "queue-up" || action === "queue-down") {
-          await fetch(`/api/queue/${queueId}/move`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ direction: action === "queue-up" ? "up" : "down" })
-          });
-          fetchState();
-        }
+      tracksEl.addEventListener("dragstart", (event) => {
+        const item = event.target.closest(".list-item[data-track-id]");
+        if (!item) return;
+        draggedTrackId = item.dataset.trackId || null;
+        item.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+      });
+
+      tracksEl.addEventListener("dragend", () => {
+        draggedTrackId = null;
+        tracksEl.querySelectorAll(".list-item").forEach((item) => item.classList.remove("is-dragging", "drag-over"));
+      });
+
+      tracksEl.addEventListener("dragover", (event) => {
+        const target = event.target.closest(".list-item[data-track-id]");
+        if (!draggedTrackId || !target) return;
+        event.preventDefault();
+        target.classList.add("drag-over");
+        event.dataTransfer.dropEffect = "move";
+      });
+
+      tracksEl.addEventListener("dragleave", (event) => {
+        const target = event.target.closest(".list-item[data-track-id]");
+        if (target) target.classList.remove("drag-over");
+      });
+
+      tracksEl.addEventListener("drop", async (event) => {
+        const target = event.target.closest(".list-item[data-track-id]");
+        if (!draggedTrackId || !target) return;
+        event.preventDefault();
+        target.classList.remove("drag-over");
+        const targetTrackId = target.dataset.trackId;
+        await moveTrackToTarget(draggedTrackId, targetTrackId);
+        fetchPlaylists();
+      });
+
+      queueEl.addEventListener("dragstart", (event) => {
+        const item = event.target.closest(".list-item[data-queue-id]");
+        if (!item) return;
+        draggedQueueId = item.dataset.queueId || null;
+        item.classList.add("is-dragging");
+        event.dataTransfer.effectAllowed = "move";
+      });
+
+      queueEl.addEventListener("dragend", () => {
+        draggedQueueId = null;
+        queueEl.querySelectorAll(".list-item").forEach((item) => item.classList.remove("is-dragging", "drag-over"));
+      });
+
+      queueEl.addEventListener("dragover", (event) => {
+        const target = event.target.closest(".list-item[data-queue-id]");
+        if (!draggedQueueId || !target) return;
+        event.preventDefault();
+        target.classList.add("drag-over");
+        event.dataTransfer.dropEffect = "move";
+      });
+
+      queueEl.addEventListener("dragleave", (event) => {
+        const target = event.target.closest(".list-item[data-queue-id]");
+        if (target) target.classList.remove("drag-over");
+      });
+
+      queueEl.addEventListener("drop", async (event) => {
+        const target = event.target.closest(".list-item[data-queue-id]");
+        if (!draggedQueueId || !target) return;
+        event.preventDefault();
+        target.classList.remove("drag-over");
+        const targetQueueId = target.dataset.queueId;
+        await moveQueueToTarget(draggedQueueId, targetQueueId);
+        fetchState();
       });
 
       poolEl.addEventListener("click", async (event) => {
