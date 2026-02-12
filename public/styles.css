@@ -173,8 +173,12 @@ main {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
 
+.playlist-editor-grid {
+  grid-template-columns: minmax(340px, 1.3fr) minmax(280px, 1fr);
+}
+
 .track-manager-grid {
-  grid-template-columns: minmax(280px, 1fr) minmax(340px, 1.3fr);
+  grid-template-columns: minmax(280px, 1fr);
 }
 
 label {
@@ -425,6 +429,7 @@ button.ghost {
 }
 
 @media (max-width: 880px) {
+  .playlist-editor-grid,
   .track-manager-grid {
     grid-template-columns: 1fr;
   }

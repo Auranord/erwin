@@ -82,7 +82,23 @@
       </section>
 
       <section class="tab-panel" data-tab-panel="playlists">
-        <div class="grid two">
+        <div class="grid playlist-editor-grid">
+          <div class="card">
+            <div class="track-editor-header">
+              <div>
+                <h2>Track Editor</h2>
+              </div>
+              <div class="track-editor-tools">
+                <label for="track-filter">Filter</label>
+                <input id="track-filter" type="search" placeholder="Search tracks..." />
+                <div id="track-count" class="notice">0 tracks</div>
+              </div>
+            </div>
+            <div id="tracks" class="list track-list">
+              <div class="list-item">Select a playlist to view tracks.</div>
+            </div>
+          </div>
+
           <div class="card">
             <h2>Playlist Editor</h2>
             <div class="section-title">Create Playlist</div>
@@ -123,22 +139,6 @@
             </div>
             <div id="download-queue" class="list">
               <div class="list-item">No downloads yet.</div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="track-editor-header">
-              <div>
-                <h2>Track Editor</h2>
-              </div>
-              <div class="track-editor-tools">
-                <label for="track-filter">Filter</label>
-                <input id="track-filter" type="search" placeholder="Search tracks..." />
-                <div id="track-count" class="notice">0 tracks</div>
-              </div>
-            </div>
-            <div id="tracks" class="list track-list">
-              <div class="list-item">Select a playlist to view tracks.</div>
             </div>
           </div>
         </div>
