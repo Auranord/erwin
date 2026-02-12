@@ -918,9 +918,14 @@ function clampNumber(value, min, max, fallback) {
 function getSettingValue(key, fallback) {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
   if (!row) return fallback;
-  const numeric = Number(row.value);
-  if (Number.isFinite(numeric)) return numeric;
-  return row.value;
+  if (typeof row.value === "number") return row.value;
+  const rawValue = String(row.value ?? "");
+  const trimmed = rawValue.trim();
+  if (trimmed !== "" && /^-?\d+(\.\d+)?$/.test(trimmed)) {
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return rawValue;
 }
 
 function getSettingBoolean(key, fallback) {
@@ -1200,8 +1205,12 @@ function formatOptionLabel(option) {
 
 function getTwitchMessage(key, fallback, values = {}) {
   const template = getSettingString(key, fallback);
-  const message = formatTemplate(template, values);
-  return message.trim();
+  const message = formatTemplate(template, values).trim();
+  if (!message) return "";
+  if (key.startsWith("twitch_") && message === "0") {
+    return "";
+  }
+  return message;
 }
 
 function sendTwitchMessageLines(lines) {
