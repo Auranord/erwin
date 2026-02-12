@@ -6,8 +6,8 @@
   color-scheme: dark;
   --bg: #060d1d;
   --bg-2: #0d1930;
-  --panel: #d9c5a0;
-  --panel-2: #bda37b;
+  --panel: #c8b089;
+  --panel-2: #a08660;
   --ink: #1d1710;
   --muted-ink: #46392b;
   --gold: #c8a45a;
@@ -111,7 +111,7 @@ main {
   position: relative;
   background:
     radial-gradient(circle at 20% 15%, rgba(255, 242, 214, 0.16), transparent 28%),
-    linear-gradient(165deg, var(--panel), #cbb088 58%, #b7996d);
+    linear-gradient(165deg, var(--panel), #b5966d 58%, #9d7c52);
   border: 1px solid rgba(96, 71, 31, 0.44);
   border-radius: var(--radius-lg);
   padding: var(--space-5);
@@ -232,6 +232,10 @@ main {
   content: "ᚨ";
 }
 
+#play-toggle[title="Pause"]::after {
+  content: "ᚢ";
+}
+
 #restart-track::after {
   content: "ᚱ";
 }
@@ -308,7 +312,7 @@ button {
   padding: 0.65rem 0.8rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line);
-  background: linear-gradient(180deg, #d9c6a2, #baa07a);
+  background: linear-gradient(180deg, #c4ab82, #9f7f57);
   color: var(--ink);
   font-size: 0.9rem;
 }
@@ -445,7 +449,7 @@ select:focus-visible,
   justify-content: space-between;
   align-items: center;
   gap: 0.65rem;
-  background: linear-gradient(180deg, rgba(216, 194, 153, 0.92), rgba(184, 156, 115, 0.96));
+  background: linear-gradient(180deg, rgba(194, 166, 122, 0.94), rgba(154, 124, 84, 0.97));
   padding: 0.62rem 0.78rem;
   border-radius: 0.65rem;
   border: 1px solid rgba(107, 83, 45, 0.45);
@@ -469,6 +473,13 @@ select:focus-visible,
   width: auto;
   padding: 0.38rem 0.62rem;
   font-size: 0.77rem;
+}
+
+.icon-only {
+  font-family: "Noto Sans Symbols", "Segoe UI Symbol", "Inter", sans-serif;
+  font-size: 1rem;
+  line-height: 1;
+  text-shadow: 0 1px 0 rgba(255, 232, 182, 0.25);
 }
 
 .list-item .actions button.icon-only {
@@ -526,7 +537,7 @@ select:focus-visible,
 
 .modal-card {
   width: min(460px, 92vw);
-  background: linear-gradient(165deg, var(--panel), #b89667);
+  background: linear-gradient(165deg, var(--panel), #9e794b);
   border: 1px solid rgba(99, 73, 32, 0.6);
   border-radius: 1rem;
   padding: var(--space-5);
