@@ -6,9 +6,9 @@
     <title>Erwin Stream Player</title>
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
-  <body>
+  <body class="stream-page">
     <header>
-      <h1>Stream Player</h1>
+      <h1 title="Erwin keeps the ledger tidy">Stream Player <span aria-hidden="true">🪶</span></h1>
       <p>This view is intended for OBS Browser Source (audio on).</p>
     </header>
     <main>
@@ -26,10 +26,10 @@
         </div>
         <div class="player-footer">
           <div class="player-actions bottom-left">
-            <button id="play-toggle" class="icon-button" title="Play or pause">⏯</button>
-            <button id="restart-track" class="icon-button secondary" title="Play from beginning">⟲</button>
-            <button id="skip-track" class="icon-button ghost" title="Skip track">⏭</button>
-            <button id="mute-toggle" class="icon-button ghost" title="Mute or unmute">🔇</button>
+            <button id="play-toggle" class="icon-button" title="Play or pause">⯈</button>
+            <button id="restart-track" class="icon-button secondary" title="Play from beginning">↺</button>
+            <button id="skip-track" class="icon-button ghost" title="Skip track">⚔</button>
+            <button id="mute-toggle" class="icon-button ghost" title="Mute or unmute">◌</button>
           </div>
           <div class="player-row compact">
             <span class="notice">Volume</span>
@@ -82,7 +82,7 @@
         player.setState({ playState, currentTrack });
         isPaused = playState?.paused ?? true;
         const playToggle = document.getElementById("play-toggle");
-        playToggle.textContent = isPaused ? "▶" : "⏸";
+        playToggle.textContent = isPaused ? "⯈" : "⏸";
         playToggle.title = isPaused ? "Play" : "Pause";
       }
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -133,11 +133,11 @@
         isMuted = !isMuted;
         if (isMuted) {
           player.mute();
-          muteToggle.textContent = "🔊";
+          muteToggle.textContent = "◍";
           muteToggle.title = "Unmute";
         } else {
           player.unmute();
-          muteToggle.textContent = "🔇";
+          muteToggle.textContent = "◌";
           muteToggle.title = "Mute";
         }
       });
