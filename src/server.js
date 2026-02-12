@@ -799,6 +799,15 @@ function getQueue() {
     .all();
 }
 
+function isTrackPlayable(track) {
+  return Boolean(
+    track &&
+      !track.disabled &&
+      track.download_status === "ready" &&
+      track.audio_path
+  );
+}
+
 function getPoolTracks() {
   return db
     .prepare(
@@ -1066,7 +1075,7 @@ function resumeSession() {
 function skipQueue() {
   const next = db
     .prepare(
-      "SELECT queue.id, queue.track_id FROM queue ORDER BY queue.position ASC, queue.created_at ASC LIMIT 1"
+      "SELECT queue.id, queue.track_id FROM queue JOIN tracks ON tracks.id = queue.track_id WHERE tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY queue.position ASC, queue.created_at ASC LIMIT 1"
     )
     .get();
   if (next) {
@@ -1230,8 +1239,7 @@ function getVoteCandidates() {
   const filtered = poolTracks.filter(
     (track) => track.id !== currentTrackId && !queuedIds.has(track.id)
   );
-  const ready = filtered.filter((track) => track.download_status === "ready");
-  return ready.length >= 2 ? ready : filtered;
+  return filtered.filter((track) => track.download_status === "ready");
 }
 
 function startVoteRound() {
@@ -1820,9 +1828,16 @@ app.get("/api/audio/:trackId", requireAuth, (req, res) => {
 
 app.post("/api/queue/enqueue", requireAuth, requireRole("admin"), (req, res) => {
   const { trackId, source } = req.body || {};
-  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  const track = db
+    .prepare("SELECT id, disabled, download_status, audio_path FROM tracks WHERE id = ?")
+    .get(trackId);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
+  }
+  if (!isTrackPlayable(track)) {
+    return res.status(409).json({
+      error: "Track is not playable yet (audio must be downloaded and enabled)."
+    });
   }
   const entry = enqueueTrack(track.id, source || "admin");
   res.json(entry);
