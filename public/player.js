@@ -26,6 +26,7 @@
     const HARD_SEEK_DRIFT_SECONDS = 1.5;
     const DRIFT_GRACE_WINDOW_MS = 1500;
     const HARD_SEEK_COOLDOWN_MS = 4000;
+    const END_OF_TRACK_EPSILON_SECONDS = 0.35;
     const clientId = getOrCreateClientId();
     const state = {
       audio: null,
@@ -161,6 +162,13 @@
       const targetTime = expectedTimeSeconds(track, playState);
       const currentTime = Number.isFinite(state.audio.currentTime) ? state.audio.currentTime : 0;
       const drift = Math.abs(currentTime - targetTime);
+      const duration = Number.isFinite(state.audio.duration)
+        ? state.audio.duration
+        : Number.isFinite(track?.duration_sec)
+          ? track.duration_sec
+          : null;
+      const nearTrackEnd =
+        Number.isFinite(duration) && targetTime >= Math.max(0, duration - END_OF_TRACK_EPSILON_SECONDS);
       const now = Date.now();
       const inHardDrift = drift > HARD_SEEK_DRIFT_SECONDS;
 
@@ -179,7 +187,7 @@
         (sustainedHardDrift &&
           now - state.lastHardSyncAt > HARD_SEEK_COOLDOWN_MS &&
           state.audio.readyState >= 2);
-      if (shouldHardSeek) {
+      if (shouldHardSeek && !(state.audio.ended && nearTrackEnd)) {
         try {
           state.audio.currentTime = targetTime;
           state.lastHardSyncAt = now;
@@ -199,7 +207,7 @@
         if (!state.audio.paused) {
           state.audio.pause();
         }
-      } else if (state.audio.paused) {
+      } else if (state.audio.paused && !(state.audio.ended && nearTrackEnd)) {
         try {
           await state.audio.play();
         } catch (error) {
