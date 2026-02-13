@@ -23,6 +23,9 @@
   }
 
   function createPlayer({ elementId, statusEl, mode }) {
+    const HARD_SEEK_DRIFT_SECONDS = 1.2;
+    const SOFT_DRIFT_CORRECTION_SECONDS = 0.2;
+    const HARD_SEEK_COOLDOWN_MS = 2500;
     const clientId = getOrCreateClientId();
     const state = {
       audio: null,
@@ -38,6 +41,7 @@
       lastStateReceivedAt: 0,
       lastError: null,
       recoverAttempts: 0,
+      lastHardSyncAt: 0,
       lastProgressAt: Date.now(),
       lastProgressTime: 0,
       waitingSince: null
@@ -156,12 +160,22 @@
       const targetTime = expectedTimeSeconds(track, playState);
       const currentTime = Number.isFinite(state.audio.currentTime) ? state.audio.currentTime : 0;
       const drift = Math.abs(currentTime - targetTime);
-      if (force || drift > 1.2) {
+      const now = Date.now();
+      const shouldHardSeek =
+        force || (drift > HARD_SEEK_DRIFT_SECONDS && now - state.lastHardSyncAt > HARD_SEEK_COOLDOWN_MS);
+      if (shouldHardSeek) {
         try {
           state.audio.currentTime = targetTime;
+          state.lastHardSyncAt = now;
         } catch {
           // ignore temporary seek errors
         }
+      } else if (!playState.paused && drift > SOFT_DRIFT_CORRECTION_SECONDS) {
+        const direction = targetTime > currentTime ? 1 : -1;
+        const correction = Math.min(0.03, drift * 0.05);
+        state.audio.playbackRate = Math.max(0.97, Math.min(1.03, 1 + direction * correction));
+      } else if (state.audio.playbackRate !== 1) {
+        state.audio.playbackRate = 1;
       }
 
       if (playState.paused) {
