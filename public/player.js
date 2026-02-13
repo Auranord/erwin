@@ -187,6 +187,12 @@
         } catch {
           // ignore temporary seek errors
         }
+      } else if (!playState.paused && drift > SOFT_DRIFT_CORRECTION_SECONDS) {
+        const direction = targetTime > currentTime ? 1 : -1;
+        const correction = Math.min(0.03, drift * 0.05);
+        state.audio.playbackRate = Math.max(0.97, Math.min(1.03, 1 + direction * correction));
+      } else if (state.audio.playbackRate !== 1) {
+        state.audio.playbackRate = 1;
       }
 
       if (playState.paused) {
