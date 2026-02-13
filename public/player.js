@@ -23,6 +23,10 @@
   }
 
   function createPlayer({ elementId, statusEl, mode }) {
+    const HARD_SEEK_DRIFT_SECONDS = 1.5;
+    const DRIFT_GRACE_WINDOW_MS = 1500;
+    const HARD_SEEK_COOLDOWN_MS = 4000;
+    const END_OF_TRACK_EPSILON_SECONDS = 0.35;
     const clientId = getOrCreateClientId();
     const state = {
       audio: null,
@@ -38,6 +42,8 @@
       lastStateReceivedAt: 0,
       lastError: null,
       recoverAttempts: 0,
+      lastHardSyncAt: 0,
+      driftOutOfRangeSince: null,
       lastProgressAt: Date.now(),
       lastProgressTime: 0,
       waitingSince: null
@@ -156,17 +162,46 @@
       const targetTime = expectedTimeSeconds(track, playState);
       const currentTime = Number.isFinite(state.audio.currentTime) ? state.audio.currentTime : 0;
       const drift = Math.abs(currentTime - targetTime);
-      if (force || drift > 1.2) {
+      const duration = Number.isFinite(state.audio.duration)
+        ? state.audio.duration
+        : Number.isFinite(track?.duration_sec)
+          ? track.duration_sec
+          : null;
+      const nearTrackEnd =
+        Number.isFinite(duration) && targetTime >= Math.max(0, duration - END_OF_TRACK_EPSILON_SECONDS);
+      const now = Date.now();
+      const inHardDrift = drift > HARD_SEEK_DRIFT_SECONDS;
+
+      if (inHardDrift && !force) {
+        state.driftOutOfRangeSince = state.driftOutOfRangeSince || now;
+      } else {
+        state.driftOutOfRangeSince = null;
+      }
+
+      const sustainedHardDrift =
+        inHardDrift &&
+        Number.isFinite(state.driftOutOfRangeSince) &&
+        now - state.driftOutOfRangeSince >= DRIFT_GRACE_WINDOW_MS;
+      const shouldHardSeek =
+        force ||
+        (sustainedHardDrift &&
+          now - state.lastHardSyncAt > HARD_SEEK_COOLDOWN_MS &&
+          state.audio.readyState >= 2);
+      if (shouldHardSeek && !(state.audio.ended && nearTrackEnd)) {
         try {
           state.audio.currentTime = targetTime;
+          state.lastHardSyncAt = now;
+          state.driftOutOfRangeSince = null;
         } catch {
           // ignore temporary seek errors
         }
       }
 
       if (playState.paused) {
-        state.audio.pause();
-      } else {
+        if (!state.audio.paused) {
+          state.audio.pause();
+        }
+      } else if (state.audio.paused && !(state.audio.ended && nearTrackEnd)) {
         try {
           await state.audio.play();
         } catch (error) {
@@ -315,12 +350,19 @@
     }
 
     function setState({ playState, currentTrack, serverNow }) {
+      const prevPlayState = state.playState;
+      const prevTrack = state.currentTrack;
       state.playState = playState || null;
       state.currentTrack = currentTrack || null;
       state.lastStateServerNow = Number.isFinite(serverNow) ? serverNow : null;
       state.lastStateReceivedAt = Date.now();
       if (!state.audio) return;
-      applyPlayback(currentTrack, playState, true);
+
+      const forceSync =
+        prevTrack?.id !== currentTrack?.id ||
+        prevPlayState?.started_at_ms !== playState?.started_at_ms ||
+        prevPlayState?.paused !== playState?.paused;
+      applyPlayback(currentTrack, playState, forceSync);
     }
 
     init();
