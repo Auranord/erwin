@@ -196,8 +196,10 @@
       }
 
       if (playState.paused) {
-        state.audio.pause();
-      } else {
+        if (!state.audio.paused) {
+          state.audio.pause();
+        }
+      } else if (state.audio.paused) {
         try {
           await state.audio.play();
         } catch (error) {
@@ -346,12 +348,19 @@
     }
 
     function setState({ playState, currentTrack, serverNow }) {
+      const prevPlayState = state.playState;
+      const prevTrack = state.currentTrack;
       state.playState = playState || null;
       state.currentTrack = currentTrack || null;
       state.lastStateServerNow = Number.isFinite(serverNow) ? serverNow : null;
       state.lastStateReceivedAt = Date.now();
       if (!state.audio) return;
-      applyPlayback(currentTrack, playState, true);
+
+      const forceSync =
+        prevTrack?.id !== currentTrack?.id ||
+        prevPlayState?.started_at_ms !== playState?.started_at_ms ||
+        prevPlayState?.paused !== playState?.paused;
+      applyPlayback(currentTrack, playState, forceSync);
     }
 
     init();
