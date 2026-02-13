@@ -53,7 +53,6 @@
       const muteToggle = document.getElementById("mute-toggle");
       let isMuted = false;
       let isPaused = true;
-      const volumeKey = "erwin_stream_volume";
 
       function formatTime(seconds) {
         if (!Number.isFinite(seconds)) return "0:00";
@@ -85,26 +84,18 @@
         playToggle.textContent = isPaused ? "⯈" : "⏸";
         playToggle.title = isPaused ? "Play" : "Pause";
       }
-      const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
-      ws.addEventListener("message", (event) => {
-        const message = JSON.parse(event.data);
-        if (message.event === "STATE_UPDATE") {
-          refresh();
-        }
-      });
+
       refresh();
       updateProgress();
       setInterval(updateProgress, 1000);
+      setInterval(refresh, 5000);
 
-      const savedVolume = localStorage.getItem(volumeKey);
-      if (savedVolume !== null) {
-        const storedValue = Number(savedVolume);
-        if (Number.isFinite(storedValue)) {
-          volumeEl.value = String(storedValue);
-          player.setVolume(storedValue);
-        }
-      } else {
-        player.setVolume(Number(volumeEl.value));
+      const storedVolume = player.getVolumePercent();
+      volumeEl.value = String(storedVolume);
+      if (player.isMuted()) {
+        isMuted = true;
+        muteToggle.textContent = "◍";
+        muteToggle.title = "Unmute";
       }
 
       document.getElementById("play-toggle").addEventListener("click", () => {
@@ -144,7 +135,6 @@
       volumeEl.addEventListener("input", () => {
         const value = Number(volumeEl.value);
         player.setVolume(value);
-        localStorage.setItem(volumeKey, String(value));
       });
       progressEl.addEventListener("change", () => {
         const duration = player.getDuration();

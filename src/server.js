@@ -113,6 +113,20 @@ app.use((req, res, next) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+const wsTelemetry = new Map();
+let lastAutoSkipAt = 0;
+
+const DRIFT_THRESHOLD_SECONDS = 1.5;
+const HEARTBEAT_TIMEOUT_MS = 15000;
+const AUTO_SKIP_ERROR_WINDOW_MS = 30000;
+const AUTO_SKIP_STUCK_MS = 10000;
+const AUTO_SKIP_COOLDOWN_MS = 30000;
+
+function sendWsMessage(ws, message) {
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify(message));
+  }
+}
 
 function broadcast(event, payload) {
   const message = JSON.stringify({ event, payload });
@@ -122,6 +136,32 @@ function broadcast(event, payload) {
     }
   });
   log("info", "broadcast", { event });
+}
+
+function broadcastType(type, payload = {}) {
+  const message = JSON.stringify({ type, ...payload });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) {
+      client.send(message);
+    }
+  });
+}
+
+function computeExpectedSeconds(playState, serverNow, durationSec = null) {
+  if (!playState?.started_at_ms) return 0;
+  const referenceMs =
+    playState.paused && playState.paused_at_ms ? playState.paused_at_ms : serverNow;
+  let expected = Math.max(0, (referenceMs - playState.started_at_ms) / 1000);
+  if (Number.isFinite(durationSec) && durationSec > 0) {
+    expected = Math.min(durationSec, expected);
+  }
+  return expected;
+}
+
+function getActiveStreamClients() {
+  return [...wsTelemetry.values()].filter(
+    (client) => client.page === "stream" && Date.now() - (client.lastHeartbeatAt || 0) < HEARTBEAT_TIMEOUT_MS
+  );
 }
 
 function runYtDlp(args) {
@@ -943,9 +983,15 @@ function normalizeQueuePositions() {
 
 function broadcastStateUpdate({ includeQueue = false } = {}) {
   const playState = getPlayState();
+  const currentTrack = getCurrentTrack(playState);
+  const serverNow = Date.now();
   const queue = includeQueue ? getQueue() : undefined;
-  broadcast("STATE_UPDATE", queue ? { playState, queue } : { playState });
-  return { playState, queue };
+  const payload = queue
+    ? { playState, currentTrack, queue, serverNow }
+    : { playState, currentTrack, serverNow };
+  broadcast("STATE_UPDATE", payload);
+  broadcastType("STATE_UPDATE", payload);
+  return { playState, currentTrack, queue, serverNow };
 }
 
 const VOTE_SETTINGS_DEFAULTS = {
@@ -1166,6 +1212,43 @@ function skipQueue() {
   log("info", "queue skip", { nextTrackId: next?.track_id || null });
   const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
   return { playState, queue };
+}
+
+
+function maybeAutoSkipFromTelemetry(clientMeta) {
+  const now = Date.now();
+  if (now - lastAutoSkipAt < AUTO_SKIP_COOLDOWN_MS) return;
+  const playState = getPlayState();
+  const currentTrack = getCurrentTrack(playState);
+  if (!playState?.current_track_id || playState.paused || !currentTrack) return;
+
+  const activeStreamClients = getActiveStreamClients();
+  if (activeStreamClients.length === 0) return;
+  if (!clientMeta?.fatalErrorTimes || clientMeta.fatalErrorTimes.length < 3) return;
+
+  const recentErrors = clientMeta.fatalErrorTimes.filter((ts) => now - ts <= AUTO_SKIP_ERROR_WINDOW_MS);
+  clientMeta.fatalErrorTimes = recentErrors;
+  if (recentErrors.length < 3) return;
+  if (!Number.isFinite(clientMeta.progressMarkTime) || !Number.isFinite(clientMeta.lastProgressAt)) return;
+  if (now - clientMeta.lastProgressAt < AUTO_SKIP_STUCK_MS) return;
+  if (Math.abs((clientMeta.lastProgressSeconds || 0) - (clientMeta.progressMarkTime || 0)) > 0.5) return;
+
+  if (activeStreamClients.length > 1) {
+    log("warn", "auto-skip prevented due to multiple stream clients", {
+      clients: activeStreamClients.length,
+      userId: clientMeta.userId,
+      clientId: clientMeta.clientId
+    });
+    return;
+  }
+
+  lastAutoSkipAt = now;
+  log("warn", "auto-skip triggered from telemetry", {
+    userId: clientMeta.userId,
+    clientId: clientMeta.clientId,
+    trackId: playState.current_track_id
+  });
+  skipQueue();
 }
 
 function broadcastChatMessage({
@@ -2457,9 +2540,135 @@ server.on("upgrade", (request, socket, head) => {
   });
 });
 
-wss.on("connection", (ws) => {
-  ws.send(JSON.stringify({ event: "CONNECTED", payload: {} }));
+wss.on("connection", (ws, request) => {
+  const user = request.session?.user || {};
+  const meta = {
+    userId: user.id || null,
+    username: user.username || null,
+    clientId: null,
+    page: null,
+    lastHeartbeatAt: 0,
+    lastReported: null,
+    timeSync: { rttMs: null, offsetMs: null },
+    stallScore: 0,
+    errorScore: 0,
+    fatalErrorTimes: [],
+    lastProgressSeconds: null,
+    lastProgressAt: 0,
+    progressMarkTime: null
+  };
+  wsTelemetry.set(ws, meta);
+  sendWsMessage(ws, { event: "CONNECTED", payload: {} });
+  sendWsMessage(ws, { type: "CONNECTED" });
+
+  ws.on("message", (raw) => {
+    let message;
+    try {
+      message = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    const type = message?.type;
+    if (!type) return;
+
+    if (type === "HELLO") {
+      meta.clientId = message.clientId || meta.clientId;
+      meta.page = message.page || null;
+      return;
+    }
+
+    if (type === "TIME_SYNC_PING") {
+      sendWsMessage(ws, {
+        type: "TIME_SYNC_PONG",
+        t0: Number(message.t0) || 0,
+        t1: Date.now(),
+        clientId: message.clientId || meta.clientId || null
+      });
+      return;
+    }
+
+    if (type === "PLAYER_EVENT") {
+      if (message.event === "error") {
+        meta.errorScore += 1;
+      }
+      if (message.event === "stalled" || message.event === "waiting") {
+        meta.stallScore += 1;
+      }
+      return;
+    }
+
+    if (type !== "PLAYER_HEARTBEAT") {
+      return;
+    }
+
+    const now = Date.now();
+    const reportedTime = Number(message.currentTime);
+    meta.clientId = message.clientId || meta.clientId;
+    meta.lastHeartbeatAt = now;
+    meta.lastReported = {
+      trackId: message.trackId ?? null,
+      currentTime: Number.isFinite(reportedTime) ? reportedTime : 0,
+      paused: Boolean(message.paused),
+      readyState: Number(message.readyState),
+      networkState: Number(message.networkState),
+      bufferedEnd: Number.isFinite(Number(message.bufferedEnd)) ? Number(message.bufferedEnd) : null,
+      lastError: message.lastError || null
+    };
+
+    if (meta.lastProgressSeconds === null || !Number.isFinite(meta.lastProgressSeconds)) {
+      meta.lastProgressSeconds = meta.lastReported.currentTime;
+      meta.progressMarkTime = meta.lastReported.currentTime;
+      meta.lastProgressAt = now;
+    } else if (meta.lastReported.currentTime > meta.lastProgressSeconds + 0.5) {
+      meta.lastProgressSeconds = meta.lastReported.currentTime;
+      meta.progressMarkTime = meta.lastReported.currentTime;
+      meta.lastProgressAt = now;
+    }
+
+    if (meta.lastReported.lastError) {
+      meta.errorScore += 1;
+      meta.fatalErrorTimes.push(now);
+      meta.fatalErrorTimes = meta.fatalErrorTimes.filter((ts) => now - ts <= AUTO_SKIP_ERROR_WINDOW_MS);
+    }
+
+    const playState = getPlayState();
+    const currentTrack = getCurrentTrack(playState);
+    const expectedSeconds = computeExpectedSeconds(playState, now, currentTrack?.duration_sec ?? null);
+    const drift = Math.abs(meta.lastReported.currentTime - expectedSeconds);
+    const wrongTrack = (meta.lastReported.trackId || null) !== (playState?.current_track_id || null);
+    const likelyStalled =
+      !playState?.paused &&
+      (meta.lastReported.readyState < 3 ||
+        meta.lastReported.networkState === 2 ||
+        meta.lastReported.networkState === 3 ||
+        (Number.isFinite(meta.lastReported.bufferedEnd) &&
+          meta.lastReported.bufferedEnd < meta.lastReported.currentTime + 0.1));
+
+    if (wrongTrack || drift > DRIFT_THRESHOLD_SECONDS || likelyStalled) {
+      sendWsMessage(ws, {
+        type: "CLIENT_ADJUST",
+        targetTrackId: playState?.current_track_id || null,
+        targetTime: expectedSeconds,
+        shouldBePaused: Boolean(playState?.paused),
+        reason: wrongTrack ? "state-change" : drift > DRIFT_THRESHOLD_SECONDS ? "drift" : "recover"
+      });
+    }
+
+    maybeAutoSkipFromTelemetry(meta);
+  });
+
+  ws.on("close", () => {
+    wsTelemetry.delete(ws);
+  });
+
+  ws.on("error", () => {
+    wsTelemetry.delete(ws);
+  });
 });
+
+const stateBroadcastInterval = setInterval(() => {
+  broadcastStateUpdate();
+}, 10000);
 
 async function startTwitchBot() {
   if (!twitchOauthToken && twitchRefreshToken && TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET) {
@@ -2575,6 +2784,7 @@ function shutdown(signal) {
   clearInterval(downloadInterval);
   clearInterval(voteInterval);
   clearInterval(retentionInterval);
+  clearInterval(stateBroadcastInterval);
   if (twitchTokenRefreshTimer) {
     clearTimeout(twitchTokenRefreshTimer);
     twitchTokenRefreshTimer = null;
