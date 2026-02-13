@@ -815,14 +815,60 @@ function getQueue() {
 }
 
 function isTrackPlayable(track) {
-  return Boolean(
-    track &&
-      !track.disabled &&
-      track.download_status === "ready" &&
-      track.audio_path
+  return Boolean(track && track.download_status === "ready" && track.audio_path);
+}
+
+
+function isTrackEnabledAndPlayable(track) {
+  return Boolean(track && !track.disabled && isTrackPlayable(track));
+}
+
+function getEligiblePoolTracks({ excludedTrackIds = new Set() } = {}) {
+  const poolTracks = db
+    .prepare(
+      "SELECT play_pool.id as pool_id, play_pool.track_id, play_pool.created_at, tracks.title, tracks.channel, tracks.disabled, tracks.download_status, tracks.audio_path FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id ORDER BY play_pool.created_at ASC"
+    )
+    .all();
+  return poolTracks.filter(
+    (track) => !excludedTrackIds.has(track.track_id) && isTrackEnabledAndPlayable(track)
   );
 }
 
+function popNextPlayableQueueEntry() {
+  const queueEntries = db
+    .prepare(
+      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, tracks.disabled, tracks.download_status, tracks.audio_path FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
+    )
+    .all();
+
+  let removedCount = 0;
+  for (const entry of queueEntries) {
+    if (isTrackEnabledAndPlayable(entry)) {
+      if (removedCount > 0) {
+        normalizeQueuePositions();
+        broadcast("QUEUE_UPDATE", { action: "cleaned", removedCount });
+      }
+      return entry;
+    }
+
+    const reason = entry.disabled ? "disabled" : "audio_unavailable";
+    db.prepare("DELETE FROM queue WHERE id = ?").run(entry.id);
+    removedCount += 1;
+    log("warn", "queue entry removed", {
+      queueId: entry.id,
+      trackId: entry.track_id,
+      reason
+    });
+    broadcast("QUEUE_UPDATE", { action: "removed_unplayable", queueId: entry.id, trackId: entry.track_id, reason });
+  }
+
+  if (removedCount > 0) {
+    normalizeQueuePositions();
+    broadcast("QUEUE_UPDATE", { action: "cleaned", removedCount });
+  }
+
+  return null;
+}
 function getPoolTracks() {
   return db
     .prepare(
@@ -1094,11 +1140,7 @@ function resumeSession() {
 }
 
 function skipQueue() {
-  const next = db
-    .prepare(
-      "SELECT queue.id, queue.track_id FROM queue JOIN tracks ON tracks.id = queue.track_id WHERE tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY queue.position ASC, queue.created_at ASC LIMIT 1"
-    )
-    .get();
+  const next = popNextPlayableQueueEntry();
   if (next) {
     db.prepare("DELETE FROM queue WHERE id = ?").run(next.id);
     normalizeQueuePositions();
@@ -1106,14 +1148,11 @@ function skipQueue() {
       "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
     ).run(next.track_id, Date.now(), new Date().toISOString());
   } else {
-    const poolTracks = getPoolTracks();
     const activeVote = getLatestOpenVoteRound();
     const excludedVoteTrackIds = new Set(
       activeVote?.options?.map((option) => option.trackId) || []
     );
-    const eligiblePool = poolTracks.filter(
-      (track) => !excludedVoteTrackIds.has(track.track_id)
-    );
+    const eligiblePool = getEligiblePoolTracks({ excludedTrackIds: excludedVoteTrackIds });
     if (eligiblePool.length > 0) {
       const nextTrack = pickRandom(eligiblePool);
       if (nextTrack) {
@@ -1256,15 +1295,13 @@ function getVoteCandidates() {
   const playState = getPlayState();
   const currentTrackId = playState?.current_track_id;
   const queuedIds = new Set(getQueue().map((entry) => entry.track_id));
-  const poolTracks = db
-    .prepare(
-      "SELECT tracks.id, tracks.title, tracks.channel, tracks.download_status FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id"
-    )
-    .all();
-  const filtered = poolTracks.filter(
-    (track) => track.id !== currentTrackId && !queuedIds.has(track.id)
-  );
-  return filtered.filter((track) => track.download_status === "ready");
+  return getEligiblePoolTracks().filter(
+    (track) => track.track_id !== currentTrackId && !queuedIds.has(track.track_id)
+  ).map((track) => ({
+    id: track.track_id,
+    title: track.title,
+    channel: track.channel
+  }));
 }
 
 function startVoteRound() {
@@ -1274,7 +1311,8 @@ function startVoteRound() {
     log("warn", "not enough vote candidates", { candidates: candidates.length });
     return null;
   }
-  const selected = shuffleArray(candidates).slice(0, settings.options);
+  const selectedCount = Math.max(2, Math.min(settings.options, candidates.length));
+  const selected = shuffleArray(candidates).slice(0, selectedCount);
   const options = selected.map((track) => ({
     trackId: track.id,
     title: track.title,
@@ -1388,10 +1426,6 @@ function tickVoting() {
     return;
   }
   if (lastVoteTrackId === playState.current_track_id) {
-    return;
-  }
-  const { options } = getVotingSettings();
-  if (getPoolTracks().length < options * 2) {
     return;
   }
   const currentTrack = getCurrentTrack(playState);
@@ -1929,7 +1963,7 @@ app.post("/api/queue/enqueue", requireAuth, (req, res) => {
   }
   if (!isTrackPlayable(track)) {
     return res.status(409).json({
-      error: "Track is not playable yet (audio must be downloaded and enabled)."
+      error: "Track is not playable yet (audio must be downloaded)."
     });
   }
   const entry = enqueueTrack(track.id, source || "manual", req.session.user.id);
@@ -1978,11 +2012,18 @@ app.post("/api/pool/enqueue", requireAuth, (req, res) => {
   if (!trackId) {
     return res.status(400).json({ error: "trackId required" });
   }
-  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  const track = db
+    .prepare("SELECT id, download_status, audio_path FROM tracks WHERE id = ?")
+    .get(trackId);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
   }
-  const entry = enqueueTrack(trackId, "pool", null);
+  if (!isTrackPlayable(track)) {
+    return res.status(409).json({
+      error: "Track is not playable yet (audio must be downloaded)."
+    });
+  }
+  const entry = enqueueTrack(trackId, "pool", req.session.user.id);
   res.json(entry);
 });
 
@@ -2225,11 +2266,11 @@ app.post(
   (req, res) => {
     const tracks = db
       .prepare(
-        "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND tracks.disabled = 0 ORDER BY playlist_tracks.position ASC"
+        "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY playlist_tracks.position ASC"
       )
       .all(req.params.id);
     if (tracks.length === 0) {
-      return res.status(404).json({ error: "Playlist has no playable tracks" });
+      return res.status(404).json({ error: "Playlist has no enabled, playable tracks" });
     }
     const now = new Date().toISOString();
     const shuffled = shuffleArray(tracks);
@@ -2366,13 +2407,9 @@ app.post("/api/votes/start", requireAuth, (req, res) => {
   if (active && new Date(active.endsAt).getTime() > Date.now()) {
     return res.status(409).json({ error: "Vote already active" });
   }
-  const { options } = getVotingSettings();
-  if (getPoolTracks().length < options * 2) {
-    return res.status(409).json({ error: "Not enough tracks in pool" });
-  }
   const round = startVoteRound();
   if (!round) {
-    return res.status(500).json({ error: "Unable to start vote" });
+    return res.status(409).json({ error: "Not enough eligible tracks in pool for voting" });
   }
   res.json({
     roundId: round.id,
