@@ -849,7 +849,15 @@ function getCurrentTrack(playState) {
 function getQueue() {
   return db
     .prepare(
-      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, queue.added_by_user_id, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
+      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, queue.added_by_user_id, users.username AS added_by_username, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id LEFT JOIN users ON users.id = queue.added_by_user_id ORDER BY queue.position ASC, queue.created_at ASC"
+    )
+    .all();
+}
+
+function getPlaylistTrackRows() {
+  return db
+    .prepare(
+      "SELECT playlist_tracks.playlist_id, tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id ORDER BY playlist_tracks.position ASC"
     )
     .all();
 }
@@ -1928,6 +1936,78 @@ app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
   res.status(201).json({ id, username: usernameRaw, created_at: createdAt, isAdmin: false });
 });
 
+app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+  const userId = req.params.id;
+  const current = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
+  if (!current) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  const usernameRaw = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const updates = [];
+  const values = [];
+
+  if (usernameRaw) {
+    if (usernameRaw.length < 3 || usernameRaw.length > 64) {
+      return res.status(400).json({ error: "username must be between 3 and 64 characters" });
+    }
+    updates.push("username = ?");
+    values.push(usernameRaw);
+  }
+
+  if (password) {
+    if (password.length < 8) {
+      return res.status(400).json({ error: "password must be at least 8 characters" });
+    }
+    updates.push("password_hash = ?");
+    values.push(bcrypt.hashSync(password, 10));
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: "No updates requested" });
+  }
+
+  values.push(userId);
+  try {
+    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  } catch (error) {
+    const message = String(error?.message || error).toLowerCase();
+    if (message.includes("unique")) {
+      return res.status(409).json({ error: "username already exists" });
+    }
+    throw error;
+  }
+
+  const updated = db.prepare("SELECT id, username, role, created_at FROM users WHERE id = ?").get(userId);
+  res.json({
+    id: updated.id,
+    username: updated.username,
+    created_at: updated.created_at,
+    isAdmin: updated.role === "admin"
+  });
+});
+
+app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+  const userId = req.params.id;
+  if (req.session.user?.id === userId) {
+    return res.status(400).json({ error: "You cannot delete your own user" });
+  }
+  const user = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  if (user.role === "admin") {
+    const adminCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'").get().count;
+    if (adminCount <= 1) {
+      return res.status(400).json({ error: "Cannot delete the last admin" });
+    }
+  }
+
+  db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  res.json({ ok: true });
+});
+
 app.get("/api/state", requireAuth, (req, res) => {
   const playState = getPlayState();
   const currentTrack = getCurrentTrack(playState);
@@ -2119,13 +2199,14 @@ app.post("/api/pool/add", requireAuth, (req, res) => {
   res.json(result);
 });
 
+app.delete("/api/pool/:trackId", requireAuth, (req, res) => {
+  const removed = removeFromPool(req.params.trackId);
+  res.json({ removed });
+});
+
 app.get("/api/playlists", requireAuth, (req, res) => {
   const playlists = db.prepare("SELECT * FROM playlists ORDER BY created_at DESC").all();
-  const playlistTracks = db
-    .prepare(
-      "SELECT playlist_tracks.playlist_id, tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id ORDER BY playlist_tracks.position ASC"
-    )
-    .all();
+  const playlistTracks = getPlaylistTrackRows();
   const byPlaylist = playlistTracks.reduce((acc, row) => {
     acc[row.playlist_id] ||= [];
     acc[row.playlist_id].push(row);
@@ -2201,6 +2282,138 @@ app.delete("/api/playlists/:id", requireAuth, (req, res) => {
   log("info", "playlist deleted", { playlistId: req.params.id });
   broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "deleted" });
   res.json({ ok: true });
+});
+
+app.post("/api/playlists/:id/add-to-pool", requireAuth, (req, res) => {
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.id);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const tracks = db
+    .prepare(
+      "SELECT tracks.id, tracks.download_status, tracks.audio_path FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ?"
+    )
+    .all(req.params.id);
+  let added = 0;
+  for (const track of tracks) {
+    if (!isTrackPlayable(track)) continue;
+    if (addToPool(track.id).added) added += 1;
+  }
+  res.json({ added, total: tracks.length });
+});
+
+app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
+  const playlist = db.prepare("SELECT * FROM playlists WHERE id = ?").get(req.params.id);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const tracks = db
+    .prepare(
+      "SELECT tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
+    )
+    .all(req.params.id);
+  const payload = {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    playlist: {
+      id: playlist.id,
+      name: playlist.name,
+      tracks: tracks.map((track) => ({
+        title: track.title || null,
+        youtube_id: track.youtube_id || null,
+        url: track.url || null,
+        disabled: Boolean(track.disabled),
+        position: track.position
+      }))
+    }
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${playlist.name.replace(/[^a-z0-9-_]+/gi, "_") || "playlist"}.json"`);
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/playlists/import-json", requireAuth, (req, res) => {
+  const { name, tracks, mode, playlistId } = req.body || {};
+  const modeValue = mode === "replace" ? "replace" : "append";
+  const trackList = Array.isArray(tracks) ? tracks : [];
+  if (!name || typeof name !== "string" || trackList.length === 0) {
+    return res.status(400).json({ error: "name and tracks array are required" });
+  }
+
+  let targetPlaylistId = playlistId;
+  let playlist = null;
+  if (targetPlaylistId) {
+    playlist = db.prepare("SELECT id, name FROM playlists WHERE id = ?").get(targetPlaylistId);
+  }
+  if (!playlist) {
+    const byName = db.prepare("SELECT id, name FROM playlists WHERE name = ?").get(name.trim());
+    playlist = byName || null;
+  }
+  if (!playlist) {
+    const now = new Date().toISOString();
+    targetPlaylistId = nanoid();
+    db.prepare("INSERT INTO playlists (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(targetPlaylistId, name.trim(), now, now);
+    playlist = { id: targetPlaylistId, name: name.trim() };
+  } else {
+    targetPlaylistId = playlist.id;
+  }
+
+  if (modeValue === "replace") {
+    db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").run(targetPlaylistId);
+  }
+
+  const findTrackByYoutube = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
+  const findTrackByUrl = db.prepare("SELECT id, youtube_id FROM tracks WHERE url = ?");
+  const insertTrack = db.prepare(
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, created_at) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, ?, ?)"
+  );
+  const now = new Date().toISOString();
+  const existingPosition = db.prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?").get(targetPlaylistId).maxPosition || 0;
+  let position = modeValue === "replace" ? 1 : existingPosition + 1;
+  let queued = 0;
+  let addedTracks = 0;
+
+  for (const rawTrack of trackList) {
+    const track = rawTrack || {};
+    const youtubeId = parseYouTubeId(track.url || track.youtube_id || "") || (typeof track.youtube_id === "string" ? track.youtube_id.trim() : "");
+    const url = typeof track.url === "string" && track.url.trim()
+      ? track.url.trim()
+      : youtubeId
+        ? `https://www.youtube.com/watch?v=${youtubeId}`
+        : "";
+    if (!youtubeId && !url) {
+      continue;
+    }
+
+    let existing = youtubeId ? findTrackByYoutube.get(youtubeId) : null;
+    if (!existing && url) {
+      existing = findTrackByUrl.get(url);
+    }
+
+    let trackId = existing?.id;
+    if (!trackId) {
+      trackId = nanoid();
+      insertTrack.run(trackId, youtubeId || nanoid(), url, typeof track.title === "string" ? track.title.trim() || null : null, track.disabled ? 1 : 0, now);
+      enqueueDownload(targetPlaylistId, trackId);
+      queued += 1;
+    } else if (typeof track.title === "string" && track.title.trim()) {
+      db.prepare("UPDATE tracks SET title = COALESCE(NULLIF(?, ''), title) WHERE id = ?").run(track.title.trim(), trackId);
+    }
+
+    const existsInPlaylist = db
+      .prepare("SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?")
+      .get(targetPlaylistId, trackId);
+    if (!existsInPlaylist) {
+      db.prepare("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)").run(targetPlaylistId, trackId, position);
+      position += 1;
+      addedTracks += 1;
+    }
+  }
+
+  db.prepare("UPDATE playlists SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), targetPlaylistId);
+  normalizeQueuePositions();
+  broadcast("PLAYLIST_UPDATE", { playlistId: targetPlaylistId, action: "imported_json" });
+  res.json({ playlistId: targetPlaylistId, addedTracks, queuedDownloads: queued, mode: modeValue });
 });
 
 app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {

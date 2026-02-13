@@ -54,6 +54,37 @@
       let isMuted = false;
       let isPaused = true;
 
+      const STREAM_ICON_FALLBACKS = {
+        play: "⯈",
+        pause: "⏸",
+        restart: "↺",
+        skip: "⚔",
+        mute: "◌",
+        unmute: "◍"
+      };
+      const streamAvailableIcons = new Set();
+
+      async function loadStreamIcons() {
+        await Promise.all(
+          Object.keys(STREAM_ICON_FALLBACKS).map(async (name) => {
+            try {
+              const response = await fetch(`/assets/icons/${name}.png`, { method: "HEAD" });
+              if (response.ok) streamAvailableIcons.add(name);
+            } catch {
+              // ignore missing icon file
+            }
+          })
+        );
+      }
+
+      function streamIcon(name) {
+        if (streamAvailableIcons.has(name)) {
+          return `<img src="/assets/icons/${name}.png" class="button-icon" alt="" aria-hidden="true" />`;
+        }
+        return `<span class="button-icon-fallback" aria-hidden="true">${STREAM_ICON_FALLBACKS[name] || "•"}</span>`;
+      }
+
+
       function formatTime(seconds) {
         if (!Number.isFinite(seconds)) return "0:00";
         const minutes = Math.floor(seconds / 60);
@@ -81,11 +112,16 @@
         player.setState({ playState, currentTrack });
         isPaused = playState?.paused ?? true;
         const playToggle = document.getElementById("play-toggle");
-        playToggle.textContent = isPaused ? "⯈" : "⏸";
+        playToggle.innerHTML = isPaused ? streamIcon("play") : streamIcon("pause");
         playToggle.title = isPaused ? "Play" : "Pause";
       }
 
-      refresh();
+      loadStreamIcons().then(() => {
+        muteToggle.innerHTML = streamIcon("mute");
+        document.getElementById("restart-track").innerHTML = streamIcon("restart");
+        document.getElementById("skip-track").innerHTML = streamIcon("skip");
+        refresh();
+      });
       updateProgress();
       setInterval(updateProgress, 1000);
       setInterval(refresh, 5000);
@@ -94,7 +130,7 @@
       volumeEl.value = String(storedVolume);
       if (player.isMuted()) {
         isMuted = true;
-        muteToggle.textContent = "◍";
+        muteToggle.innerHTML = streamIcon("unmute");
         muteToggle.title = "Unmute";
       }
 
@@ -124,11 +160,11 @@
         isMuted = !isMuted;
         if (isMuted) {
           player.mute();
-          muteToggle.textContent = "◍";
+          muteToggle.innerHTML = streamIcon("unmute");
           muteToggle.title = "Unmute";
         } else {
           player.unmute();
-          muteToggle.textContent = "◌";
+          muteToggle.innerHTML = streamIcon("mute");
           muteToggle.title = "Mute";
         }
       });

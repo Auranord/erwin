@@ -558,6 +558,22 @@ select:focus-visible,
   font-size: 0.9rem;
 }
 
+
+.button-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
+}
+
+.button-icon-fallback {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
 .draggable-item {
   cursor: grab;
 }
@@ -800,8 +816,25 @@ body.listen-page #listen-track {
 }
 
 .login-card {
-  width: min(440px, 92vw);
+  width: min(560px, 94vw);
   overflow: hidden;
+}
+
+.login-card .grid {
+  gap: 0.9rem;
+}
+
+.login-card input,
+.login-card button {
+  min-height: 2.85rem;
+  font-size: 1rem;
+}
+
+.title-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: nowrap;
 }
 
 .login-card::after {
