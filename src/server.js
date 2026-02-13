@@ -819,31 +819,27 @@ function isTrackPlayable(track) {
 }
 
 
-function isTrackEnabledAndPlayable(track) {
-  return Boolean(track && !track.disabled && isTrackPlayable(track));
-}
-
 function getEligiblePoolTracks({ excludedTrackIds = new Set() } = {}) {
   const poolTracks = db
     .prepare(
-      "SELECT play_pool.id as pool_id, play_pool.track_id, play_pool.created_at, tracks.title, tracks.channel, tracks.disabled, tracks.download_status, tracks.audio_path FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id ORDER BY play_pool.created_at ASC"
+      "SELECT play_pool.id as pool_id, play_pool.track_id, play_pool.created_at, tracks.title, tracks.channel, tracks.download_status, tracks.audio_path FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id ORDER BY play_pool.created_at ASC"
     )
     .all();
   return poolTracks.filter(
-    (track) => !excludedTrackIds.has(track.track_id) && isTrackEnabledAndPlayable(track)
+    (track) => !excludedTrackIds.has(track.track_id) && isTrackPlayable(track)
   );
 }
 
 function popNextPlayableQueueEntry() {
   const queueEntries = db
     .prepare(
-      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, tracks.disabled, tracks.download_status, tracks.audio_path FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
+      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, tracks.download_status, tracks.audio_path FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
     )
     .all();
 
   let removedCount = 0;
   for (const entry of queueEntries) {
-    if (isTrackEnabledAndPlayable(entry)) {
+    if (isTrackPlayable(entry)) {
       if (removedCount > 0) {
         normalizeQueuePositions();
         broadcast("QUEUE_UPDATE", { action: "cleaned", removedCount });
@@ -851,7 +847,7 @@ function popNextPlayableQueueEntry() {
       return entry;
     }
 
-    const reason = entry.disabled ? "disabled" : "audio_unavailable";
+    const reason = "audio_unavailable";
     db.prepare("DELETE FROM queue WHERE id = ?").run(entry.id);
     removedCount += 1;
     log("warn", "queue entry removed", {
