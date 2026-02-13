@@ -162,6 +162,23 @@
 
       <section class="tab-panel" data-tab-panel="settings">
         <div class="grid two">
+          <div class="card" id="users-card">
+            <h2>Users</h2>
+            <p id="users-status" class="notice">Checking permissions...</p>
+            <form id="user-create-form" class="grid hidden">
+              <div>
+                <label for="new-username">Username</label>
+                <input id="new-username" name="new-username" minlength="3" maxlength="64" required />
+              </div>
+              <div>
+                <label for="new-password">Password</label>
+                <input id="new-password" name="new-password" type="password" minlength="8" required />
+              </div>
+              <button type="submit">Create User</button>
+            </form>
+            <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
+          </div>
+
           <div class="card">
             <h2>Settings</h2>
             <form id="settings-form" class="grid">
@@ -289,6 +306,10 @@
       const settingsTwitchPause = document.getElementById("settings-twitch-pause");
       const settingsTwitchResume = document.getElementById("settings-twitch-resume");
       const themeToggle = document.getElementById("theme-toggle");
+      const usersStatus = document.getElementById("users-status");
+      const usersList = document.getElementById("users-list");
+      const userCreateForm = document.getElementById("user-create-form");
+      let currentUser = null;
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
       let queueOrder = [];
@@ -495,6 +516,43 @@
               </div>`;
           })
           .join("");
+      }
+
+      function renderUsers(users) {
+        if (!users || users.length === 0) {
+          usersList.innerHTML = '<div class="list-item">No users found.</div>';
+          return;
+        }
+        usersList.innerHTML = users
+          .map((user) => `<div class="list-item"><span>${user.username}</span><span class="badge">${user.isAdmin ? "admin" : "user"}</span></div>`)
+          .join("");
+      }
+
+      async function fetchMe() {
+        const response = await fetch("/api/me");
+        if (!response.ok) return null;
+        currentUser = await response.json();
+        localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
+        return currentUser;
+      }
+
+      async function fetchUsers() {
+        if (!currentUser?.isAdmin) {
+          usersStatus.textContent = "Not permitted.";
+          userCreateForm.classList.add("hidden");
+          usersList.classList.add("hidden");
+          return;
+        }
+        usersStatus.textContent = "";
+        userCreateForm.classList.remove("hidden");
+        usersList.classList.remove("hidden");
+        const response = await fetch("/api/users");
+        if (!response.ok) {
+          usersStatus.textContent = "Failed to load users.";
+          return;
+        }
+        const users = await response.json();
+        renderUsers(users);
       }
 
       async function fetchState() {
@@ -983,6 +1041,26 @@
         }, 3000);
       });
 
+
+      userCreateForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const username = userCreateForm["new-username"].value.trim();
+        const password = userCreateForm["new-password"].value;
+        const response = await fetch("/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password })
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          usersStatus.textContent = payload.error || "Failed to create user.";
+          return;
+        }
+        userCreateForm.reset();
+        usersStatus.textContent = "User created.";
+        fetchUsers();
+      });
+
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.addEventListener("message", (event) => {
         const message = JSON.parse(event.data);
@@ -1033,12 +1111,16 @@
         }
       });
 
-      fetchState();
-      fetchPlaylists();
-      fetchDownloads();
-      fetchSettings();
-      fetchActiveVote();
-      fetchPool();
+      (async () => {
+        await fetchMe();
+        await fetchUsers();
+        fetchState();
+        fetchPlaylists();
+        fetchDownloads();
+        fetchSettings();
+        fetchActiveVote();
+        fetchPool();
+      })();
     </script>
   </body>
 </html>
