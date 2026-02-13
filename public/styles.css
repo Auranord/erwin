@@ -617,6 +617,10 @@ select:focus-visible,
   display: none;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .modal-card {
   width: min(460px, 92vw);
   background: linear-gradient(165deg, var(--panel), #9e794b);
@@ -768,6 +772,8 @@ input[type="range"]::-webkit-slider-thumb {
 /* Page-specific: dashboard */
 body.dashboard-page #now-playing {
   border-left: 4px solid rgba(200, 164, 90, 0.85);
+  justify-content: flex-start;
+  text-align: left;
 }
 
 body.dashboard-page #start-vote {

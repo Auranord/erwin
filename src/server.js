@@ -1942,6 +1942,9 @@ app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
   if (!current) {
     return res.status(404).json({ error: "User not found" });
   }
+  if (current.role === "admin") {
+    return res.status(403).json({ error: "Admin users cannot be modified from the dashboard" });
+  }
 
   const usernameRaw = typeof req.body?.username === "string" ? req.body.username.trim() : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -1990,18 +1993,15 @@ app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
 
 app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
   const userId = req.params.id;
-  if (req.session.user?.id === userId) {
-    return res.status(400).json({ error: "You cannot delete your own user" });
-  }
   const user = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
   if (!user) {
     return res.status(404).json({ error: "User not found" });
   }
   if (user.role === "admin") {
-    const adminCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'").get().count;
-    if (adminCount <= 1) {
-      return res.status(400).json({ error: "Cannot delete the last admin" });
-    }
+    return res.status(403).json({ error: "Admin users cannot be deleted from the dashboard" });
+  }
+  if (req.session.user?.id === userId) {
+    return res.status(400).json({ error: "You cannot delete your own user" });
   }
 
   db.prepare("DELETE FROM users WHERE id = ?").run(userId);
@@ -2162,6 +2162,17 @@ app.post("/api/queue/:id/move", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.delete("/api/queue/:id", requireAuth, (req, res) => {
+  const result = db.prepare("DELETE FROM queue WHERE id = ?").run(req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Queue item not found" });
+  }
+  normalizeQueuePositions();
+  broadcast("QUEUE_UPDATE", { action: "removed", queueId: req.params.id });
+  const { queue } = broadcastStateUpdate({ includeQueue: true });
+  res.json({ ok: true, queue });
+});
+
 app.get("/api/pool", requireAuth, (req, res) => {
   res.json(getPoolTracks());
 });
@@ -2240,12 +2251,19 @@ app.post("/api/downloads/clear", requireAuth, (req, res) => {
 
 app.post("/api/playlists", requireAuth, (req, res) => {
   const { name } = req.body || {};
-  if (!name) {
+  const trimmedName = typeof name === "string" ? name.trim() : "";
+  if (!trimmedName) {
     return res.status(400).json({ error: "Playlist name required" });
+  }
+  const existing = db
+    .prepare("SELECT id FROM playlists WHERE lower(name) = lower(?) LIMIT 1")
+    .get(trimmedName);
+  if (existing) {
+    return res.status(409).json({ error: "playlist name already exists" });
   }
   const playlist = {
     id: nanoid(),
-    name,
+    name: trimmedName,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
@@ -2259,28 +2277,46 @@ app.post("/api/playlists", requireAuth, (req, res) => {
 
 app.put("/api/playlists/:id", requireAuth, (req, res) => {
   const { name } = req.body || {};
-  if (!name) {
+  const trimmedName = typeof name === "string" ? name.trim() : "";
+  if (!trimmedName) {
     return res.status(400).json({ error: "Playlist name required" });
+  }
+  const conflict = db
+    .prepare("SELECT id FROM playlists WHERE lower(name) = lower(?) AND id <> ? LIMIT 1")
+    .get(trimmedName, req.params.id);
+  if (conflict) {
+    return res.status(409).json({ error: "playlist name already exists" });
   }
   const updated_at = new Date().toISOString();
   const result = db
     .prepare("UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?")
-    .run(name, updated_at, req.params.id);
+    .run(trimmedName, updated_at, req.params.id);
   if (result.changes === 0) {
     return res.status(404).json({ error: "Playlist not found" });
   }
   broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "updated" });
-  res.json({ id: req.params.id, name, updated_at });
+  res.json({ id: req.params.id, name: trimmedName, updated_at });
 });
 
 app.delete("/api/playlists/:id", requireAuth, (req, res) => {
-  const result = db.prepare("DELETE FROM playlists WHERE id = ?").run(req.params.id);
-  if (result.changes === 0) {
+  const playlistId = req.params.id;
+  const transaction = db.transaction((id) => {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(id);
+    if (!playlist) {
+      return { found: false };
+    }
+    db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").run(id);
+    db.prepare("DELETE FROM playlists WHERE id = ?").run(id);
+    return { found: true };
+  });
+
+  const result = transaction(playlistId);
+  if (!result.found) {
     return res.status(404).json({ error: "Playlist not found" });
   }
-  db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").run(req.params.id);
-  log("info", "playlist deleted", { playlistId: req.params.id });
-  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "deleted" });
+
+  log("info", "playlist deleted", { playlistId });
+  broadcast("PLAYLIST_UPDATE", { playlistId, action: "deleted" });
   res.json({ ok: true });
 });
 
@@ -2309,21 +2345,16 @@ app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
   }
   const tracks = db
     .prepare(
-      "SELECT tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
+      "SELECT tracks.title, tracks.youtube_id, tracks.disabled FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
     )
     .all(req.params.id);
   const payload = {
-    version: 1,
-    exported_at: new Date().toISOString(),
     playlist: {
-      id: playlist.id,
       name: playlist.name,
       tracks: tracks.map((track) => ({
         title: track.title || null,
         youtube_id: track.youtube_id || null,
-        url: track.url || null,
-        disabled: Boolean(track.disabled),
-        position: track.position
+        disabled: Boolean(track.disabled)
       }))
     }
   };
@@ -2346,7 +2377,7 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
     playlist = db.prepare("SELECT id, name FROM playlists WHERE id = ?").get(targetPlaylistId);
   }
   if (!playlist) {
-    const byName = db.prepare("SELECT id, name FROM playlists WHERE name = ?").get(name.trim());
+    const byName = db.prepare("SELECT id, name FROM playlists WHERE lower(name) = lower(?)").get(name.trim());
     playlist = byName || null;
   }
   if (!playlist) {
