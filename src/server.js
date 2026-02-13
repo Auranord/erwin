@@ -113,6 +113,20 @@ app.use((req, res, next) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
+const wsTelemetry = new Map();
+let lastAutoSkipAt = 0;
+
+const DRIFT_THRESHOLD_SECONDS = 1.5;
+const HEARTBEAT_TIMEOUT_MS = 15000;
+const AUTO_SKIP_ERROR_WINDOW_MS = 30000;
+const AUTO_SKIP_STUCK_MS = 10000;
+const AUTO_SKIP_COOLDOWN_MS = 30000;
+
+function sendWsMessage(ws, message) {
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify(message));
+  }
+}
 
 function broadcast(event, payload) {
   const message = JSON.stringify({ event, payload });
@@ -122,6 +136,32 @@ function broadcast(event, payload) {
     }
   });
   log("info", "broadcast", { event });
+}
+
+function broadcastType(type, payload = {}) {
+  const message = JSON.stringify({ type, ...payload });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) {
+      client.send(message);
+    }
+  });
+}
+
+function computeExpectedSeconds(playState, serverNow, durationSec = null) {
+  if (!playState?.started_at_ms) return 0;
+  const referenceMs =
+    playState.paused && playState.paused_at_ms ? playState.paused_at_ms : serverNow;
+  let expected = Math.max(0, (referenceMs - playState.started_at_ms) / 1000);
+  if (Number.isFinite(durationSec) && durationSec > 0) {
+    expected = Math.min(durationSec, expected);
+  }
+  return expected;
+}
+
+function getActiveStreamClients() {
+  return [...wsTelemetry.values()].filter(
+    (client) => client.page === "stream" && Date.now() - (client.lastHeartbeatAt || 0) < HEARTBEAT_TIMEOUT_MS
+  );
 }
 
 function runYtDlp(args) {
@@ -809,7 +849,15 @@ function getCurrentTrack(playState) {
 function getQueue() {
   return db
     .prepare(
-      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, queue.added_by_user_id, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id ORDER BY queue.position ASC, queue.created_at ASC"
+      "SELECT queue.id, queue.track_id, queue.source, queue.position, queue.created_at, queue.added_by_user_id, users.username AS added_by_username, tracks.title, tracks.channel FROM queue JOIN tracks ON tracks.id = queue.track_id LEFT JOIN users ON users.id = queue.added_by_user_id ORDER BY queue.position ASC, queue.created_at ASC"
+    )
+    .all();
+}
+
+function getPlaylistTrackRows() {
+  return db
+    .prepare(
+      "SELECT playlist_tracks.playlist_id, tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id ORDER BY playlist_tracks.position ASC"
     )
     .all();
 }
@@ -943,9 +991,15 @@ function normalizeQueuePositions() {
 
 function broadcastStateUpdate({ includeQueue = false } = {}) {
   const playState = getPlayState();
+  const currentTrack = getCurrentTrack(playState);
+  const serverNow = Date.now();
   const queue = includeQueue ? getQueue() : undefined;
-  broadcast("STATE_UPDATE", queue ? { playState, queue } : { playState });
-  return { playState, queue };
+  const payload = queue
+    ? { playState, currentTrack, queue, serverNow }
+    : { playState, currentTrack, serverNow };
+  broadcast("STATE_UPDATE", payload);
+  broadcastType("STATE_UPDATE", payload);
+  return { playState, currentTrack, queue, serverNow };
 }
 
 const VOTE_SETTINGS_DEFAULTS = {
@@ -1166,6 +1220,43 @@ function skipQueue() {
   log("info", "queue skip", { nextTrackId: next?.track_id || null });
   const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
   return { playState, queue };
+}
+
+
+function maybeAutoSkipFromTelemetry(clientMeta) {
+  const now = Date.now();
+  if (now - lastAutoSkipAt < AUTO_SKIP_COOLDOWN_MS) return;
+  const playState = getPlayState();
+  const currentTrack = getCurrentTrack(playState);
+  if (!playState?.current_track_id || playState.paused || !currentTrack) return;
+
+  const activeStreamClients = getActiveStreamClients();
+  if (activeStreamClients.length === 0) return;
+  if (!clientMeta?.fatalErrorTimes || clientMeta.fatalErrorTimes.length < 3) return;
+
+  const recentErrors = clientMeta.fatalErrorTimes.filter((ts) => now - ts <= AUTO_SKIP_ERROR_WINDOW_MS);
+  clientMeta.fatalErrorTimes = recentErrors;
+  if (recentErrors.length < 3) return;
+  if (!Number.isFinite(clientMeta.progressMarkTime) || !Number.isFinite(clientMeta.lastProgressAt)) return;
+  if (now - clientMeta.lastProgressAt < AUTO_SKIP_STUCK_MS) return;
+  if (Math.abs((clientMeta.lastProgressSeconds || 0) - (clientMeta.progressMarkTime || 0)) > 0.5) return;
+
+  if (activeStreamClients.length > 1) {
+    log("warn", "auto-skip prevented due to multiple stream clients", {
+      clients: activeStreamClients.length,
+      userId: clientMeta.userId,
+      clientId: clientMeta.clientId
+    });
+    return;
+  }
+
+  lastAutoSkipAt = now;
+  log("warn", "auto-skip triggered from telemetry", {
+    userId: clientMeta.userId,
+    clientId: clientMeta.clientId,
+    trackId: playState.current_track_id
+  });
+  skipQueue();
 }
 
 function broadcastChatMessage({
@@ -1845,6 +1936,78 @@ app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
   res.status(201).json({ id, username: usernameRaw, created_at: createdAt, isAdmin: false });
 });
 
+app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+  const userId = req.params.id;
+  const current = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
+  if (!current) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  const usernameRaw = typeof req.body?.username === "string" ? req.body.username.trim() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const updates = [];
+  const values = [];
+
+  if (usernameRaw) {
+    if (usernameRaw.length < 3 || usernameRaw.length > 64) {
+      return res.status(400).json({ error: "username must be between 3 and 64 characters" });
+    }
+    updates.push("username = ?");
+    values.push(usernameRaw);
+  }
+
+  if (password) {
+    if (password.length < 8) {
+      return res.status(400).json({ error: "password must be at least 8 characters" });
+    }
+    updates.push("password_hash = ?");
+    values.push(bcrypt.hashSync(password, 10));
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: "No updates requested" });
+  }
+
+  values.push(userId);
+  try {
+    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  } catch (error) {
+    const message = String(error?.message || error).toLowerCase();
+    if (message.includes("unique")) {
+      return res.status(409).json({ error: "username already exists" });
+    }
+    throw error;
+  }
+
+  const updated = db.prepare("SELECT id, username, role, created_at FROM users WHERE id = ?").get(userId);
+  res.json({
+    id: updated.id,
+    username: updated.username,
+    created_at: updated.created_at,
+    isAdmin: updated.role === "admin"
+  });
+});
+
+app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
+  const userId = req.params.id;
+  if (req.session.user?.id === userId) {
+    return res.status(400).json({ error: "You cannot delete your own user" });
+  }
+  const user = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  if (user.role === "admin") {
+    const adminCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'").get().count;
+    if (adminCount <= 1) {
+      return res.status(400).json({ error: "Cannot delete the last admin" });
+    }
+  }
+
+  db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  res.json({ ok: true });
+});
+
 app.get("/api/state", requireAuth, (req, res) => {
   const playState = getPlayState();
   const currentTrack = getCurrentTrack(playState);
@@ -2036,13 +2199,14 @@ app.post("/api/pool/add", requireAuth, (req, res) => {
   res.json(result);
 });
 
+app.delete("/api/pool/:trackId", requireAuth, (req, res) => {
+  const removed = removeFromPool(req.params.trackId);
+  res.json({ removed });
+});
+
 app.get("/api/playlists", requireAuth, (req, res) => {
   const playlists = db.prepare("SELECT * FROM playlists ORDER BY created_at DESC").all();
-  const playlistTracks = db
-    .prepare(
-      "SELECT playlist_tracks.playlist_id, tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id ORDER BY playlist_tracks.position ASC"
-    )
-    .all();
+  const playlistTracks = getPlaylistTrackRows();
   const byPlaylist = playlistTracks.reduce((acc, row) => {
     acc[row.playlist_id] ||= [];
     acc[row.playlist_id].push(row);
@@ -2118,6 +2282,138 @@ app.delete("/api/playlists/:id", requireAuth, (req, res) => {
   log("info", "playlist deleted", { playlistId: req.params.id });
   broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "deleted" });
   res.json({ ok: true });
+});
+
+app.post("/api/playlists/:id/add-to-pool", requireAuth, (req, res) => {
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.id);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const tracks = db
+    .prepare(
+      "SELECT tracks.id, tracks.download_status, tracks.audio_path FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ?"
+    )
+    .all(req.params.id);
+  let added = 0;
+  for (const track of tracks) {
+    if (!isTrackPlayable(track)) continue;
+    if (addToPool(track.id).added) added += 1;
+  }
+  res.json({ added, total: tracks.length });
+});
+
+app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
+  const playlist = db.prepare("SELECT * FROM playlists WHERE id = ?").get(req.params.id);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const tracks = db
+    .prepare(
+      "SELECT tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
+    )
+    .all(req.params.id);
+  const payload = {
+    version: 1,
+    exported_at: new Date().toISOString(),
+    playlist: {
+      id: playlist.id,
+      name: playlist.name,
+      tracks: tracks.map((track) => ({
+        title: track.title || null,
+        youtube_id: track.youtube_id || null,
+        url: track.url || null,
+        disabled: Boolean(track.disabled),
+        position: track.position
+      }))
+    }
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${playlist.name.replace(/[^a-z0-9-_]+/gi, "_") || "playlist"}.json"`);
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/playlists/import-json", requireAuth, (req, res) => {
+  const { name, tracks, mode, playlistId } = req.body || {};
+  const modeValue = mode === "replace" ? "replace" : "append";
+  const trackList = Array.isArray(tracks) ? tracks : [];
+  if (!name || typeof name !== "string" || trackList.length === 0) {
+    return res.status(400).json({ error: "name and tracks array are required" });
+  }
+
+  let targetPlaylistId = playlistId;
+  let playlist = null;
+  if (targetPlaylistId) {
+    playlist = db.prepare("SELECT id, name FROM playlists WHERE id = ?").get(targetPlaylistId);
+  }
+  if (!playlist) {
+    const byName = db.prepare("SELECT id, name FROM playlists WHERE name = ?").get(name.trim());
+    playlist = byName || null;
+  }
+  if (!playlist) {
+    const now = new Date().toISOString();
+    targetPlaylistId = nanoid();
+    db.prepare("INSERT INTO playlists (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)").run(targetPlaylistId, name.trim(), now, now);
+    playlist = { id: targetPlaylistId, name: name.trim() };
+  } else {
+    targetPlaylistId = playlist.id;
+  }
+
+  if (modeValue === "replace") {
+    db.prepare("DELETE FROM playlist_tracks WHERE playlist_id = ?").run(targetPlaylistId);
+  }
+
+  const findTrackByYoutube = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
+  const findTrackByUrl = db.prepare("SELECT id, youtube_id FROM tracks WHERE url = ?");
+  const insertTrack = db.prepare(
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, created_at) VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, ?, ?)"
+  );
+  const now = new Date().toISOString();
+  const existingPosition = db.prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?").get(targetPlaylistId).maxPosition || 0;
+  let position = modeValue === "replace" ? 1 : existingPosition + 1;
+  let queued = 0;
+  let addedTracks = 0;
+
+  for (const rawTrack of trackList) {
+    const track = rawTrack || {};
+    const youtubeId = parseYouTubeId(track.url || track.youtube_id || "") || (typeof track.youtube_id === "string" ? track.youtube_id.trim() : "");
+    const url = typeof track.url === "string" && track.url.trim()
+      ? track.url.trim()
+      : youtubeId
+        ? `https://www.youtube.com/watch?v=${youtubeId}`
+        : "";
+    if (!youtubeId && !url) {
+      continue;
+    }
+
+    let existing = youtubeId ? findTrackByYoutube.get(youtubeId) : null;
+    if (!existing && url) {
+      existing = findTrackByUrl.get(url);
+    }
+
+    let trackId = existing?.id;
+    if (!trackId) {
+      trackId = nanoid();
+      insertTrack.run(trackId, youtubeId || nanoid(), url, typeof track.title === "string" ? track.title.trim() || null : null, track.disabled ? 1 : 0, now);
+      enqueueDownload(targetPlaylistId, trackId);
+      queued += 1;
+    } else if (typeof track.title === "string" && track.title.trim()) {
+      db.prepare("UPDATE tracks SET title = COALESCE(NULLIF(?, ''), title) WHERE id = ?").run(track.title.trim(), trackId);
+    }
+
+    const existsInPlaylist = db
+      .prepare("SELECT 1 FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?")
+      .get(targetPlaylistId, trackId);
+    if (!existsInPlaylist) {
+      db.prepare("INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)").run(targetPlaylistId, trackId, position);
+      position += 1;
+      addedTracks += 1;
+    }
+  }
+
+  db.prepare("UPDATE playlists SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), targetPlaylistId);
+  normalizeQueuePositions();
+  broadcast("PLAYLIST_UPDATE", { playlistId: targetPlaylistId, action: "imported_json" });
+  res.json({ playlistId: targetPlaylistId, addedTracks, queuedDownloads: queued, mode: modeValue });
 });
 
 app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
@@ -2457,9 +2753,135 @@ server.on("upgrade", (request, socket, head) => {
   });
 });
 
-wss.on("connection", (ws) => {
-  ws.send(JSON.stringify({ event: "CONNECTED", payload: {} }));
+wss.on("connection", (ws, request) => {
+  const user = request.session?.user || {};
+  const meta = {
+    userId: user.id || null,
+    username: user.username || null,
+    clientId: null,
+    page: null,
+    lastHeartbeatAt: 0,
+    lastReported: null,
+    timeSync: { rttMs: null, offsetMs: null },
+    stallScore: 0,
+    errorScore: 0,
+    fatalErrorTimes: [],
+    lastProgressSeconds: null,
+    lastProgressAt: 0,
+    progressMarkTime: null
+  };
+  wsTelemetry.set(ws, meta);
+  sendWsMessage(ws, { event: "CONNECTED", payload: {} });
+  sendWsMessage(ws, { type: "CONNECTED" });
+
+  ws.on("message", (raw) => {
+    let message;
+    try {
+      message = JSON.parse(String(raw));
+    } catch {
+      return;
+    }
+    const type = message?.type;
+    if (!type) return;
+
+    if (type === "HELLO") {
+      meta.clientId = message.clientId || meta.clientId;
+      meta.page = message.page || null;
+      return;
+    }
+
+    if (type === "TIME_SYNC_PING") {
+      sendWsMessage(ws, {
+        type: "TIME_SYNC_PONG",
+        t0: Number(message.t0) || 0,
+        t1: Date.now(),
+        clientId: message.clientId || meta.clientId || null
+      });
+      return;
+    }
+
+    if (type === "PLAYER_EVENT") {
+      if (message.event === "error") {
+        meta.errorScore += 1;
+      }
+      if (message.event === "stalled" || message.event === "waiting") {
+        meta.stallScore += 1;
+      }
+      return;
+    }
+
+    if (type !== "PLAYER_HEARTBEAT") {
+      return;
+    }
+
+    const now = Date.now();
+    const reportedTime = Number(message.currentTime);
+    meta.clientId = message.clientId || meta.clientId;
+    meta.lastHeartbeatAt = now;
+    meta.lastReported = {
+      trackId: message.trackId ?? null,
+      currentTime: Number.isFinite(reportedTime) ? reportedTime : 0,
+      paused: Boolean(message.paused),
+      readyState: Number(message.readyState),
+      networkState: Number(message.networkState),
+      bufferedEnd: Number.isFinite(Number(message.bufferedEnd)) ? Number(message.bufferedEnd) : null,
+      lastError: message.lastError || null
+    };
+
+    if (meta.lastProgressSeconds === null || !Number.isFinite(meta.lastProgressSeconds)) {
+      meta.lastProgressSeconds = meta.lastReported.currentTime;
+      meta.progressMarkTime = meta.lastReported.currentTime;
+      meta.lastProgressAt = now;
+    } else if (meta.lastReported.currentTime > meta.lastProgressSeconds + 0.5) {
+      meta.lastProgressSeconds = meta.lastReported.currentTime;
+      meta.progressMarkTime = meta.lastReported.currentTime;
+      meta.lastProgressAt = now;
+    }
+
+    if (meta.lastReported.lastError) {
+      meta.errorScore += 1;
+      meta.fatalErrorTimes.push(now);
+      meta.fatalErrorTimes = meta.fatalErrorTimes.filter((ts) => now - ts <= AUTO_SKIP_ERROR_WINDOW_MS);
+    }
+
+    const playState = getPlayState();
+    const currentTrack = getCurrentTrack(playState);
+    const expectedSeconds = computeExpectedSeconds(playState, now, currentTrack?.duration_sec ?? null);
+    const drift = Math.abs(meta.lastReported.currentTime - expectedSeconds);
+    const wrongTrack = (meta.lastReported.trackId || null) !== (playState?.current_track_id || null);
+    const likelyStalled =
+      !playState?.paused &&
+      (meta.lastReported.readyState < 3 ||
+        meta.lastReported.networkState === 2 ||
+        meta.lastReported.networkState === 3 ||
+        (Number.isFinite(meta.lastReported.bufferedEnd) &&
+          meta.lastReported.bufferedEnd < meta.lastReported.currentTime + 0.1));
+
+    if (wrongTrack || drift > DRIFT_THRESHOLD_SECONDS || likelyStalled) {
+      sendWsMessage(ws, {
+        type: "CLIENT_ADJUST",
+        targetTrackId: playState?.current_track_id || null,
+        targetTime: expectedSeconds,
+        shouldBePaused: Boolean(playState?.paused),
+        reason: wrongTrack ? "state-change" : drift > DRIFT_THRESHOLD_SECONDS ? "drift" : "recover"
+      });
+    }
+
+    maybeAutoSkipFromTelemetry(meta);
+  });
+
+  ws.on("close", () => {
+    wsTelemetry.delete(ws);
+  });
+
+  ws.on("error", () => {
+    wsTelemetry.delete(ws);
+  });
 });
+
+const stateBroadcastInterval = setInterval(() => {
+  broadcastStateUpdate();
+}, 10000);
 
 async function startTwitchBot() {
   if (!twitchOauthToken && twitchRefreshToken && TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET) {
@@ -2575,6 +2997,7 @@ function shutdown(signal) {
   clearInterval(downloadInterval);
   clearInterval(voteInterval);
   clearInterval(retentionInterval);
+  clearInterval(stateBroadcastInterval);
   if (twitchTokenRefreshTimer) {
     clearTimeout(twitchTokenRefreshTimer);
     twitchTokenRefreshTimer = null;

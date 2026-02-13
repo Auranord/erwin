@@ -251,6 +251,7 @@
       </section>
     </main>
 
+    <input id="playlist-import-file" type="file" accept="application/json" class="hidden" />
 
     <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
       <div class="modal-card">
@@ -321,6 +322,24 @@
       let draggedTrackId = null;
       let draggedQueueId = null;
       const chatMessages = [];
+      const playlistImportFile = document.getElementById("playlist-import-file");
+      const ICON_FALLBACKS = {
+        play: "⯈",
+        pause: "⏸",
+        skip: "⚔",
+        restart: "↺",
+        mute: "◌",
+        unmute: "◍",
+        enqueue: "⚔",
+        poolAdd: "✚",
+        poolRemove: "✖",
+        rename: "✒",
+        disable: "⛔",
+        enable: "✹",
+        delete: "☠",
+        download: "⤓"
+      };
+      const availableIcons = new Set();
 
       function getThemeStorageKey() {
         const storedUser = localStorage.getItem(themeUserKeyBase) || "guest";
@@ -368,6 +387,28 @@
         });
       });
 
+      async function loadAvailableIcons() {
+        const iconNames = Object.keys(ICON_FALLBACKS);
+        await Promise.all(
+          iconNames.map(async (name) => {
+            try {
+              const response = await fetch(`/assets/icons/${name}.png`, { method: "HEAD" });
+              if (response.ok) availableIcons.add(name);
+            } catch {
+              // Ignore missing icon files.
+            }
+          })
+        );
+      }
+
+      function iconHtml(name) {
+        const fallback = ICON_FALLBACKS[name] || "•";
+        if (availableIcons.has(name)) {
+          return `<img src="/assets/icons/${name}.png" class="button-icon" alt="" aria-hidden="true" />`;
+        }
+        return `<span class="button-icon-fallback" aria-hidden="true">${fallback}</span>`;
+      }
+
       function renderTracks() {
         if (!selectedPlaylistId) {
           tracksEl.innerHTML = '<div class="list-item">Select a playlist to view tracks.</div>';
@@ -396,21 +437,20 @@
             const disabled = Boolean(track.disabled);
             const disabledLabel = disabled ? '<span class="badge">Disabled</span>' : "";
             const toggleLabel = disabled ? "Enable track" : "Disable track";
-            const toggleIcon = disabled ? "✹" : "⛔";
             const inPool = poolTrackIds.has(track.id);
-            const poolDisabled = inPool ? "disabled" : "";
-            const poolLabel = inPool ? "In pool" : "Add to pool";
-            const poolIcon = inPool ? "✹" : "✚";
+            const poolAction = inPool ? "pool-remove" : "pool-add";
+            const poolLabel = inPool ? "Remove from pool" : "Add to pool";
+            const poolIcon = iconHtml(inPool ? "poolRemove" : "poolAdd");
             return `<div class="list-item draggable-item ${disabled ? "disabled" : ""}" draggable="true" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
                   <div style="display: flex; gap: 8px; align-items: center;"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${label} ${disabledLabel}</div>
                 </div>
                 <div class="actions">
-                  <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">⚔</button>
-                  <button class="secondary icon-only" data-action="pool-add" ${poolDisabled} title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
-                  <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">✒</button>
-                  <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${toggleIcon}</button>
-                  <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">☠</button>
+                  <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">${iconHtml("enqueue")}</button>
+                  <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
+                  <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">${iconHtml("rename")}</button>
+                  <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${iconHtml(disabled ? "enable" : "disable")}</button>
+                  <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">${iconHtml("delete")}</button>
                 </div>
               </div>`;
           })
@@ -524,7 +564,16 @@
           return;
         }
         usersList.innerHTML = users
-          .map((user) => `<div class="list-item"><span>${user.username}</span><span class="badge">${user.isAdmin ? "admin" : "user"}</span></div>`)
+          .map((user) => `
+            <div class="list-item" data-user-id="${user.id}" data-username="${user.username}">
+              <span>${user.username}</span>
+              <div class="actions">
+                <span class="badge">${user.isAdmin ? "admin" : "user"}</span>
+                <button class="secondary" data-action="user-rename">Rename</button>
+                <button class="secondary" data-action="user-password">Password</button>
+                <button class="ghost" data-action="user-delete">Delete</button>
+              </div>
+            </div>`)
           .join("");
       }
 
@@ -583,7 +632,7 @@
                   <span>${item.title || item.track_id}</span>
                   <div class="actions">
                     <span class="drag-handle" aria-hidden="true">⋮⋮</span>
-                    <span class="badge">${item.source}</span>
+                    <span class="badge">${item.source}</span>${item.added_by_username ? `<span class="badge">${item.added_by_username}</span>` : ""}
                   </div>
                 </div>`
             )
@@ -641,7 +690,7 @@
               `<div class="list-item" data-track-id="${item.track_id}">
                 <span>${item.title || item.track_id}</span>
                 <div class="actions">
-                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track">✚</button>
+                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track">${iconHtml("enqueue")}</button>
                 </div>
               </div>`
           )
@@ -673,6 +722,9 @@
             </div>
             <div class="actions">
               <button class="ghost" data-action="play" data-playlist-id="${playlist.id}">Play</button>
+              <button class="ghost" data-action="playlist-pool" data-playlist-id="${playlist.id}">Add</button>
+              <button class="ghost" data-action="export" data-playlist-id="${playlist.id}" data-playlist-name="${playlist.name}">Export</button>
+              <button class="ghost" data-action="import" data-playlist-id="${playlist.id}" data-playlist-name="${playlist.name}">Import</button>
               <button class="ghost" data-action="delete" data-playlist-id="${playlist.id}" data-playlist-name="${playlist.name}">Delete</button>
             </div>
           `;
@@ -771,6 +823,19 @@
           await fetch(`/api/playlists/${playlistId}/play`, { method: "POST" });
           fetchState();
         }
+        if (action === "playlist-pool") {
+          await fetch(`/api/playlists/${playlistId}/add-to-pool`, { method: "POST" });
+          fetchPool();
+        }
+        if (action === "export") {
+          const a = document.createElement("a");
+          a.href = `/api/playlists/${playlistId}/export`;
+          a.click();
+        }
+        if (action === "import") {
+          playlistImportFile.dataset.playlistId = playlistId;
+          playlistImportFile.click();
+        }
         if (action === "delete") {
           const name = button.dataset.playlistName || "this playlist";
           if (window.confirm(`Delete ${name}? This cannot be undone.`)) {
@@ -816,6 +881,11 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ trackId })
           });
+          fetchPool();
+        }
+        if (action === "pool-remove") {
+          await fetch(`/api/pool/${trackId}`, { method: "DELETE" });
+          fetchPool();
         }
         if (action === "rename") {
           renameTrackId = trackId;
@@ -947,6 +1017,69 @@
         });
         closeRenameModal();
         fetchPlaylists();
+      });
+
+      usersList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const wrapper = button.closest("[data-user-id]");
+        const userId = wrapper?.dataset.userId;
+        const username = wrapper?.dataset.username;
+        if (!userId) return;
+        if (button.dataset.action === "user-rename") {
+          const next = window.prompt("New username", username || "");
+          if (!next || next.trim() === username) return;
+          await fetch(`/api/users/${userId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: next.trim() })
+          });
+          fetchUsers();
+        }
+        if (button.dataset.action === "user-password") {
+          const nextPassword = window.prompt(`New password for ${username}`);
+          if (!nextPassword) return;
+          await fetch(`/api/users/${userId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: nextPassword })
+          });
+          fetchUsers();
+        }
+        if (button.dataset.action === "user-delete") {
+          if (!window.confirm(`Delete user ${username}?`)) return;
+          await fetch(`/api/users/${userId}`, { method: "DELETE" });
+          fetchUsers();
+        }
+      });
+
+      playlistImportFile.addEventListener("change", async () => {
+        const file = playlistImportFile.files?.[0];
+        const playlistId = playlistImportFile.dataset.playlistId || "";
+        if (!file) return;
+        const text = await file.text();
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          window.alert("Invalid JSON file.");
+          return;
+        }
+        const parsed = payload?.playlist || payload;
+        const mode = window.confirm("Replace existing playlist tracks? Click Cancel to append.") ? "replace" : "append";
+        await fetch("/api/playlists/import-json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            playlistId: playlistId || null,
+            mode,
+            name: parsed.name || file.name.replace(/\.json$/i, ""),
+            tracks: parsed.tracks || []
+          })
+        });
+        playlistImportFile.value = "";
+        fetchPlaylists();
+        fetchDownloads();
       });
 
       document.getElementById("open-stream").addEventListener("click", () => {
@@ -1112,6 +1245,7 @@
       });
 
       (async () => {
+        await loadAvailableIcons();
         await fetchMe();
         await fetchUsers();
         fetchState();
