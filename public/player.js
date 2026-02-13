@@ -23,9 +23,9 @@
   }
 
   function createPlayer({ elementId, statusEl, mode }) {
-    const HARD_SEEK_DRIFT_SECONDS = 1.2;
-    const SOFT_DRIFT_CORRECTION_SECONDS = 0.2;
-    const HARD_SEEK_COOLDOWN_MS = 2500;
+    const HARD_SEEK_DRIFT_SECONDS = 1.5;
+    const DRIFT_GRACE_WINDOW_MS = 1500;
+    const HARD_SEEK_COOLDOWN_MS = 4000;
     const clientId = getOrCreateClientId();
     const state = {
       audio: null,
@@ -42,6 +42,7 @@
       lastError: null,
       recoverAttempts: 0,
       lastHardSyncAt: 0,
+      driftOutOfRangeSince: null,
       lastProgressAt: Date.now(),
       lastProgressTime: 0,
       waitingSince: null
@@ -161,12 +162,28 @@
       const currentTime = Number.isFinite(state.audio.currentTime) ? state.audio.currentTime : 0;
       const drift = Math.abs(currentTime - targetTime);
       const now = Date.now();
+      const inHardDrift = drift > HARD_SEEK_DRIFT_SECONDS;
+
+      if (inHardDrift && !force) {
+        state.driftOutOfRangeSince = state.driftOutOfRangeSince || now;
+      } else {
+        state.driftOutOfRangeSince = null;
+      }
+
+      const sustainedHardDrift =
+        inHardDrift &&
+        Number.isFinite(state.driftOutOfRangeSince) &&
+        now - state.driftOutOfRangeSince >= DRIFT_GRACE_WINDOW_MS;
       const shouldHardSeek =
-        force || (drift > HARD_SEEK_DRIFT_SECONDS && now - state.lastHardSyncAt > HARD_SEEK_COOLDOWN_MS);
+        force ||
+        (sustainedHardDrift &&
+          now - state.lastHardSyncAt > HARD_SEEK_COOLDOWN_MS &&
+          state.audio.readyState >= 2);
       if (shouldHardSeek) {
         try {
           state.audio.currentTime = targetTime;
           state.lastHardSyncAt = now;
+          state.driftOutOfRangeSince = null;
         } catch {
           // ignore temporary seek errors
         }
