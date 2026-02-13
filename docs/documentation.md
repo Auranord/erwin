@@ -190,3 +190,23 @@ Recommended:
 - ERWIN_BASE_URL support for more robust proxy deployments
 - More resilient player telemetry (playback error reporting, buffering info)
 - Fine-grained permissions (only if the team needs it)
+
+
+## Optional button icons (PNG)
+UI buttons can load PNG icons from `public/icons/*.png`. If an icon file is missing, the UI automatically falls back to text/symbol icons.
+
+Supported icon filenames:
+- `play.png`
+- `pause.png`
+- `skip.png`
+- `restart.png`
+- `mute.png`
+- `unmute.png`
+- `enqueue.png`
+- `poolAdd.png`
+- `poolRemove.png`
+- `rename.png`
+- `disable.png`
+- `enable.png`
+- `delete.png`
+- `download.png`
