@@ -46,7 +46,8 @@
       driftOutOfRangeSince: null,
       lastProgressAt: Date.now(),
       lastProgressTime: 0,
-      waitingSince: null
+      waitingSince: null,
+      lastEndedSkipTrackId: null
     };
 
     function updateStatus(track, playState) {
@@ -332,6 +333,17 @@
             state.lastError = null;
             state.waitingSince = null;
           }
+          if (eventName === "ended" && mode === "stream" && state.currentTrack?.id) {
+            const endedTrackId = state.currentTrack.id;
+            if (state.lastEndedSkipTrackId !== endedTrackId) {
+              state.lastEndedSkipTrackId = endedTrackId;
+              fetch("/api/queue/skip", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ currentTrackId: endedTrackId })
+              }).catch(() => {});
+            }
+          }
           emit("PLAYER_EVENT", { event: eventName, details: { readyState: state.audio.readyState } });
         });
       });
@@ -364,6 +376,9 @@
       state.lastStateReceivedAt = Date.now();
       if (!state.audio) return;
 
+      if (prevTrack?.id !== currentTrack?.id) {
+        state.lastEndedSkipTrackId = null;
+      }
       const forceSync =
         prevTrack?.id !== currentTrack?.id ||
         prevPlayState?.started_at_ms !== playState?.started_at_ms ||

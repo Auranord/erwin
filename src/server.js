@@ -1223,6 +1223,18 @@ function skipQueue() {
 }
 
 
+function skipQueueIfCurrentTrack(expectedTrackId = null) {
+  if (!expectedTrackId) {
+    return { skipped: true, ...skipQueue() };
+  }
+  const playState = getPlayState();
+  if (!playState?.current_track_id || playState.current_track_id !== expectedTrackId) {
+    const queue = getQueue();
+    return { skipped: false, playState, queue };
+  }
+  return { skipped: true, ...skipQueue() };
+}
+
 function maybeAutoSkipFromTelemetry(clientMeta) {
   const now = Date.now();
   if (now - lastAutoSkipAt < AUTO_SKIP_COOLDOWN_MS) return;
@@ -2068,8 +2080,9 @@ app.post("/api/session/stop", requireAuth, (req, res) => {
 });
 
 app.post("/api/queue/skip", requireAuth, (req, res) => {
-  const { playState, queue } = skipQueue();
-  res.json({ playState, queue });
+  const expectedTrackId = typeof req.body?.currentTrackId === "string" ? req.body.currentTrackId : null;
+  const { playState, queue, skipped } = skipQueueIfCurrentTrack(expectedTrackId);
+  res.json({ playState, queue, skipped });
 });
 
 app.get("/api/audio/:trackId", requireAuth, (req, res) => {
