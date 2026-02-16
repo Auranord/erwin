@@ -14,7 +14,7 @@ Erwin is a self-hosted stream music controller:
 - Track download queue (audio caching on disk)
 - Pool + Queue playback model
 - Timestamp-based playback sync (server authority)
-- Twitch voting (auto vote option near track end) and chat integration
+- Twitch voting (auto vote option near track end), chat integration, and customizable chat commands
 - Multi-user accounts:
   - One admin account creates new accounts and manage existing accounts
   - Every authenticated user can do all other actions
@@ -67,6 +67,7 @@ The main UI:
 - Downloads
 - Settings
 - Vote UI and chat feed
+- Dedicated custom commands tab for Twitch bot automation
 - User management (admin only)
 
 ### `/player/stream`
@@ -130,10 +131,37 @@ Erwin can connect to Twitch IRC and:
 - Broadcast chat messages into the dashboard
 - Handle vote commands
 - Provide a “now playing” command
+- Execute custom commands managed from the dashboard
 
-Common commands:
+Built-in commands:
 - `!vote <number>`
 - `!song`
+- `!skip` (moderator only)
+- `!pause` (moderator only)
+- `!resume` (moderator only)
+
+Custom commands:
+- Managed in the **Custom Commands** dashboard tab
+- Each command supports:
+  - a primary command (for example `dc` maps to `!dc`)
+  - multiple aliases (`discord`, `disc`, etc.)
+  - enabled/disabled state
+  - response templates with placeholders: `{user}`, `{channel}`, `{track}`, `{command}`
+
+
+### Twitch custom commands API
+
+All routes require authentication.
+
+- `GET /api/twitch/custom-commands`
+  - Returns all custom command definitions.
+- `POST /api/twitch/custom-commands`
+  - Body: `{ command, aliases, response, enabled }`
+  - `aliases` can be a comma-separated string or an array.
+- `PUT /api/twitch/custom-commands/:commandId`
+  - Partial update of command, aliases, response, or enabled state.
+- `DELETE /api/twitch/custom-commands/:commandId`
+  - Deletes a command definition.
 
 ---
 

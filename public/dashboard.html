@@ -24,6 +24,7 @@
         <a class="tab-link" href="#" data-tab="playlists">Playlist Editor</a>
         <a class="tab-link" href="#" data-tab="track-manager">Track Manager</a>
         <a class="tab-link" href="#" data-tab="chat">Live Chat Feed</a>
+        <a class="tab-link" href="#" data-tab="custom-commands">Custom Commands</a>
         <a class="tab-link" href="#" data-tab="settings">Settings</a>
       </nav>
     </header>
@@ -158,6 +159,43 @@
                 <span class="badge">System</span>
                 <span>Waiting for chat activity...</span>
               </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="custom-commands">
+        <div class="grid two">
+          <div class="card">
+            <h2>Twitch Custom Commands</h2>
+            <p class="notice">Create chat commands like <code>!dc</code> with aliases and reusable response templates.</p>
+            <form id="custom-command-form" class="grid">
+              <div>
+                <label for="custom-command-name">Command</label>
+                <input id="custom-command-name" name="custom-command-name" placeholder="dc" maxlength="32" required />
+              </div>
+              <div>
+                <label for="custom-command-aliases">Aliases (comma separated)</label>
+                <input id="custom-command-aliases" name="custom-command-aliases" placeholder="discord,disc" />
+              </div>
+              <div class="form-section-title">
+                <label for="custom-command-response">Response</label>
+                <textarea id="custom-command-response" name="custom-command-response" rows="4" maxlength="500" placeholder="Join us on Discord: https://discord.gg/example" required></textarea>
+              </div>
+              <label class="card-toggle form-section-title" for="custom-command-enabled">
+                <input id="custom-command-enabled" name="custom-command-enabled" type="checkbox" checked />
+                Enabled
+              </label>
+              <button type="submit" id="custom-command-submit">Add Command</button>
+              <button type="button" id="custom-command-cancel" class="secondary hidden">Cancel Edit</button>
+            </form>
+            <p class="notice">Supported response placeholders: <code>{user}</code>, <code>{channel}</code>, <code>{track}</code>, <code>{command}</code>.</p>
+            <p id="custom-command-status" class="notice" aria-live="polite"></p>
+          </div>
+          <div class="card">
+            <h2>Configured Commands</h2>
+            <div id="custom-commands-list" class="list">
+              <div class="list-item">No custom commands yet.</div>
             </div>
           </div>
         </div>
@@ -313,6 +351,15 @@
       const usersStatus = document.getElementById("users-status");
       const usersList = document.getElementById("users-list");
       const userCreateForm = document.getElementById("user-create-form");
+      const customCommandForm = document.getElementById("custom-command-form");
+      const customCommandName = document.getElementById("custom-command-name");
+      const customCommandAliases = document.getElementById("custom-command-aliases");
+      const customCommandResponse = document.getElementById("custom-command-response");
+      const customCommandEnabled = document.getElementById("custom-command-enabled");
+      const customCommandSubmit = document.getElementById("custom-command-submit");
+      const customCommandCancel = document.getElementById("custom-command-cancel");
+      const customCommandsList = document.getElementById("custom-commands-list");
+      const customCommandStatus = document.getElementById("custom-command-status");
       let currentUser = null;
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
@@ -324,6 +371,8 @@
       let poolTrackIds = new Set();
       let draggedTrackId = null;
       let draggedQueueId = null;
+      let customCommandsCache = [];
+      let editingCustomCommandId = null;
       const chatMessages = [];
       const playlistImportFile = document.getElementById("playlist-import-file");
       const importPlaylistJsonButton = document.getElementById("import-playlist-json");
@@ -801,6 +850,58 @@
         setActiveVote(data.round);
       }
 
+      function resetCustomCommandForm() {
+        editingCustomCommandId = null;
+        customCommandForm.reset();
+        customCommandEnabled.checked = true;
+        customCommandSubmit.textContent = "Add Command";
+        customCommandCancel.classList.add("hidden");
+      }
+
+      function renderCustomCommands() {
+        if (!customCommandsCache.length) {
+          customCommandsList.innerHTML = '<div class="list-item">No custom commands yet.</div>';
+          return;
+        }
+        customCommandsList.innerHTML = customCommandsCache
+          .map((entry) => {
+            const aliasText = entry.aliases.length ? `Aliases: ${entry.aliases.map((a) => `!${a}`).join(", ")}` : "Aliases: none";
+            const statusText = entry.enabled ? "Enabled" : "Disabled";
+            return `<div class="list-item custom-command-item" data-command-id="${entry.id}">
+              <div class="custom-command-content">
+                <div><strong>!${entry.command}</strong> <span class="badge">${statusText}</span></div>
+                <div class="notice">${aliasText}</div>
+                <div class="custom-command-response">${entry.response}</div>
+              </div>
+              <div class="actions">
+                <button class="secondary" data-action="edit">Edit</button>
+                <button class="ghost" data-action="delete">Delete</button>
+              </div>
+            </div>`;
+          })
+          .join("");
+      }
+
+      async function fetchCustomCommands() {
+        const response = await fetch("/api/twitch/custom-commands");
+        if (!response.ok) return;
+        customCommandsCache = await response.json();
+        renderCustomCommands();
+      }
+
+      function startCustomCommandEdit(commandId) {
+        const entry = customCommandsCache.find((item) => item.id === commandId);
+        if (!entry) return;
+        editingCustomCommandId = entry.id;
+        customCommandName.value = entry.command;
+        customCommandAliases.value = entry.aliases.join(", ");
+        customCommandResponse.value = entry.response;
+        customCommandEnabled.checked = entry.enabled;
+        customCommandSubmit.textContent = "Save Changes";
+        customCommandCancel.classList.remove("hidden");
+        customCommandName.focus();
+      }
+
       async function fetchDownloads() {
         const response = await fetch("/api/downloads");
         if (!response.ok) return;
@@ -1232,6 +1333,71 @@
         }, 3000);
       });
 
+      customCommandCancel.addEventListener("click", () => {
+        resetCustomCommandForm();
+      });
+
+      customCommandForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        customCommandStatus.textContent = "Saving command...";
+        const payload = {
+          command: customCommandName.value.trim(),
+          aliases: customCommandAliases.value,
+          response: customCommandResponse.value,
+          enabled: customCommandEnabled.checked
+        };
+        const method = editingCustomCommandId ? "PUT" : "POST";
+        const url = editingCustomCommandId
+          ? `/api/twitch/custom-commands/${editingCustomCommandId}`
+          : "/api/twitch/custom-commands";
+        const response = await fetch(url, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          customCommandStatus.textContent = result.error || "Unable to save command.";
+          return;
+        }
+        customCommandStatus.textContent = editingCustomCommandId
+          ? "Custom command updated."
+          : "Custom command created.";
+        resetCustomCommandForm();
+        fetchCustomCommands();
+      });
+
+      customCommandsList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const row = button.closest("[data-command-id]");
+        if (!row) return;
+        const commandId = row.dataset.commandId;
+        if (button.dataset.action === "edit") {
+          startCustomCommandEdit(commandId);
+          return;
+        }
+        if (button.dataset.action === "delete") {
+          const entry = customCommandsCache.find((item) => item.id === commandId);
+          const label = entry ? `!${entry.command}` : "this command";
+          if (!confirm(`Delete ${label}?`)) {
+            return;
+          }
+          const response = await fetch(`/api/twitch/custom-commands/${commandId}`, {
+            method: "DELETE"
+          });
+          if (!response.ok) {
+            customCommandStatus.textContent = "Unable to delete command.";
+            return;
+          }
+          if (editingCustomCommandId === commandId) {
+            resetCustomCommandForm();
+          }
+          customCommandStatus.textContent = "Custom command deleted.";
+          fetchCustomCommands();
+        }
+      });
+
 
       userCreateForm.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -1276,6 +1442,10 @@
           fetchSettings();
           return;
         }
+        if (message.event === "TWITCH_COMMANDS_UPDATE") {
+          fetchCustomCommands();
+          return;
+        }
         if (message.event === "VOTE_START") {
           setActiveVote(message.payload);
           return;
@@ -1306,12 +1476,14 @@
         await loadAvailableIcons();
         await fetchMe();
         await fetchUsers();
+        resetCustomCommandForm();
         fetchState();
         fetchPlaylists();
         fetchDownloads();
         fetchSettings();
         fetchActiveVote();
         fetchPool();
+        fetchCustomCommands();
       })();
     </script>
   </body>

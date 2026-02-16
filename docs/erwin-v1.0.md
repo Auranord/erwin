@@ -51,7 +51,7 @@ Erwin is a self-hosted Node.js + Express music controller for livestreams.
 ## Permissions model
 - Every protected route requires authentication.
 - Feature permissions are not role-sliced in v1.0; all authenticated users can use playback/content features:
-  - `/api/session/*`, `/api/queue/*`, `/api/pool/*`, `/api/playlists*`, `/api/tracks*`, `/api/settings`, `/api/votes/*`, `/api/downloads/*`
+  - `/api/session/*`, `/api/queue/*`, `/api/pool/*`, `/api/playlists*`, `/api/tracks*`, `/api/settings`, `/api/votes/*`, `/api/downloads/*`, `/api/twitch/custom-commands*`
 - Admin-only access is limited to account management endpoints (`/api/users`).
 - Existing `role` data is used only for admin checks.
 
@@ -91,3 +91,9 @@ Primary runtime variables include:
 - yt-dlp/Twitch variables already used in server configuration
 
 `ERWIN_BASE_URL` remains reserved for future releases.
+
+## Twitch custom commands
+- Dashboard includes a dedicated **Custom Commands** tab.
+- Operators can create, edit, enable/disable, and delete commands and aliases.
+- Custom commands are persisted in `twitch_custom_commands` and executed after built-in command checks.
+- Response templates support `{user}`, `{channel}`, `{track}`, and `{command}` placeholders.

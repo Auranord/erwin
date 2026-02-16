@@ -384,6 +384,16 @@ function initDb() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS twitch_custom_commands (
+      id TEXT PRIMARY KEY,
+      command TEXT NOT NULL UNIQUE,
+      aliases_json TEXT NOT NULL,
+      response TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   const existing = db.prepare("SELECT COUNT(*) as count FROM users").get();
@@ -501,6 +511,42 @@ function initDb() {
         created_at TEXT NOT NULL
       );
     `);
+  }
+
+  const customCommandColumns = db.prepare("PRAGMA table_info(twitch_custom_commands)").all();
+  if (customCommandColumns.length === 0) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS twitch_custom_commands (
+        id TEXT PRIMARY KEY,
+        command TEXT NOT NULL UNIQUE,
+        aliases_json TEXT NOT NULL,
+        response TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  }
+  const customCommandColumnNames = new Set(
+    customCommandColumns.map((column) => column.name)
+  );
+  if (!customCommandColumnNames.has("aliases_json")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'").run();
+  }
+  if (!customCommandColumnNames.has("enabled")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1").run();
+  }
+  if (!customCommandColumnNames.has("created_at")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN created_at TEXT").run();
+    db.prepare("UPDATE twitch_custom_commands SET created_at = COALESCE(created_at, updated_at, ?)").run(
+      new Date().toISOString()
+    );
+  }
+  if (!customCommandColumnNames.has("updated_at")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN updated_at TEXT").run();
+    db.prepare("UPDATE twitch_custom_commands SET updated_at = COALESCE(updated_at, created_at, ?)").run(
+      new Date().toISOString()
+    );
   }
 
   const state = db.prepare("SELECT id FROM play_state WHERE id = 1").get();
@@ -1375,6 +1421,153 @@ function sendTwitchMessageLines(lines) {
   });
 }
 
+function normalizeCustomCommandName(raw) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^!+/, "")
+    .replace(/\s+/g, "");
+}
+
+function parseCustomCommandAliases(rawAliases) {
+  let aliases = [];
+  if (Array.isArray(rawAliases)) {
+    aliases = rawAliases;
+  } else if (typeof rawAliases === "string") {
+    aliases = rawAliases
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [...new Set(aliases.map((alias) => normalizeCustomCommandName(alias)).filter(Boolean))];
+}
+
+function parseCustomCommandRow(row) {
+  if (!row) return null;
+  let aliases = [];
+  try {
+    const parsed = JSON.parse(row.aliases_json || "[]");
+    if (Array.isArray(parsed)) {
+      aliases = parseCustomCommandAliases(parsed);
+    }
+  } catch {
+    aliases = [];
+  }
+  return {
+    id: row.id,
+    command: row.command,
+    aliases,
+    response: row.response,
+    enabled: row.enabled === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function getCustomCommands() {
+  const rows = db
+    .prepare(
+      "SELECT id, command, aliases_json, response, enabled, created_at, updated_at FROM twitch_custom_commands ORDER BY command ASC"
+    )
+    .all();
+  return rows.map(parseCustomCommandRow);
+}
+
+function getCustomCommandLookupMap() {
+  const map = new Map();
+  const commands = getCustomCommands();
+  commands.forEach((entry) => {
+    if (!entry?.enabled) return;
+    map.set(entry.command, entry);
+    entry.aliases.forEach((alias) => {
+      if (!map.has(alias)) {
+        map.set(alias, entry);
+      }
+    });
+  });
+  return map;
+}
+
+function validateCustomCommandInput(payload, options = {}) {
+  const allowPartial = Boolean(options.allowPartial);
+  const errors = [];
+
+  const hasCommand = Object.prototype.hasOwnProperty.call(payload, "command");
+  const hasResponse = Object.prototype.hasOwnProperty.call(payload, "response");
+  const hasAliases = Object.prototype.hasOwnProperty.call(payload, "aliases");
+  const hasEnabled = Object.prototype.hasOwnProperty.call(payload, "enabled");
+
+  const normalizedCommand = hasCommand ? normalizeCustomCommandName(payload.command) : null;
+  if (!allowPartial || hasCommand) {
+    if (!normalizedCommand) {
+      errors.push("command is required");
+    } else if (!/^[a-z0-9_\-]{1,32}$/.test(normalizedCommand)) {
+      errors.push("command must be 1-32 chars of a-z, 0-9, _ or -");
+    }
+  }
+
+  const response = hasResponse ? String(payload.response ?? "").trim() : null;
+  if (!allowPartial || hasResponse) {
+    if (!response) {
+      errors.push("response is required");
+    } else if (response.length > 500) {
+      errors.push("response must be 500 characters or fewer");
+    }
+  }
+
+  const aliases = hasAliases ? parseCustomCommandAliases(payload.aliases) : null;
+  if (hasAliases) {
+    if (aliases.some((alias) => !/^[a-z0-9_\-]{1,32}$/.test(alias))) {
+      errors.push("aliases must be 1-32 chars of a-z, 0-9, _ or -");
+    }
+    if (normalizedCommand && aliases.includes(normalizedCommand)) {
+      errors.push("aliases cannot include the main command");
+    }
+    if (aliases.length > 25) {
+      errors.push("maximum 25 aliases allowed");
+    }
+  }
+
+  const enabled = hasEnabled ? (payload.enabled ? 1 : 0) : null;
+
+  return {
+    errors,
+    value: {
+      command: normalizedCommand,
+      response,
+      aliases,
+      enabled
+    }
+  };
+}
+
+function detectCustomCommandConflicts({ command, aliases, excludeId = null }) {
+  const reservedCommands = new Set(["vote", "song", "skip", "pause", "resume"]);
+  const existing = getCustomCommands().filter((entry) => !excludeId || entry.id !== excludeId);
+  const lookup = new Map();
+  existing.forEach((entry) => {
+    lookup.set(entry.command, entry.command);
+    entry.aliases.forEach((alias) => lookup.set(alias, entry.command));
+  });
+  const duplicates = [];
+  if (command && reservedCommands.has(command)) {
+    duplicates.push(`command '${command}' is reserved by a built-in bot action`);
+  }
+  if (command && lookup.has(command)) {
+    duplicates.push(`command '${command}' conflicts with existing '${lookup.get(command)}'`);
+  }
+  (aliases || []).forEach((alias) => {
+    if (reservedCommands.has(alias)) {
+      duplicates.push(`alias '${alias}' is reserved by a built-in bot action`);
+      return;
+    }
+    if (lookup.has(alias)) {
+      duplicates.push(`alias '${alias}' conflicts with existing '${lookup.get(alias)}'`);
+    }
+  });
+  return [...new Set(duplicates)];
+}
+
 function pickRandom(array) {
   if (!array.length) return null;
   const index = Math.floor(Math.random() * array.length);
@@ -1785,11 +1978,11 @@ function connectTwitchBot() {
       if (!isCommand) {
         return;
       }
-      const [command, arg] = lower.slice(TWITCH_COMMAND_PREFIX.length).split(" ");
+      const [command, ...restArgs] = lower.slice(TWITCH_COMMAND_PREFIX.length).split(" ");
+      const arg = restArgs[0];
       if (command === "vote") {
         handleVoteCommand({ user, optionIndex: Number(arg) });
-      }
-      if (command === "song") {
+      } else if (command === "song") {
         const track = getCurrentTrack(getPlayState());
         sendTwitchMessageLines([
           getTwitchMessage(
@@ -1798,24 +1991,36 @@ function connectTwitchBot() {
             { track: formatTrackLabel(track) }
           )
         ]);
-      }
-      if (command === "skip" && mod) {
+      } else if (command === "skip" && mod) {
         skipQueue();
         sendTwitchMessageLines([
           getTwitchMessage("twitch_skip_message", TWITCH_MESSAGE_DEFAULTS.skip)
         ]);
-      }
-      if (command === "pause" && mod) {
+      } else if (command === "pause" && mod) {
         pauseSession();
         sendTwitchMessageLines([
           getTwitchMessage("twitch_pause_message", TWITCH_MESSAGE_DEFAULTS.pause)
         ]);
-      }
-      if (command === "resume" && mod) {
+      } else if (command === "resume" && mod) {
         resumeSession();
         sendTwitchMessageLines([
           getTwitchMessage("twitch_resume_message", TWITCH_MESSAGE_DEFAULTS.resume)
         ]);
+      } else {
+        const lookup = getCustomCommandLookupMap();
+        const custom = lookup.get(command);
+        if (custom?.response) {
+          const track = getCurrentTrack(getPlayState());
+          const response = formatTemplate(custom.response, {
+            command: TWITCH_COMMAND_PREFIX,
+            channel: TWITCH_CHANNEL,
+            user,
+            track: formatTrackLabel(track)
+          }).trim();
+          if (response) {
+            sendTwitchMessageLines([response]);
+          }
+        }
       }
     });
   });
@@ -2718,6 +2923,109 @@ app.get("/api/settings", requireAuth, (req, res) => {
     return acc;
   }, {});
   res.json(settings);
+});
+
+app.get("/api/twitch/custom-commands", requireAuth, (req, res) => {
+  res.json(getCustomCommands());
+});
+
+app.post("/api/twitch/custom-commands", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const validated = validateCustomCommandInput(payload);
+  if (validated.errors.length > 0) {
+    return res.status(400).json({ error: validated.errors.join(", ") });
+  }
+  const conflicts = detectCustomCommandConflicts({
+    command: validated.value.command,
+    aliases: validated.value.aliases || []
+  });
+  if (conflicts.length > 0) {
+    return res.status(409).json({ error: conflicts.join(", ") });
+  }
+  const now = new Date().toISOString();
+  const id = nanoid();
+  db.prepare(
+    "INSERT INTO twitch_custom_commands (id, command, aliases_json, response, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    id,
+    validated.value.command,
+    JSON.stringify(validated.value.aliases || []),
+    validated.value.response,
+    validated.value.enabled ?? 1,
+    now,
+    now
+  );
+  broadcast("TWITCH_COMMANDS_UPDATE", { action: "created", id });
+  return res.status(201).json({
+    id,
+    command: validated.value.command,
+    aliases: validated.value.aliases || [],
+    response: validated.value.response,
+    enabled: (validated.value.enabled ?? 1) === 1,
+    createdAt: now,
+    updatedAt: now
+  });
+});
+
+app.put("/api/twitch/custom-commands/:commandId", requireAuth, (req, res) => {
+  const existing = db
+    .prepare(
+      "SELECT id, command, aliases_json, response, enabled, created_at, updated_at FROM twitch_custom_commands WHERE id = ?"
+    )
+    .get(req.params.commandId);
+  if (!existing) {
+    return res.status(404).json({ error: "Custom command not found" });
+  }
+  const existingParsed = parseCustomCommandRow(existing);
+  const payload = req.body || {};
+  const validated = validateCustomCommandInput(payload, { allowPartial: true });
+  if (validated.errors.length > 0) {
+    return res.status(400).json({ error: validated.errors.join(", ") });
+  }
+  const nextCommand = validated.value.command ?? existingParsed.command;
+  const nextAliases = validated.value.aliases ?? existingParsed.aliases;
+  const conflicts = detectCustomCommandConflicts({
+    command: nextCommand,
+    aliases: nextAliases,
+    excludeId: existingParsed.id
+  });
+  if (conflicts.length > 0) {
+    return res.status(409).json({ error: conflicts.join(", ") });
+  }
+  const now = new Date().toISOString();
+  const nextResponse = validated.value.response ?? existingParsed.response;
+  const nextEnabled = validated.value.enabled ?? (existingParsed.enabled ? 1 : 0);
+  db.prepare(
+    "UPDATE twitch_custom_commands SET command = ?, aliases_json = ?, response = ?, enabled = ?, updated_at = ? WHERE id = ?"
+  ).run(
+    nextCommand,
+    JSON.stringify(nextAliases),
+    nextResponse,
+    nextEnabled,
+    now,
+    existingParsed.id
+  );
+  broadcast("TWITCH_COMMANDS_UPDATE", { action: "updated", id: existingParsed.id });
+  return res.json({
+    id: existingParsed.id,
+    command: nextCommand,
+    aliases: nextAliases,
+    response: nextResponse,
+    enabled: nextEnabled === 1,
+    createdAt: existingParsed.createdAt,
+    updatedAt: now
+  });
+});
+
+app.delete("/api/twitch/custom-commands/:commandId", requireAuth, (req, res) => {
+  const result = db
+    .prepare("DELETE FROM twitch_custom_commands WHERE id = ?")
+    .run(req.params.commandId);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Custom command not found" });
+  }
+  broadcast("TWITCH_COMMANDS_UPDATE", { action: "deleted", id: req.params.commandId });
+  return res.json({ ok: true });
 });
 
 app.get("/api/votes/active", requireAuth, (req, res) => {
