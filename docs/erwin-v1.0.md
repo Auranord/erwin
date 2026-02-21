@@ -65,12 +65,15 @@ Erwin is a self-hosted Node.js + Express music controller for livestreams.
 - A track is **audio-playable** when:
   - `download_status = 'ready'`
   - `audio_path` is not null
-- Disabled tracks can still be:
+- Playlist-scoped disabled tracks can still be:
   - added to pool
   - manually enqueued
   - used for vote options
   - selected from pool/queue for playback if audio-playable
-- Disabled is only enforced when starting playback from a playlist (`POST /api/playlists/:id/play`): disabled tracks are excluded from that seed set.
+- Disabled is scoped to `playlist_id + track_id` via `playlist_tracks.disabled` (updated with `PUT /api/playlists/:playlistId/tracks/:trackId/disable`).
+- Disabled is only enforced when starting playback from a playlist (`POST /api/playlists/:id/play`): disabled playlist-track rows are excluded from that seed set.
+- Deprecated global-disable endpoints `PUT /api/library/tracks/:id/disable` and `PUT /api/tracks/:id/disable` were removed.
+- Legacy `tracks.disabled` should be ignored by runtime logic and can be dropped in a controlled DB migration.
 - Queue advancement removes only audio-unavailable entries so playback does not stall.
 - If too few audio-playable pool tracks exist for a vote, vote start returns a clear error.
 
