@@ -787,6 +787,10 @@ async function fetchPlaylistTrackUrls(playlistUrl) {
 }
 
 
+function ingestLibrarySources(options = {}) {
+  return ingestLibrarySourceUrls(options);
+}
+
 async function ingestLibrarySourceUrls({ urls = [], playlistId = null } = {}) {
   const normalized = Array.isArray(urls)
     ? urls.map((url) => String(url || "").trim()).filter(Boolean)
@@ -2811,6 +2815,42 @@ app.get("/api/library/export", requireAuth, (req, res) => {
   res.send(JSON.stringify(payload, null, 2));
 });
 
+app.post("/api/library/import", requireAuth, (req, res) => {
+  const { urls, playlistId } = req.body || {};
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: "urls array is required" });
+  }
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+  }
+
+  ingestLibrarySources({ urls, playlistId: playlistId || null })
+    .then((result) => {
+      const importedCount = Number(result?.importedCount || 0);
+      broadcast("PLAYLIST_UPDATE", {
+        action: "library_imported_urls",
+        importedCount,
+        playlistId: playlistId || null
+      });
+      res.json({
+        importedCount,
+        imported: Array.isArray(result?.imported) ? result.imported : [],
+        errors: Array.isArray(result?.errors) ? result.errors : []
+      });
+    })
+    .catch((error) => {
+      log("error", "library url import failed", {
+        error: String(error?.message || error),
+        stack: error?.stack || null,
+        playlistId: playlistId || null
+      });
+      res.status(500).json({ error: "Unable to import library URLs" });
+    });
+});
+
 app.post("/api/library/import-json", requireAuth, (req, res) => {
   const payload = req.body || {};
   const data = payload.library || payload;
@@ -3032,6 +3072,63 @@ app.put("/api/tracks/:id", requireAuth, (req, res) => {
 
 app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
+});
+
+app.post("/api/playlists/:playlistId/tracks", requireAuth, (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found in library" });
+  }
+  const added = addTrackToPlaylist(req.params.playlistId, trackId);
+  if (!added) {
+    return res.status(409).json({ error: "Track already exists in playlist" });
+  }
+  broadcast("PLAYLIST_UPDATE", {
+    playlistId: req.params.playlistId,
+    trackId,
+    action: "track_added_from_library"
+  });
+  res.status(201).json({ ok: true, playlistId: req.params.playlistId, trackId });
+});
+
+app.post("/api/playlists/:id/play", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND playlist_tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY playlist_tracks.position ASC"
+    )
+    .all(req.params.id);
+  if (tracks.length === 0) {
+    return res.status(404).json({ error: "Playlist has no enabled, playable tracks" });
+  }
+
+  const now = new Date().toISOString();
+  const shuffled = shuffleArray(tracks);
+  const [firstTrack, ...remaining] = shuffled;
+
+  const transaction = db.transaction(() => {
+    db.prepare("DELETE FROM queue").run();
+    db.prepare("DELETE FROM play_pool").run();
+    if (remaining.length > 0) {
+      insertPoolEntries(remaining.map((track) => track.id));
+    }
+    db.prepare(
+      "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
+    ).run(firstTrack.id, Date.now(), now);
+  });
+
+  transaction();
+  broadcast("POOL_UPDATE", { action: "seeded", count: remaining.length });
+
+  const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
+  res.json({ playState, queue });
 });
 
 app.post("/api/playlists/:playlistId/tracks", requireAuth, (req, res) => {
