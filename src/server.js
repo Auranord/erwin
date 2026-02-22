@@ -16,6 +16,32 @@ import tls from "tls";
 
 dotenv.config();
 
+function writeFatalLogSync(message, errorLike) {
+  const errorMessage = String(errorLike?.message || errorLike);
+  const entry = {
+    time: new Date().toISOString(),
+    level: "error",
+    message,
+    error: errorMessage,
+    stack: errorLike?.stack || null
+  };
+  try {
+    fs.writeSync(process.stderr.fd, `${JSON.stringify(entry)}\n`);
+  } catch {
+    // no-op; best-effort fallback only
+  }
+}
+
+process.on("uncaughtException", (error) => {
+  writeFatalLogSync("uncaught exception", error);
+  process.exitCode = 1;
+  setImmediate(() => process.exit(1));
+});
+
+process.on("unhandledRejection", (reason) => {
+  writeFatalLogSync("unhandled rejection", reason);
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -89,48 +115,6 @@ function log(level, message, meta = {}) {
   }
 }
 
-function writeFatalLogSync(message, errorLike) {
-  const errorMessage = String(errorLike?.message || errorLike);
-  const entry = {
-    time: new Date().toISOString(),
-    level: "error",
-    message,
-    error: errorMessage,
-    stack: errorLike?.stack || null
-  };
-  try {
-    fs.writeSync(process.stderr.fd, `${JSON.stringify(entry)}\n`);
-  } catch {
-    // no-op; best-effort fallback only
-  }
-}
-
-
-process.on("uncaughtException", (error) => {
-  writeFatalLogSync("uncaught exception", error);
-  try {
-    log("error", "uncaught exception", {
-      error: String(error?.message || error),
-      stack: error?.stack || null
-    });
-  } catch {
-    console.error("uncaught exception", error);
-  }
-  process.exitCode = 1;
-  setImmediate(() => process.exit(1));
-});
-
-process.on("unhandledRejection", (reason) => {
-  writeFatalLogSync("unhandled rejection", reason);
-  try {
-    log("error", "unhandled rejection", {
-      error: String(reason?.message || reason),
-      stack: reason?.stack || null
-    });
-  } catch {
-    console.error("unhandled rejection", reason);
-  }
-});
 
 app.use(cookieParser());
 app.use(express.json());
