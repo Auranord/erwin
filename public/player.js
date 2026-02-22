@@ -95,6 +95,20 @@
       state.audio.muted = muted;
     }
 
+
+    function getTrackVolumeMultiplier(track) {
+      const dbAdjust = Number(track?.volume_adjust_db);
+      if (!Number.isFinite(dbAdjust)) return 1;
+      return Math.max(0, Math.min(4, 10 ** (dbAdjust / 20)));
+    }
+
+    function getEffectiveVolume(track = state.currentTrack) {
+      const base = Number(localStorage.getItem(VOLUME_KEY));
+      const uiVolume = Number.isFinite(base) ? Math.min(1, Math.max(0, base)) : 1;
+      const adjusted = uiVolume * getTrackVolumeMultiplier(track);
+      return Math.min(1, Math.max(0, adjusted));
+    }
+
     function trackProgress() {
       if (!state.audio) return;
       const current = Number.isFinite(state.audio.currentTime) ? state.audio.currentTime : 0;
@@ -102,6 +116,26 @@
         state.lastProgressTime = current;
         state.lastProgressAt = Date.now();
         state.waitingSince = null;
+      }
+      const duration = Number.isFinite(state.audio.duration)
+        ? state.audio.duration
+        : Number.isFinite(state.currentTrack?.duration_sec)
+          ? state.currentTrack.duration_sec
+          : null;
+      const outroSec = Number.isFinite(Number(state.currentTrack?.outro_sec))
+        ? Math.max(0, Number(state.currentTrack.outro_sec))
+        : 0;
+      const stopAt = Number.isFinite(duration) ? Math.max(0, duration - outroSec) : null;
+      const currentTrackId = state.currentTrack?.id || null;
+      if (
+        Number.isFinite(stopAt) &&
+        current >= stopAt &&
+        !state.playState?.paused &&
+        currentTrackId &&
+        state.lastEndedSkipTrackId !== currentTrackId
+      ) {
+        state.lastEndedSkipTrackId = currentTrackId;
+        emit("PLAYER_EVENT", { event: "ended", details: { reason: "outro_cut" } });
       }
     }
 
@@ -156,11 +190,15 @@
 
       if (state.currentTrackId !== track.id) {
         state.currentTrackId = track.id;
+        state.lastEndedSkipTrackId = null;
         state.audio.src = `/api/audio/${track.id}`;
         state.audio.load();
       }
+      state.audio.volume = getEffectiveVolume(track);
 
-      const targetTime = expectedTimeSeconds(track, playState);
+      const introSec = Number.isFinite(Number(track?.intro_sec)) ? Math.max(0, Number(track.intro_sec)) : 0;
+      const outroSec = Number.isFinite(Number(track?.outro_sec)) ? Math.max(0, Number(track.outro_sec)) : 0;
+      const targetTime = Math.max(introSec, expectedTimeSeconds(track, playState));
       const currentTime = Number.isFinite(state.audio.currentTime) ? state.audio.currentTime : 0;
       const drift = Math.abs(currentTime - targetTime);
       const duration = Number.isFinite(state.audio.duration)
@@ -168,8 +206,11 @@
         : Number.isFinite(track?.duration_sec)
           ? track.duration_sec
           : null;
+      const effectiveEnd = Number.isFinite(duration)
+        ? Math.max(introSec, duration - outroSec)
+        : null;
       const nearTrackEnd =
-        Number.isFinite(duration) && targetTime >= Math.max(0, duration - END_OF_TRACK_EPSILON_SECONDS);
+        Number.isFinite(effectiveEnd) && targetTime >= Math.max(introSec, effectiveEnd - END_OF_TRACK_EPSILON_SECONDS);
       const now = Date.now();
       const inHardDrift = drift > HARD_SEEK_DRIFT_SECONDS;
 
