@@ -140,6 +140,30 @@
               </div>
               <button type="submit">Add to Library</button>
             </form>
+            <div class="actions" style="margin-top: 12px;">
+              <button id="export-library-json" class="secondary" type="button">Export Library JSON</button>
+              <button id="import-library-json" class="secondary" type="button">Import Library JSON</button>
+            </div>
+            <div class="grid" style="margin-top: 12px;">
+              <div>
+                <label for="library-search">Search title</label>
+                <input id="library-search" type="search" placeholder="Track title..." />
+              </div>
+              <div>
+                <label for="library-tags-include">Include tags (comma separated)</label>
+                <input id="library-tags-include" type="text" placeholder="vocals, acoustic" />
+              </div>
+              <div>
+                <label for="library-tags-exclude">Exclude tags (comma separated)</label>
+                <input id="library-tags-exclude" type="text" placeholder="instrumental" />
+              </div>
+              <div>
+                <label for="library-add-playlist">Add selected track to playlist</label>
+                <select id="library-add-playlist">
+                  <option value="">Select playlist...</option>
+                </select>
+              </div>
+            </div>
             <div class="section-title" style="margin-top: 16px;">Library Tracks</div>
             <div id="library-tracks" class="list">
               <div class="list-item">No tracks in library yet.</div>
@@ -299,6 +323,7 @@
     </main>
 
     <input id="playlist-import-file" type="file" accept="application/json" class="hidden" />
+    <input id="library-import-file" type="file" accept="application/json" class="hidden" />
 
     <script>
       const nowPlaying = document.getElementById("now-playing");
@@ -366,6 +391,13 @@
       const chatMessages = [];
       const playlistImportFile = document.getElementById("playlist-import-file");
       const importPlaylistJsonButton = document.getElementById("import-playlist-json");
+      const exportLibraryJsonButton = document.getElementById("export-library-json");
+      const importLibraryJsonButton = document.getElementById("import-library-json");
+      const libraryImportFile = document.getElementById("library-import-file");
+      const librarySearch = document.getElementById("library-search");
+      const libraryTagsInclude = document.getElementById("library-tags-include");
+      const libraryTagsExclude = document.getElementById("library-tags-exclude");
+      const libraryAddPlaylist = document.getElementById("library-add-playlist");
       const ICON_FALLBACKS = {
         play: "⯈",
         pause: "⏸",
@@ -753,6 +785,7 @@
         playlistsCache = await response.json();
         playlistsEl.innerHTML = "";
         trackPlaylist.innerHTML = '<option value="">Library only</option>';
+        libraryAddPlaylist.innerHTML = '<option value="">Select playlist...</option>';
         if (playlistsCache.length === 0) {
           playlistsEl.innerHTML = '<div class="list-item">No playlists yet.</div>';
           selectedPlaylistId = null;
@@ -782,6 +815,11 @@
           trackOption.value = playlist.id;
           trackOption.textContent = playlist.name;
           trackPlaylist.appendChild(trackOption);
+
+          const addOption = document.createElement("option");
+          addOption.value = playlist.id;
+          addOption.textContent = playlist.name;
+          libraryAddPlaylist.appendChild(addOption);
         }
         const selectedExists = selectedPlaylistId
           ? playlistsCache.some((playlist) => playlist.id === selectedPlaylistId)
@@ -902,16 +940,42 @@
         const response = await fetch("/api/library/tracks");
         if (!response.ok) return;
         libraryTracksCache = await response.json();
+        renderLibraryTracks();
+      }
+
+      function parseTagFilterValue(value) {
+        return String(value || "")
+          .split(",")
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean);
+      }
+
+      function renderLibraryTracks() {
         if (!libraryTracksCache.length) {
           libraryTracksEl.innerHTML = '<div class="list-item">No tracks in library yet.</div>';
           return;
         }
-        libraryTracksEl.innerHTML = libraryTracksCache
+        const titleQuery = String(librarySearch.value || "").trim().toLowerCase();
+        const includeTags = parseTagFilterValue(libraryTagsInclude.value);
+        const excludeTags = parseTagFilterValue(libraryTagsExclude.value);
+        const filtered = libraryTracksCache.filter((track) => {
+          const title = String(track.title || track.youtube_id || "").toLowerCase();
+          const tags = (track.tags || []).map((tag) => String(tag).toLowerCase());
+          if (titleQuery && !title.includes(titleQuery)) return false;
+          if (includeTags.length > 0 && !includeTags.every((tag) => tags.includes(tag))) return false;
+          if (excludeTags.some((tag) => tags.includes(tag))) return false;
+          return true;
+        });
+        if (!filtered.length) {
+          libraryTracksEl.innerHTML = '<div class="list-item">No library tracks match the current filters.</div>';
+          return;
+        }
+        libraryTracksEl.innerHTML = filtered
           .map((track) => {
             const title = track.title || track.youtube_id;
             const tags = formatTagPills(track.tags || []);
             const downloadState = track.download_status || "unknown";
-            return `<div class="list-item" data-library-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${Boolean(track.disabled)}">
+            return `<div class="list-item" data-library-track-id="${track.id}" data-track-title="${track.title || ""}" >
               <div style="flex:1;">
                 <div>${title} <span class="badge">${downloadState}</span></div>
                 <div class="notice">vol ${Number(track.volume_adjust_db || 0).toFixed(1)} dB · intro ${Number(track.intro_sec || 0).toFixed(1)}s · outro ${Number(track.outro_sec || 0).toFixed(1)}s ${tags}</div>
@@ -920,13 +984,14 @@
                 <button class="secondary" data-action="library-rename">Rename</button>
                 <button class="secondary" data-action="library-tags">Tags</button>
                 <button class="secondary" data-action="library-audio">Audio</button>
-                <button class="secondary" data-action="library-toggle">${track.disabled ? "Enable" : "Disable"}</button>
+                <button class="secondary" data-action="library-add-playlist">Add to playlist</button>
                 <button class="ghost" data-action="library-delete">Delete</button>
               </div>
             </div>`;
           })
           .join("");
       }
+
 async function fetchDownloads() {
         const response = await fetch("/api/downloads");
         if (!response.ok) return;
@@ -1021,7 +1086,7 @@ async function fetchDownloads() {
           fetchPool();
         }
         if (action === "toggle-disabled") {
-          await fetch(`/api/tracks/${trackId}/disable`, {
+          await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}/disable`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ disabled: !isDisabled })
@@ -1133,6 +1198,34 @@ async function fetchDownloads() {
           await fetch(`/api/pool/${trackId}`, { method: "DELETE" });
         }
         fetchPool();
+      });
+
+      function closeRenameModal() {
+        renameModal.classList.add("hidden");
+        renameTrackId = null;
+        renameInput.value = "";
+      }
+
+      renameCancel.addEventListener("click", () => {
+        closeRenameModal();
+      });
+
+      renameModal.addEventListener("click", (event) => {
+        if (event.target === renameModal) {
+          closeRenameModal();
+        }
+      });
+
+      renameSave.addEventListener("click", async () => {
+        const title = renameInput.value.trim();
+        if (!renameTrackId || !title) return;
+        await fetch(`/api/library/tracks/${renameTrackId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title })
+        });
+        closeRenameModal();
+        fetchPlaylists();
       });
 
       importPlaylistJsonButton.addEventListener("click", () => {
@@ -1300,9 +1393,17 @@ async function fetchDownloads() {
           if (outroSec === null) return;
           await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ volumeAdjustDb: Number(volumeAdjustDb), introSec: Number(introSec), outroSec: Number(outroSec) }) });
         }
-        if (action === "library-toggle") {
-          const isDisabled = wrapper.dataset.trackDisabled === "true";
-          await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ disabled: !isDisabled }) });
+        if (action === "library-add-playlist") {
+          const playlistId = libraryAddPlaylist.value;
+          if (!playlistId) {
+            window.alert("Select a playlist first in the library controls.");
+          } else {
+            await fetch(`/api/playlists/${playlistId}/tracks`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ trackId })
+            });
+          }
         }
         if (action === "library-delete") {
           if (window.confirm("Delete track from library and all playlists?")) {
@@ -1312,6 +1413,44 @@ async function fetchDownloads() {
         fetchPlaylists();
         fetchLibraryTracks();
       });
+
+      [librarySearch, libraryTagsInclude, libraryTagsExclude].forEach((input) => {
+        input.addEventListener("input", () => {
+          renderLibraryTracks();
+        });
+      });
+
+      exportLibraryJsonButton.addEventListener("click", () => {
+        const a = document.createElement("a");
+        a.href = "/api/library/export";
+        a.click();
+      });
+
+      importLibraryJsonButton.addEventListener("click", () => {
+        libraryImportFile.click();
+      });
+
+      libraryImportFile.addEventListener("change", async () => {
+        const file = libraryImportFile.files?.[0];
+        if (!file) return;
+        const text = await file.text();
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          window.alert("Invalid library JSON file.");
+          return;
+        }
+        await fetch("/api/library/import-json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        libraryImportFile.value = "";
+        fetchLibraryTracks();
+        fetchPlaylists();
+      });
+
 document.getElementById("logout").addEventListener("click", async () => {
         await fetch("/api/auth/logout", { method: "POST" });
         window.location.href = "/login";
