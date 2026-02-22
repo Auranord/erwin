@@ -2356,7 +2356,7 @@ app.get("/api/audio/:trackId", requireAuth, (req, res) => {
 app.post("/api/queue/enqueue", requireAuth, (req, res) => {
   const { trackId, source } = req.body || {};
   const track = db
-    .prepare("SELECT id, disabled, download_status, audio_path FROM tracks WHERE id = ?")
+    .prepare("SELECT id, download_status, audio_path FROM tracks WHERE id = ?")
     .get(trackId);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -2591,7 +2591,9 @@ app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
     .all(req.params.id);
   const payload = {
     playlist: {
+      id: playlist.id,
       name: playlist.name,
+      exported_at: new Date().toISOString(),
       tracks: tracks.map((track) => ({
         track_id: track.track_id,
         title: track.title || null,
@@ -2648,7 +2650,7 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
   let addedTracks = 0;
   const missingTrackIds = [];
 
-  for (const rawTrack of trackList) {
+  for (const [index, rawTrack] of trackList.entries()) {
     const track = rawTrack || {};
     const trackId = typeof track.track_id === "string" ? track.track_id.trim() : "";
     if (!trackId) continue;
@@ -2674,27 +2676,22 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
   });
 });
 
-app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
-  const { urls } = req.body || {};
-  if (!Array.isArray(urls) || urls.length === 0) {
-    return res.status(400).json({ error: "URLs array required" });
-  }
-  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.id);
-  if (!playlist) {
-    return res.status(404).json({ error: "Playlist not found" });
-  }
+async function ingestLibrarySources({ urls, playlistId = null }) {
   const insertTrack = db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, ?)"
   );
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
-  const imported = [];
+  const added = [];
   const errors = [];
+  const skipped = [];
+  const seenYoutubeIds = new Set();
   const expandedUrls = [];
 
   for (const rawUrl of urls) {
     const url = String(rawUrl || "").trim();
     if (!url) {
+      skipped.push({ url: rawUrl, reason: "empty" });
       continue;
     }
     if (parseYouTubePlaylistId(url)) {
@@ -2718,19 +2715,24 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
     expandedUrls.push(url);
   }
 
-  if (expandedUrls.length === 0) {
-    return res.status(400).json({ error: "No valid track URLs found", errors });
-  }
+  const items = expandedUrls
+    .map((url) => ({ url, youtubeId: parseYouTubeId(url) }))
+    .filter((item) => item.youtubeId);
 
-  const transaction = db.transaction((items) => {
-    for (const item of items) {
+  const transaction = db.transaction((rows) => {
+    for (const item of rows) {
+      if (seenYoutubeIds.has(item.youtubeId)) {
+        skipped.push({ url: item.url, reason: "duplicate" });
+        continue;
+      }
+      seenYoutubeIds.add(item.youtubeId);
       const existing = findTrack.get(item.youtubeId);
       const trackId = existing ? existing.id : nanoid();
       if (!existing) {
         insertTrack.run(trackId, item.youtubeId, item.url, now);
       }
-      enqueueDownload(req.params.id, trackId);
-      imported.push({
+      enqueueDownload(playlistId || LIBRARY_QUEUE_ID, trackId, { attachToPlaylist: Boolean(playlistId) });
+      added.push({
         id: trackId,
         youtubeId: item.youtubeId,
         url: item.url,
@@ -2739,19 +2741,21 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
     }
   });
 
-  const items = expandedUrls
-    .map((url) => ({ url, youtubeId: parseYouTubeId(url) }))
-    .filter((item) => item.youtubeId);
   transaction(items);
-  log("info", "playlist import queued", {
-    playlistId: req.params.id,
-    requested: urls.length,
-    queued: imported.length,
-    expanded: expandedUrls.length,
-    errors: errors.length
+  return {
+    added,
+    skipped,
+    missingTrackIds: [],
+    errors,
+    expandedCount: expandedUrls.length
+  };
+}
+
+app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
+  res.status(410).json({
+    error:
+      "Deprecated endpoint. Source ingest is handled by POST /api/library/tracks or POST /api/library/tracks/ingest with playlistId."
   });
-  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "imported" });
-  res.json({ importedCount: imported.length, imported, errors });
 });
 
 app.get("/api/library/tracks", requireAuth, (req, res) => {
@@ -2984,6 +2988,1254 @@ app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
     return res.status(400).json({ error: "title required" });
   }
   const trimmed = title.trim();
+  const result = db.prepare("UPDATE tracks SET title = ? WHERE id = ?").run(trimmed, req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
+  res.json({ id: req.params.id, title: trimmed });
+});
+
+app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
+  res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
+});
+
+
+
+app.put("/api/tracks/:id", requireAuth, (req, res) => {
+  const { title } = req.body || {};
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: "title required" });
+  }
+  const trimmed = title.trim();
+  const result = db.prepare("UPDATE tracks SET title = ? WHERE id = ?").run(trimmed, req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
+  res.json({ id: req.params.id, title: trimmed });
+});
+
+app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
+  res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
+});
+
+app.post("/api/playlists/:playlistId/tracks", requireAuth, (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found in library" });
+  }
+  const added = addTrackToPlaylist(req.params.playlistId, trackId);
+  if (!added) {
+    return res.status(409).json({ error: "Track already exists in playlist" });
+  }
+  broadcast("PLAYLIST_UPDATE", {
+    playlistId: req.params.playlistId,
+    trackId,
+    action: "track_added_from_library"
+  });
+  res.status(201).json({ ok: true, playlistId: req.params.playlistId, trackId });
+});
+
+app.post(
+  "/api/playlists/:id/play",
+  requireAuth,
+  (req, res) => {
+    const tracks = db
+      .prepare(
+        "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND playlist_tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY playlist_tracks.position ASC"
+      )
+      .all(req.params.id);
+    if (tracks.length === 0) {
+      return res.status(404).json({ error: "Playlist has no enabled, playable tracks" });
+    }
+  }
+};
+
+function parseLibraryImportDryRun(req, payload) {
+  const queryDryRun = String(req.query?.dryRun || "").trim().toLowerCase();
+  const dryRunFromQuery = ["1", "true", "yes", "on"].includes(queryDryRun);
+  return dryRunFromQuery || payload?.dryRun === true || payload?.library?.dryRun === true;
+}
+
+function validateLibraryImportRow(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, reason: "row must be an object" };
+  }
+  const allowedKeys = new Set([
+    "id",
+    "title",
+    "volume_adjust_db",
+    "intro_sec",
+    "outro_sec",
+    "tags"
+  ]);
+  const unknownKeys = Object.keys(raw).filter((key) => !allowedKeys.has(key));
+  if (unknownKeys.length > 0) {
+    return { ok: false, reason: `unknown fields: ${unknownKeys.join(", ")}` };
+  }
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (!id || id.length > 128) {
+    return { ok: false, reason: "id is required and must be 1..128 chars" };
+  }
+
+  const hasUpdatableField =
+    raw.title !== undefined ||
+    raw.volume_adjust_db !== undefined ||
+    raw.intro_sec !== undefined ||
+    raw.outro_sec !== undefined ||
+    raw.tags !== undefined;
+  if (!hasUpdatableField) {
+    return { ok: false, reason: "at least one updatable field is required" };
+  }
+
+  let title = null;
+  if (raw.title !== undefined) {
+    if (typeof raw.title !== "string") {
+      return { ok: false, reason: "title must be a string" };
+    }
+    title = raw.title.trim();
+    if (!title || title.length > 512) {
+      return { ok: false, reason: "title must be 1..512 chars" };
+    }
+  }
+
+  let volumeAdjustDb = null;
+  if (raw.volume_adjust_db !== undefined) {
+    volumeAdjustDb = Number(raw.volume_adjust_db);
+    if (!Number.isFinite(volumeAdjustDb) || volumeAdjustDb < -24 || volumeAdjustDb > 24) {
+      return { ok: false, reason: "volume_adjust_db must be between -24 and 24" };
+    }
+  }
+
+  let introSec = null;
+  if (raw.intro_sec !== undefined) {
+    introSec = Number(raw.intro_sec);
+    if (!Number.isFinite(introSec) || introSec < 0 || introSec > 86400) {
+      return { ok: false, reason: "intro_sec must be between 0 and 86400" };
+    }
+  }
+
+  let outroSec = null;
+  if (raw.outro_sec !== undefined) {
+    outroSec = Number(raw.outro_sec);
+    if (!Number.isFinite(outroSec) || outroSec < 0 || outroSec > 86400) {
+      return { ok: false, reason: "outro_sec must be between 0 and 86400" };
+    }
+  }
+
+  let tags = null;
+  if (raw.tags !== undefined) {
+    if (Array.isArray(raw.tags)) {
+      const normalizedTags = raw.tags.map((tag) => String(tag).trim()).filter(Boolean);
+      if (normalizedTags.length > 100 || normalizedTags.some((tag) => tag.length > 64)) {
+        return { ok: false, reason: "tags array supports up to 100 items of 1..64 chars" };
+      }
+      tags = normalizedTags.join(",");
+    } else if (typeof raw.tags === "string") {
+      if (raw.tags.length > 2048) {
+        return { ok: false, reason: "tags string must be <= 2048 chars" };
+      }
+      tags = raw.tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+        .join(",");
+    } else {
+      return { ok: false, reason: "tags must be a string or array of strings" };
+    }
+  }
+
+  return {
+    ok: true,
+    normalized: {
+      id,
+      title,
+      volumeAdjustDb,
+      introSec,
+      outroSec,
+      tags
+    }
+  };
+}
+
+app.get("/api/library/export", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  const payload = {
+    library: {
+      exported_at: new Date().toISOString(),
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        youtube_id: track.youtube_id,
+        url: track.url,
+        title: track.title,
+        duration_sec: track.duration_sec,
+        channel: track.channel,
+        thumbnail: track.thumbnail,
+        volume_adjust_db: track.volume_adjust_db,
+        intro_sec: track.intro_sec,
+        outro_sec: track.outro_sec,
+        tags: String(track.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        created_at: track.created_at
+      }))
+    },
+    schema: LIBRARY_EXPORT_JSON_SCHEMA
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="erwin-library.json"');
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/library/import-json", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const data = payload.library || payload;
+  const dryRun = parseLibraryImportDryRun(req, payload);
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  if (!tracks.length) {
+    return res.status(400).json({ error: "tracks array is required" });
+  }
+  const findById = db.prepare("SELECT id FROM tracks WHERE id = ?");
+  const updateTrack = db.prepare(
+    "UPDATE tracks SET title = COALESCE(?, title), volume_adjust_db = COALESCE(?, volume_adjust_db), intro_sec = COALESCE(?, intro_sec), outro_sec = COALESCE(?, outro_sec), tags = COALESCE(?, tags) WHERE id = ?"
+  );
+  const outcomes = [];
+  let updated = 0;
+  let invalid = 0;
+  let missing = 0;
+  for (let index = 0; index < tracks.length; index += 1) {
+    const raw = tracks[index];
+    const result = validateLibraryImportRow(raw);
+    if (!result.ok) {
+      invalid += 1;
+      outcomes.push({ index, id: raw?.id || null, status: "invalid", reason: result.reason });
+      continue;
+    }
+    const { id, title, volumeAdjustDb, introSec, outroSec, tags } = result.normalized;
+    const existing = findById.get(id);
+    if (!existing) {
+      missing += 1;
+      outcomes.push({ index, id, status: "missing" });
+      continue;
+    }
+    if (!dryRun) {
+      updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    }
+    updated += 1;
+    outcomes.push({ index, id, status: "updated", dryRun });
+  }
+  if (!dryRun && updated > 0) {
+    broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
+  }
+  res.json({
+    dryRun,
+    schema: LIBRARY_IMPORT_JSON_SCHEMA,
+    summary: { total: tracks.length, updated, invalid, missing },
+    outcomes
+  });
+});
+
+app.post("/api/library/tracks", requireAuth, (req, res) => {
+  const { url, playlistId } = req.body || {};
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  const youtubeId = parseYouTubeId(url);
+  if (!youtubeId) {
+    return res.status(400).json({ error: "Invalid YouTube URL or ID" });
+  }
+  let attachToPlaylist = false;
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+    attachToPlaylist = true;
+  }
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
+  enqueueDownload(playlistId, trackId, { attachToPlaylist: true });
+  log("info", "track queued", { trackId, playlistId, youtubeId, reused: Boolean(existing) });
+  broadcast("PLAYLIST_UPDATE", { playlistId, action: "track_added", trackId });
+  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+});
+
+app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
+
+  const { title } = req.body || {};
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: "title required" });
+  }
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+  }
+  const result = await ingestLibrarySources({ urls, playlistId: playlistId || null });
+  if (result.added.length === 0 && result.errors.length > 0) {
+    return res.status(400).json({ error: "No valid track URLs found", ...result });
+  }
+  log("info", "library source ingest queued", {
+    playlistId: playlistId || null,
+    requested: urls.length,
+    queued: result.added.length,
+    expanded: result.expandedCount,
+    errors: result.errors.length
+  });
+  res.status(201).json(result);
+});
+
+app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
+  res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
+});
+
+
+
+app.put("/api/tracks/:id", requireAuth, (req, res) => {
+  const { title } = req.body || {};
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: "title required" });
+  }
+  const trimmed = title.trim();
+  const result = db.prepare("UPDATE tracks SET title = ? WHERE id = ?").run(trimmed, req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
+  res.json({ id: req.params.id, title: trimmed });
+});
+
+app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
+  res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
+});
+
+app.post("/api/playlists/:playlistId/tracks", requireAuth, (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found in library" });
+  }
+  const added = addTrackToPlaylist(req.params.playlistId, trackId);
+  if (!added) {
+    return res.status(409).json({ error: "Track already exists in playlist" });
+  }
+  broadcast("PLAYLIST_UPDATE", {
+    playlistId: req.params.playlistId,
+    trackId,
+    action: "track_added_from_library"
+  });
+  res.status(201).json({ ok: true, playlistId: req.params.playlistId, trackId });
+});
+
+app.post(
+  "/api/playlists/:id/play",
+  requireAuth,
+  (req, res) => {
+    const tracks = db
+      .prepare(
+        "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND playlist_tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY playlist_tracks.position ASC"
+      )
+      .all(req.params.id);
+    if (tracks.length === 0) {
+      return res.status(404).json({ error: "Playlist has no enabled, playable tracks" });
+    }
+    const now = new Date().toISOString();
+    const shuffled = shuffleArray(tracks);
+    const firstTrack = shuffled[0];
+    const remaining = shuffled.slice(1);
+    const transaction = db.transaction(() => {
+      db.prepare("DELETE FROM queue").run();
+      db.prepare("DELETE FROM play_pool").run();
+      if (remaining.length > 0) {
+        insertPoolEntries(remaining.map((track) => track.id));
+      }
+      db.prepare(
+        "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
+      ).run(firstTrack.id, Date.now(), now);
+    });
+    transaction();
+    if (remaining.length > 0) {
+      broadcast("POOL_UPDATE", { action: "seeded", count: remaining.length });
+    } else {
+      broadcast("POOL_UPDATE", { action: "seeded", count: 0 });
+    }
+    const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
+    res.json({ playState, queue });
+  }
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM queue WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM play_pool WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM download_queue WHERE track_id = ?").run(track.id);
+    db.prepare("UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE current_track_id = ?").run(new Date().toISOString(), track.id);
+    db.prepare("DELETE FROM tracks WHERE id = ?").run(track.id);
+  });
+  tx();
+  if (track.audio_path) {
+    fsPromises.unlink(track.audio_path).catch(() => {});
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: track.id, action: "track_deleted" });
+  res.json({ ok: true });
+});
+
+app.get("/api/library/tracks", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  res.json(
+    tracks.map((track) => ({
+      ...track,
+      tags: String(track.tags || "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    }))
+  );
+});
+
+app.get("/api/library/export", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  const payload = {
+    library: {
+      exported_at: new Date().toISOString(),
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        youtube_id: track.youtube_id,
+        url: track.url,
+        title: track.title,
+        duration_sec: track.duration_sec,
+        channel: track.channel,
+        thumbnail: track.thumbnail,
+        volume_adjust_db: track.volume_adjust_db,
+        intro_sec: track.intro_sec,
+        outro_sec: track.outro_sec,
+        tags: String(track.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        created_at: track.created_at
+      }))
+    }
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="erwin-library.json"');
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/library/import-json", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const data = payload.library || payload;
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  if (!tracks.length) {
+    return res.status(400).json({ error: "tracks array is required" });
+  }
+  const findById = db.prepare("SELECT id FROM tracks WHERE id = ?");
+  const updateTrack = db.prepare(
+    "UPDATE tracks SET title = COALESCE(?, title), volume_adjust_db = COALESCE(?, volume_adjust_db), intro_sec = COALESCE(?, intro_sec), outro_sec = COALESCE(?, outro_sec), tags = COALESCE(?, tags) WHERE id = ?"
+  );
+  let updated = 0;
+  const missing = [];
+  for (const raw of tracks) {
+    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+    const existing = findById.get(id);
+    if (!existing) {
+      missing.push(id);
+      continue;
+    }
+    const title = typeof raw.title === "string" ? raw.title.trim() || null : null;
+    const volumeAdjustDb = Number.isFinite(Number(raw.volume_adjust_db)) ? Number(raw.volume_adjust_db) : null;
+    const introSec = Number.isFinite(Number(raw.intro_sec)) ? Number(raw.intro_sec) : null;
+    const outroSec = Number.isFinite(Number(raw.outro_sec)) ? Number(raw.outro_sec) : null;
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.map((tag) => String(tag).trim()).filter(Boolean).join(",")
+      : typeof raw.tags === "string"
+        ? raw.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+            .join(",")
+        : null;
+    updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    updated += 1;
+  }
+  broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
+  res.json({ updated, missing });
+});
+
+app.post("/api/library/tracks", requireAuth, (req, res) => {
+  const { url, playlistId } = req.body || {};
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  const youtubeId = parseYouTubeId(url);
+  if (!youtubeId) {
+    return res.status(400).json({ error: "Invalid YouTube URL or ID" });
+  }
+  let attachToPlaylist = false;
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+    attachToPlaylist = true;
+  }
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
+  enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist });
+  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+});
+
+app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const updates = [];
+  const values = [];
+  if (typeof payload.title === "string") {
+    const title = payload.title.trim();
+    if (!title) {
+      return res.status(400).json({ error: "title cannot be empty" });
+    }
+    updates.push("title = ?");
+    values.push(title);
+  }
+  if (payload.volumeAdjustDb !== undefined) {
+    const v = Number(payload.volumeAdjustDb);
+    if (!Number.isFinite(v) || v < -24 || v > 24) {
+      return res.status(400).json({ error: "volumeAdjustDb must be between -24 and 24" });
+    }
+    updates.push("volume_adjust_db = ?");
+    values.push(v);
+  }
+  if (payload.introSec !== undefined) {
+    const v = Number(payload.introSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "introSec must be >= 0" });
+    }
+    updates.push("intro_sec = ?");
+    values.push(v);
+  }
+  if (payload.outroSec !== undefined) {
+    const v = Number(payload.outroSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "outroSec must be >= 0" });
+    }
+    updates.push("outro_sec = ?");
+    values.push(v);
+  }
+  if (payload.tags !== undefined) {
+    const tags = Array.isArray(payload.tags)
+      ? payload.tags
+      : String(payload.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean);
+    updates.push("tags = ?");
+    values.push(tags.join(","));
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: "No valid updates" });
+  }
+  values.push(req.params.id);
+  const result = db.prepare(`UPDATE tracks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_updated" });
+  res.json({ ok: true, id: req.params.id });
+});
+
+app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM queue WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM play_pool WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM download_queue WHERE track_id = ?").run(track.id);
+    db.prepare("UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE current_track_id = ?").run(new Date().toISOString(), track.id);
+    db.prepare("DELETE FROM tracks WHERE id = ?").run(track.id);
+  });
+  tx();
+  if (track.audio_path) {
+    fsPromises.unlink(track.audio_path).catch(() => {});
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: track.id, action: "track_deleted" });
+  res.json({ ok: true });
+});
+
+app.get("/api/library/tracks", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  res.json(
+    tracks.map((track) => ({
+      ...track,
+      tags: String(track.tags || "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    }))
+  );
+});
+
+app.get("/api/library/export", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  const payload = {
+    library: {
+      exported_at: new Date().toISOString(),
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        youtube_id: track.youtube_id,
+        url: track.url,
+        title: track.title,
+        duration_sec: track.duration_sec,
+        channel: track.channel,
+        thumbnail: track.thumbnail,
+        volume_adjust_db: track.volume_adjust_db,
+        intro_sec: track.intro_sec,
+        outro_sec: track.outro_sec,
+        tags: String(track.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        created_at: track.created_at
+      }))
+    }
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="erwin-library.json"');
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/library/import-json", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const data = payload.library || payload;
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  if (!tracks.length) {
+    return res.status(400).json({ error: "tracks array is required" });
+  }
+  const findById = db.prepare("SELECT id FROM tracks WHERE id = ?");
+  const updateTrack = db.prepare(
+    "UPDATE tracks SET title = COALESCE(?, title), volume_adjust_db = COALESCE(?, volume_adjust_db), intro_sec = COALESCE(?, intro_sec), outro_sec = COALESCE(?, outro_sec), tags = COALESCE(?, tags) WHERE id = ?"
+  );
+  let updated = 0;
+  const missing = [];
+  for (const raw of tracks) {
+    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+    const existing = findById.get(id);
+    if (!existing) {
+      missing.push(id);
+      continue;
+    }
+    const title = typeof raw.title === "string" ? raw.title.trim() || null : null;
+    const volumeAdjustDb = Number.isFinite(Number(raw.volume_adjust_db)) ? Number(raw.volume_adjust_db) : null;
+    const introSec = Number.isFinite(Number(raw.intro_sec)) ? Number(raw.intro_sec) : null;
+    const outroSec = Number.isFinite(Number(raw.outro_sec)) ? Number(raw.outro_sec) : null;
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.map((tag) => String(tag).trim()).filter(Boolean).join(",")
+      : typeof raw.tags === "string"
+        ? raw.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+            .join(",")
+        : null;
+    updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    updated += 1;
+  }
+  broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
+  res.json({ updated, missing });
+});
+
+app.post("/api/library/tracks", requireAuth, (req, res) => {
+  const { url, playlistId } = req.body || {};
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  const youtubeId = parseYouTubeId(url);
+  if (!youtubeId) {
+    return res.status(400).json({ error: "Invalid YouTube URL or ID" });
+  }
+  let attachToPlaylist = false;
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+    attachToPlaylist = true;
+  }
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
+  enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist });
+  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+});
+
+app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const updates = [];
+  const values = [];
+  if (typeof payload.title === "string") {
+    const title = payload.title.trim();
+    if (!title) {
+      return res.status(400).json({ error: "title cannot be empty" });
+    }
+    updates.push("title = ?");
+    values.push(title);
+  }
+  if (payload.volumeAdjustDb !== undefined) {
+    const v = Number(payload.volumeAdjustDb);
+    if (!Number.isFinite(v) || v < -24 || v > 24) {
+      return res.status(400).json({ error: "volumeAdjustDb must be between -24 and 24" });
+    }
+    updates.push("volume_adjust_db = ?");
+    values.push(v);
+  }
+  if (payload.introSec !== undefined) {
+    const v = Number(payload.introSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "introSec must be >= 0" });
+    }
+    updates.push("intro_sec = ?");
+    values.push(v);
+  }
+  if (payload.outroSec !== undefined) {
+    const v = Number(payload.outroSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "outroSec must be >= 0" });
+    }
+    updates.push("outro_sec = ?");
+    values.push(v);
+  }
+  if (payload.tags !== undefined) {
+    const tags = Array.isArray(payload.tags)
+      ? payload.tags
+      : String(payload.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean);
+    updates.push("tags = ?");
+    values.push(tags.join(","));
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: "No valid updates" });
+  }
+  values.push(req.params.id);
+  const result = db.prepare(`UPDATE tracks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_updated" });
+  res.json({ ok: true, id: req.params.id });
+});
+
+app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM queue WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM play_pool WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM download_queue WHERE track_id = ?").run(track.id);
+    db.prepare("UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE current_track_id = ?").run(new Date().toISOString(), track.id);
+    db.prepare("DELETE FROM tracks WHERE id = ?").run(track.id);
+  });
+  tx();
+  if (track.audio_path) {
+    fsPromises.unlink(track.audio_path).catch(() => {});
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: track.id, action: "track_deleted" });
+  res.json({ ok: true });
+});
+
+app.get("/api/library/tracks", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  res.json(
+    tracks.map((track) => ({
+      ...track,
+      tags: String(track.tags || "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    }))
+  );
+});
+
+app.get("/api/library/export", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  const payload = {
+    library: {
+      exported_at: new Date().toISOString(),
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        youtube_id: track.youtube_id,
+        url: track.url,
+        title: track.title,
+        duration_sec: track.duration_sec,
+        channel: track.channel,
+        thumbnail: track.thumbnail,
+        volume_adjust_db: track.volume_adjust_db,
+        intro_sec: track.intro_sec,
+        outro_sec: track.outro_sec,
+        tags: String(track.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        created_at: track.created_at
+      }))
+    }
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="erwin-library.json"');
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/library/import-json", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const data = payload.library || payload;
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  if (!tracks.length) {
+    return res.status(400).json({ error: "tracks array is required" });
+  }
+  const findById = db.prepare("SELECT id FROM tracks WHERE id = ?");
+  const updateTrack = db.prepare(
+    "UPDATE tracks SET title = COALESCE(?, title), volume_adjust_db = COALESCE(?, volume_adjust_db), intro_sec = COALESCE(?, intro_sec), outro_sec = COALESCE(?, outro_sec), tags = COALESCE(?, tags) WHERE id = ?"
+  );
+  let updated = 0;
+  const missing = [];
+  for (const raw of tracks) {
+    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+    const existing = findById.get(id);
+    if (!existing) {
+      missing.push(id);
+      continue;
+    }
+    const title = typeof raw.title === "string" ? raw.title.trim() || null : null;
+    const volumeAdjustDb = Number.isFinite(Number(raw.volume_adjust_db)) ? Number(raw.volume_adjust_db) : null;
+    const introSec = Number.isFinite(Number(raw.intro_sec)) ? Number(raw.intro_sec) : null;
+    const outroSec = Number.isFinite(Number(raw.outro_sec)) ? Number(raw.outro_sec) : null;
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.map((tag) => String(tag).trim()).filter(Boolean).join(",")
+      : typeof raw.tags === "string"
+        ? raw.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+            .join(",")
+        : null;
+    updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    updated += 1;
+  }
+  broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
+  res.json({ updated, missing });
+});
+
+app.post("/api/library/tracks", requireAuth, (req, res) => {
+  const { url, playlistId } = req.body || {};
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  const youtubeId = parseYouTubeId(url);
+  if (!youtubeId) {
+    return res.status(400).json({ error: "Invalid YouTube URL or ID" });
+  }
+  let attachToPlaylist = false;
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+    attachToPlaylist = true;
+  }
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
+  enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist });
+  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+});
+
+app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const updates = [];
+  const values = [];
+  if (typeof payload.title === "string") {
+    const title = payload.title.trim();
+    if (!title) {
+      return res.status(400).json({ error: "title cannot be empty" });
+    }
+    updates.push("title = ?");
+    values.push(title);
+  }
+  if (payload.volumeAdjustDb !== undefined) {
+    const v = Number(payload.volumeAdjustDb);
+    if (!Number.isFinite(v) || v < -24 || v > 24) {
+      return res.status(400).json({ error: "volumeAdjustDb must be between -24 and 24" });
+    }
+    updates.push("volume_adjust_db = ?");
+    values.push(v);
+  }
+  if (payload.introSec !== undefined) {
+    const v = Number(payload.introSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "introSec must be >= 0" });
+    }
+    updates.push("intro_sec = ?");
+    values.push(v);
+  }
+  if (payload.outroSec !== undefined) {
+    const v = Number(payload.outroSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "outroSec must be >= 0" });
+    }
+    updates.push("outro_sec = ?");
+    values.push(v);
+  }
+  if (payload.tags !== undefined) {
+    const tags = Array.isArray(payload.tags)
+      ? payload.tags
+      : String(payload.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean);
+    updates.push("tags = ?");
+    values.push(tags.join(","));
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: "No valid updates" });
+  }
+  values.push(req.params.id);
+  const result = db.prepare(`UPDATE tracks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_updated" });
+  res.json({ ok: true, id: req.params.id });
+});
+
+app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM queue WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM play_pool WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM download_queue WHERE track_id = ?").run(track.id);
+    db.prepare("UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE current_track_id = ?").run(new Date().toISOString(), track.id);
+    db.prepare("DELETE FROM tracks WHERE id = ?").run(track.id);
+  });
+  tx();
+  if (track.audio_path) {
+    fsPromises.unlink(track.audio_path).catch(() => {});
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: track.id, action: "track_deleted" });
+  res.json({ ok: true });
+});
+
+app.get("/api/library/tracks", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  res.json(
+    tracks.map((track) => ({
+      ...track,
+      tags: String(track.tags || "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    }))
+  );
+});
+
+app.get("/api/library/export", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  const payload = {
+    library: {
+      exported_at: new Date().toISOString(),
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        youtube_id: track.youtube_id,
+        url: track.url,
+        title: track.title,
+        duration_sec: track.duration_sec,
+        channel: track.channel,
+        thumbnail: track.thumbnail,
+        volume_adjust_db: track.volume_adjust_db,
+        intro_sec: track.intro_sec,
+        outro_sec: track.outro_sec,
+        tags: String(track.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        created_at: track.created_at
+      }))
+    }
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="erwin-library.json"');
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/library/import-json", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const data = payload.library || payload;
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  if (!tracks.length) {
+    return res.status(400).json({ error: "tracks array is required" });
+  }
+  const findById = db.prepare("SELECT id FROM tracks WHERE id = ?");
+  const updateTrack = db.prepare(
+    "UPDATE tracks SET title = COALESCE(?, title), volume_adjust_db = COALESCE(?, volume_adjust_db), intro_sec = COALESCE(?, intro_sec), outro_sec = COALESCE(?, outro_sec), tags = COALESCE(?, tags) WHERE id = ?"
+  );
+  let updated = 0;
+  const missing = [];
+  for (const raw of tracks) {
+    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+    const existing = findById.get(id);
+    if (!existing) {
+      missing.push(id);
+      continue;
+    }
+    const title = typeof raw.title === "string" ? raw.title.trim() || null : null;
+    const volumeAdjustDb = Number.isFinite(Number(raw.volume_adjust_db)) ? Number(raw.volume_adjust_db) : null;
+    const introSec = Number.isFinite(Number(raw.intro_sec)) ? Number(raw.intro_sec) : null;
+    const outroSec = Number.isFinite(Number(raw.outro_sec)) ? Number(raw.outro_sec) : null;
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.map((tag) => String(tag).trim()).filter(Boolean).join(",")
+      : typeof raw.tags === "string"
+        ? raw.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+            .join(",")
+        : null;
+    updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    updated += 1;
+  }
+  broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
+  res.json({ updated, missing });
+});
+
+app.post("/api/library/tracks", requireAuth, (req, res) => {
+  const { url, playlistId } = req.body || {};
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  const youtubeId = parseYouTubeId(url);
+  if (!youtubeId) {
+    return res.status(400).json({ error: "Invalid YouTube URL or ID" });
+  }
+  let attachToPlaylist = false;
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+    attachToPlaylist = true;
+  }
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
+  enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist });
+  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+});
+
+app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const updates = [];
+  const values = [];
+  if (typeof payload.title === "string") {
+    const title = payload.title.trim();
+    if (!title) {
+      return res.status(400).json({ error: "title cannot be empty" });
+    }
+    updates.push("title = ?");
+    values.push(title);
+  }
+  if (payload.volumeAdjustDb !== undefined) {
+    const v = Number(payload.volumeAdjustDb);
+    if (!Number.isFinite(v) || v < -24 || v > 24) {
+      return res.status(400).json({ error: "volumeAdjustDb must be between -24 and 24" });
+    }
+    updates.push("volume_adjust_db = ?");
+    values.push(v);
+  }
+  if (payload.introSec !== undefined) {
+    const v = Number(payload.introSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "introSec must be >= 0" });
+    }
+    updates.push("intro_sec = ?");
+    values.push(v);
+  }
+  if (payload.outroSec !== undefined) {
+    const v = Number(payload.outroSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "outroSec must be >= 0" });
+    }
+    updates.push("outro_sec = ?");
+    values.push(v);
+  }
+  if (payload.tags !== undefined) {
+    const tags = Array.isArray(payload.tags)
+      ? payload.tags
+      : String(payload.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean);
+    updates.push("tags = ?");
+    values.push(tags.join(","));
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: "No valid updates" });
+  }
+  values.push(req.params.id);
+  const result = db.prepare(`UPDATE tracks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_updated" });
+  res.json({ ok: true, id: req.params.id });
+});
+
+app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM queue WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM play_pool WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM download_queue WHERE track_id = ?").run(track.id);
+    db.prepare("UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE current_track_id = ?").run(new Date().toISOString(), track.id);
+    db.prepare("DELETE FROM tracks WHERE id = ?").run(track.id);
+  });
+  tx();
+  if (track.audio_path) {
+    fsPromises.unlink(track.audio_path).catch(() => {});
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: track.id, action: "track_deleted" });
+  res.json({ ok: true });
+});
+
+app.post("/api/tracks", requireAuth, (req, res) => {
+  const { playlistId, url } = req.body || {};
+  if (!playlistId || !url) {
+    return res.status(400).json({ error: "playlistId and url required" });
+  }
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const youtubeId = parseYouTubeId(url);
+  if (!youtubeId) {
+    return res.status(400).json({ error: "Invalid YouTube URL or ID" });
+  }
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
+  enqueueDownload(playlistId, trackId, { attachToPlaylist: true });
+  log("info", "track queued", { trackId, playlistId, youtubeId, reused: Boolean(existing) });
+  broadcast("PLAYLIST_UPDATE", { playlistId, action: "track_added", trackId });
+  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+});
+
+app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
+
+  const { title } = req.body || {};
+  if (!title || !title.trim()) {
+    return res.status(400).json({ error: "title required" });
+  }
+  const trimmed = title.trim();
   const result = db
     .prepare("UPDATE tracks SET title = ? WHERE id = ?")
     .run(trimmed, req.params.id);
@@ -3009,7 +4261,49 @@ app.put("/api/tracks/:id", requireAuth, (req, res) => {
   const trimmed = title.trim();
   const result = db.prepare("UPDATE tracks SET title = ? WHERE id = ?").run(trimmed, req.params.id);
   if (result.changes === 0) {
-    return res.status(404).json({ error: "Track not found" });
+    return res.status(404).json({ error: "Track not found in playlist" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
+  res.json({ id: req.params.id, title: trimmed });
+});
+
+app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
+  res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
+});
+
+app.post("/api/playlists/:playlistId/tracks", requireAuth, (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found in library" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
+  res.json({ id: req.params.id, title: trimmed });
+});
+
+app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
+  res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
+});
+
+app.post("/api/playlists/:playlistId/tracks", requireAuth, (req, res) => {
+  const { trackId } = req.body || {};
+  if (!trackId) {
+    return res.status(400).json({ error: "trackId required" });
+  }
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.playlistId);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(trackId);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found in library" });
   }
   broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
   res.json({ id: req.params.id, title: trimmed });
