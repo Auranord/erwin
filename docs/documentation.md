@@ -110,6 +110,16 @@ Returns `{ "status": "ok" }`
 
 ---
 
+### Playlist-track disable semantics
+
+- Disable state is scoped to a playlist-track pair (`playlist_tracks.disabled`), not a global track flag.
+- Update disable via `PUT /api/playlists/:playlistId/tracks/:trackId/disable` with body `{ "disabled": true|false }`.
+- Playlist play seeding (`POST /api/playlists/:id/play`) excludes rows where `playlist_tracks.disabled = 1`.
+- Deprecated global disable endpoints (`PUT /api/library/tracks/:id/disable`, `PUT /api/tracks/:id/disable`) are removed.
+- Legacy `tracks.disabled` is ignored by runtime behavior and should be dropped later in a controlled DB migration.
+
+---
+
 ## Timestamp sync model (how playback stays in sync)
 
 The server stores:
