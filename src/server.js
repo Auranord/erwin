@@ -89,8 +89,25 @@ function log(level, message, meta = {}) {
   }
 }
 
+function writeFatalLogSync(message, errorLike) {
+  const errorMessage = String(errorLike?.message || errorLike);
+  const entry = {
+    time: new Date().toISOString(),
+    level: "error",
+    message,
+    error: errorMessage,
+    stack: errorLike?.stack || null
+  };
+  try {
+    fs.writeSync(process.stderr.fd, `${JSON.stringify(entry)}\n`);
+  } catch {
+    // no-op; best-effort fallback only
+  }
+}
+
 
 process.on("uncaughtException", (error) => {
+  writeFatalLogSync("uncaught exception", error);
   try {
     log("error", "uncaught exception", {
       error: String(error?.message || error),
@@ -99,10 +116,12 @@ process.on("uncaughtException", (error) => {
   } catch {
     console.error("uncaught exception", error);
   }
-  process.exit(1);
+  process.exitCode = 1;
+  setImmediate(() => process.exit(1));
 });
 
 process.on("unhandledRejection", (reason) => {
+  writeFatalLogSync("unhandled rejection", reason);
   try {
     log("error", "unhandled rejection", {
       error: String(reason?.message || reason),
@@ -4648,6 +4667,18 @@ app.get("/", (req, res) => {
 
 const server = app.listen(PORT, () => {
   log("info", "server listening", { port: PORT });
+});
+
+server.on("error", (error) => {
+  writeFatalLogSync("http server error", error);
+  log("error", "http server error", {
+    error: String(error?.message || error),
+    stack: error?.stack || null,
+    code: error?.code || null,
+    port: PORT
+  });
+  process.exitCode = 1;
+  setImmediate(() => process.exit(1));
 });
 
 server.on("upgrade", (request, socket, head) => {
