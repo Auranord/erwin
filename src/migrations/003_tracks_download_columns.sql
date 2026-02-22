@@ -1,0 +1,8 @@
+ALTER TABLE tracks ADD COLUMN audio_path TEXT;
+ALTER TABLE tracks ADD COLUMN download_status TEXT;
+ALTER TABLE tracks ADD COLUMN download_error TEXT;
+ALTER TABLE tracks ADD COLUMN downloaded_at TEXT;
+ALTER TABLE tracks ADD COLUMN volume_adjust_db REAL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN intro_sec REAL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN outro_sec REAL DEFAULT 0;
+ALTER TABLE tracks ADD COLUMN tags TEXT DEFAULT '';
