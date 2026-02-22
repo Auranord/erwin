@@ -3048,20 +3048,37 @@ app.post("/api/playlists/:playlistId/tracks", requireAuth, (req, res) => {
   res.status(201).json({ ok: true, playlistId: req.params.playlistId, trackId });
 });
 
-app.post(
-  "/api/playlists/:id/play",
-  requireAuth,
-  (req, res) => {
-    const tracks = db
-      .prepare(
-        "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND playlist_tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY playlist_tracks.position ASC"
-      )
-      .all(req.params.id);
-    if (tracks.length === 0) {
-      return res.status(404).json({ error: "Playlist has no enabled, playable tracks" });
-    }
+app.post("/api/playlists/:id/play", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT tracks.id FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? AND playlist_tracks.disabled = 0 AND tracks.download_status = 'ready' AND tracks.audio_path IS NOT NULL ORDER BY playlist_tracks.position ASC"
+    )
+    .all(req.params.id);
+  if (tracks.length === 0) {
+    return res.status(404).json({ error: "Playlist has no enabled, playable tracks" });
   }
-};
+
+  const now = new Date().toISOString();
+  const shuffled = shuffleArray(tracks);
+  const [firstTrack, ...remaining] = shuffled;
+
+  const transaction = db.transaction(() => {
+    db.prepare("DELETE FROM queue").run();
+    db.prepare("DELETE FROM play_pool").run();
+    if (remaining.length > 0) {
+      insertPoolEntries(remaining.map((track) => track.id));
+    }
+    db.prepare(
+      "UPDATE play_state SET current_track_id = ?, started_at_ms = ?, paused_at_ms = NULL, paused = 0, updated_at = ? WHERE id = 1"
+    ).run(firstTrack.id, Date.now(), now);
+  });
+
+  transaction();
+  broadcast("POOL_UPDATE", { action: "seeded", count: remaining.length });
+
+  const { playState, queue } = broadcastStateUpdate({ includeQueue: true });
+  res.json({ playState, queue });
+});
 
 function parseLibraryImportDryRun(req, payload) {
   const queryDryRun = String(req.query?.dryRun || "").trim().toLowerCase();
