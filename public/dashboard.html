@@ -104,7 +104,7 @@
           <div class="card">
             <h2>Playlist Editor</h2>
             <div class="section-title">Create Playlist</div>
-            <form id="playlist-form" class="grid">
+            <form id="playlist-form" class="grid" method="post">
               <div>
                 <label for="playlist-name">Playlist name</label>
                 <input id="playlist-name" name="playlist-name" required />
@@ -127,7 +127,7 @@
         <div class="grid track-manager-grid">
           <div class="card">
             <h2>Track Management</h2>
-            <form id="track-form" class="grid">
+            <form id="track-form" class="grid" method="post">
               <div>
                 <label for="track-url">YouTube Track URL</label>
                 <input id="track-url" name="track-url" placeholder="https://youtu.be/..." />
@@ -199,7 +199,7 @@
           <div class="card">
             <h2>Twitch Custom Commands</h2>
             <p class="notice">Create chat commands like <code>!dc</code> with aliases and reusable response templates.</p>
-            <form id="custom-command-form" class="grid">
+            <form id="custom-command-form" class="grid" method="post">
               <div>
                 <label for="custom-command-name">Command</label>
                 <input id="custom-command-name" name="custom-command-name" placeholder="dc" maxlength="32" required />
@@ -236,7 +236,7 @@
           <div class="card" id="users-card">
             <h2>Users</h2>
             <p id="users-status" class="notice">Checking permissions...</p>
-            <form id="user-create-form" class="grid hidden">
+            <form id="user-create-form" class="grid hidden" method="post">
               <div>
                 <label for="new-username">Username</label>
                 <input id="new-username" name="new-username" minlength="3" maxlength="64" required />
@@ -252,7 +252,7 @@
 
           <div class="card">
             <h2>Settings</h2>
-            <form id="settings-form" class="grid">
+            <form id="settings-form" class="grid" method="post">
               <div>
                 <label for="settings-vote-options">Vote options</label>
                 <input id="settings-vote-options" name="vote-options" type="number" min="2" max="10" />
@@ -1670,7 +1670,10 @@ document.getElementById("logout").addEventListener("click", async () => {
 
       (async () => {
         await loadAvailableIcons();
-        await fetchMe();
+        const me = await fetchMe();
+        if (!me) {
+          return;
+        }
         await fetchUsers();
         resetCustomCommandForm();
         fetchState();
