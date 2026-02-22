@@ -1,0 +1,1 @@
+ALTER TABLE playlist_tracks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0;
