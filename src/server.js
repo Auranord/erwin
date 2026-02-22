@@ -89,6 +89,30 @@ function log(level, message, meta = {}) {
   }
 }
 
+
+process.on("uncaughtException", (error) => {
+  try {
+    log("error", "uncaught exception", {
+      error: String(error?.message || error),
+      stack: error?.stack || null
+    });
+  } catch {
+    console.error("uncaught exception", error);
+  }
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  try {
+    log("error", "unhandled rejection", {
+      error: String(reason?.message || reason),
+      stack: reason?.stack || null
+    });
+  } catch {
+    console.error("unhandled rejection", reason);
+  }
+});
+
 app.use(cookieParser());
 app.use(express.json());
 const sessionMiddleware = session({
@@ -486,7 +510,15 @@ function initDb() {
   }
 }
 
-initDb();
+try {
+  initDb();
+} catch (error) {
+  log("error", "database initialization failed", {
+    error: String(error?.message || error),
+    stack: error?.stack || null
+  });
+  throw error;
+}
 
 async function downloadTrackAudio(track) {
   const getSafeTitle = (rawTitle) =>
@@ -2955,50 +2987,13 @@ app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "title required" });
   }
-  if (payload.volumeAdjustDb !== undefined) {
-    const v = Number(payload.volumeAdjustDb);
-    if (!Number.isFinite(v) || v < -24 || v > 24) {
-      return res.status(400).json({ error: "volumeAdjustDb must be between -24 and 24" });
-    }
-    updates.push("volume_adjust_db = ?");
-    values.push(v);
-  }
-  if (payload.introSec !== undefined) {
-    const v = Number(payload.introSec);
-    if (!Number.isFinite(v) || v < 0) {
-      return res.status(400).json({ error: "introSec must be >= 0" });
-    }
-    updates.push("intro_sec = ?");
-    values.push(v);
-  }
-  if (payload.outroSec !== undefined) {
-    const v = Number(payload.outroSec);
-    if (!Number.isFinite(v) || v < 0) {
-      return res.status(400).json({ error: "outroSec must be >= 0" });
-    }
-    updates.push("outro_sec = ?");
-    values.push(v);
-  }
-  if (payload.tags !== undefined) {
-    const tags = Array.isArray(payload.tags)
-      ? payload.tags
-      : String(payload.tags || "")
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter(Boolean);
-    updates.push("tags = ?");
-    values.push(tags.join(","));
-  }
-  if (!updates.length) {
-    return res.status(400).json({ error: "No valid updates" });
-  }
-  values.push(req.params.id);
-  const result = db.prepare(`UPDATE tracks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  const trimmed = title.trim();
+  const result = db.prepare("UPDATE tracks SET title = ? WHERE id = ?").run(trimmed, req.params.id);
   if (result.changes === 0) {
     return res.status(404).json({ error: "Track not found" });
   }
-  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_updated" });
-  res.json({ ok: true, id: req.params.id });
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
+  res.json({ id: req.params.id, title: trimmed });
 });
 
 app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
@@ -4399,33 +4394,6 @@ app.delete(
       action: "track_removed"
     });
     res.json({ ok: true });
-  }
-);
-
-app.put(
-  "/api/playlists/:playlistId/tracks/:trackId/disable",
-  requireAuth,
-  (req, res) => {
-    const { disabled } = req.body || {};
-    const value = disabled ? 1 : 0;
-    const result = db
-      .prepare(
-        "UPDATE playlist_tracks SET disabled = ? WHERE playlist_id = ? AND track_id = ?"
-      )
-      .run(value, req.params.playlistId, req.params.trackId);
-    if (result.changes === 0) {
-      return res.status(404).json({ error: "Track not found in playlist" });
-    }
-    broadcast("PLAYLIST_UPDATE", {
-      playlistId: req.params.playlistId,
-      trackId: req.params.trackId,
-      action: "track_disabled_toggled"
-    });
-    res.json({
-      playlistId: req.params.playlistId,
-      trackId: req.params.trackId,
-      disabled: Boolean(value)
-    });
   }
 );
 
