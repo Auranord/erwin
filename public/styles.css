@@ -530,6 +530,21 @@ select:focus-visible,
   flex: 1;
 }
 
+.custom-command-item {
+  align-items: flex-start;
+}
+
+.custom-command-content {
+  display: grid;
+  gap: 0.3rem;
+  flex: 1;
+}
+
+.custom-command-response {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .list-item .actions {
   display: inline-flex;
   gap: 0.4rem;

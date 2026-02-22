@@ -7,6 +7,7 @@ Erwin is a self-hosted, Dockerized web application that serves as a long-term Tw
 - Curated playlists stored on the server with create/edit/delete flows.
 - Tracks stored as YouTube IDs/URLs, with metadata fetched asynchronously and audio downloaded to MP3 for playback.
 - Automated vote rounds in Twitch chat to pick the next song.
+- Custom Twitch chat commands (`!dc`, aliases, editable responses) from a dedicated dashboard tab.
 - Web-based music player with continuous playback and queue.
 - Authentication required for dashboard and listening pages.
 - OBS-friendly player view for separating music audio from VOD audio.
