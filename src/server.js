@@ -287,122 +287,77 @@ async function buildYtDlpCookieArgs() {
   }
 }
 
-function initDb() {
-  fs.mkdirSync(AUDIO_DIR, { recursive: true });
+
+function runMigrations() {
+  const migrationsDir = path.join(__dirname, "migrations");
+  const migrationFiles = fs
+    .readdirSync(migrationsDir)
+    .filter((fileName) => fileName.endsWith(".sql"))
+    .sort((a, b) => a.localeCompare(b));
+
   db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      role TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS playlists (
-      id TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS tracks (
-      id TEXT PRIMARY KEY,
-      youtube_id TEXT NOT NULL,
-      url TEXT NOT NULL,
-      title TEXT,
-      duration_sec INTEGER,
-      channel TEXT,
-      thumbnail TEXT,
-      audio_path TEXT,
-      download_status TEXT,
-      download_error TEXT,
-      downloaded_at TEXT,
-      volume_adjust_db REAL DEFAULT 0,
-      intro_sec REAL DEFAULT 0,
-      outro_sec REAL DEFAULT 0,
-      tags TEXT DEFAULT '',
-      disabled INTEGER DEFAULT 0,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS playlist_tracks (
-      playlist_id TEXT NOT NULL,
-      track_id TEXT NOT NULL,
-      disabled INTEGER NOT NULL DEFAULT 0,
-      position INTEGER NOT NULL,
-      disabled INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (playlist_id, track_id),
-      FOREIGN KEY (playlist_id) REFERENCES playlists(id),
-      FOREIGN KEY (track_id) REFERENCES tracks(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS play_state (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      current_track_id TEXT,
-      started_at_ms INTEGER,
-      paused_at_ms INTEGER,
-      paused INTEGER DEFAULT 0,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS queue (
-      id TEXT PRIMARY KEY,
-      track_id TEXT NOT NULL,
-      source TEXT NOT NULL,
-      position INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS play_pool (
-      id TEXT PRIMARY KEY,
-      track_id TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS download_queue (
-      id TEXT PRIMARY KEY,
-      playlist_id TEXT NOT NULL,
-      track_id TEXT NOT NULL,
-      attach_to_playlist INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL,
-      error TEXT,
-      attempts INTEGER DEFAULT 0,
-      retry_after TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS vote_rounds (
-      id TEXT PRIMARY KEY,
-      started_at TEXT NOT NULL,
-      ends_at TEXT NOT NULL,
-      options_json TEXT NOT NULL,
-      winner_track_id TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS votes (
-      vote_round_id TEXT NOT NULL,
-      user_twitch_name TEXT NOT NULL,
-      option_index INTEGER NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (vote_round_id, user_twitch_name)
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS twitch_custom_commands (
-      id TEXT PRIMARY KEY,
-      command TEXT NOT NULL UNIQUE,
-      aliases_json TEXT NOT NULL,
-      response TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      applied_at TEXT NOT NULL
     );
   `);
+
+  const appliedVersions = new Set(
+    db
+      .prepare("SELECT version FROM schema_migrations")
+      .all()
+      .map((row) => row.version)
+  );
+
+  const insertMigration = db.prepare(
+    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)"
+  );
+
+  const executeMigrationSql = (migrationSql, fileName) => {
+    const statements = migrationSql
+      .split(";")
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+
+    for (const statement of statements) {
+      try {
+        db.exec(`${statement};`);
+      } catch (error) {
+        const message = String(error?.message || error).toLowerCase();
+        const isDuplicateColumn =
+          message.includes("duplicate column") &&
+          /^alter\s+table\s+.+\s+add\s+column\s+/i.test(statement);
+        if (!isDuplicateColumn) {
+          throw error;
+        }
+        log("info", "skipped duplicate migration column", { fileName, statement });
+      }
+    }
+  };
+
+  for (const fileName of migrationFiles) {
+    const version = fileName.split("_")[0];
+    if (appliedVersions.has(version)) {
+      continue;
+    }
+
+    const migrationSql = fs.readFileSync(path.join(migrationsDir, fileName), "utf8");
+    const appliedAt = new Date().toISOString();
+
+    const applyMigration = db.transaction(() => {
+      executeMigrationSql(migrationSql, fileName);
+      insertMigration.run(version, fileName, appliedAt);
+    });
+
+    applyMigration();
+    log("info", "applied migration", { version, name: fileName });
+  }
+}
+
+function initDb() {
+  fs.mkdirSync(AUDIO_DIR, { recursive: true });
+  runMigrations();
 
   const existing = db.prepare("SELECT COUNT(*) as count FROM users").get();
   const envUsername = process.env.ERWIN_ADMIN_USER;
@@ -438,145 +393,6 @@ function initDb() {
       ).run(nanoid(), username, password_hash, "admin", new Date().toISOString());
       log("info", "created admin user from env", { username });
     }
-  }
-
-  const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
-  const hasPausedAt = playStateColumns.some((column) => column.name === "paused_at_ms");
-  if (!hasPausedAt) {
-    db.prepare("ALTER TABLE play_state ADD COLUMN paused_at_ms INTEGER").run();
-  }
-
-  const trackColumns = db.prepare("PRAGMA table_info(tracks)").all();
-  const trackColumnNames = new Set(trackColumns.map((column) => column.name));
-  if (!trackColumnNames.has("audio_path")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN audio_path TEXT").run();
-  }
-  if (!trackColumnNames.has("download_status")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN download_status TEXT").run();
-  }
-  if (!trackColumnNames.has("download_error")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN download_error TEXT").run();
-  }
-  if (!trackColumnNames.has("downloaded_at")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN downloaded_at TEXT").run();
-  }
-  if (!trackColumnNames.has("volume_adjust_db")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN volume_adjust_db REAL DEFAULT 0").run();
-  }
-  if (!trackColumnNames.has("intro_sec")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN intro_sec REAL DEFAULT 0").run();
-  }
-  if (!trackColumnNames.has("outro_sec")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN outro_sec REAL DEFAULT 0").run();
-  }
-  if (!trackColumnNames.has("tags")) {
-    db.prepare("ALTER TABLE tracks ADD COLUMN tags TEXT DEFAULT ''").run();
-  }
-
-  const playlistTrackColumns = db.prepare("PRAGMA table_info(playlist_tracks)").all();
-  const playlistTrackColumnNames = new Set(playlistTrackColumns.map((column) => column.name));
-  if (!playlistTrackColumnNames.has("disabled")) {
-    db.prepare("ALTER TABLE playlist_tracks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0").run();
-  }
-
-  const downloadQueueColumns = db.prepare("PRAGMA table_info(download_queue)").all();
-  if (downloadQueueColumns.length === 0) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS download_queue (
-        id TEXT PRIMARY KEY,
-        playlist_id TEXT NOT NULL,
-        track_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        error TEXT,
-        attempts INTEGER DEFAULT 0,
-        retry_after TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
-  }
-  const downloadQueueColumnNames = new Set(downloadQueueColumns.map((column) => column.name));
-  if (!downloadQueueColumnNames.has("attempts")) {
-    db.prepare("ALTER TABLE download_queue ADD COLUMN attempts INTEGER DEFAULT 0").run();
-  }
-  if (!downloadQueueColumnNames.has("retry_after")) {
-    db.prepare("ALTER TABLE download_queue ADD COLUMN retry_after TEXT").run();
-  }
-  if (!downloadQueueColumnNames.has("attach_to_playlist")) {
-    db.prepare("ALTER TABLE download_queue ADD COLUMN attach_to_playlist INTEGER NOT NULL DEFAULT 1").run();
-    db.prepare("UPDATE download_queue SET attach_to_playlist = 1 WHERE attach_to_playlist IS NULL").run();
-  }
-
-  const queueColumns = db.prepare("PRAGMA table_info(queue)").all();
-  const queueColumnNames = new Set(queueColumns.map((column) => column.name));
-  if (!queueColumnNames.has("position")) {
-    db.prepare("ALTER TABLE queue ADD COLUMN position INTEGER NOT NULL DEFAULT 0").run();
-    const queueEntries = db
-      .prepare("SELECT id FROM queue ORDER BY created_at ASC")
-      .all()
-      .map((entry, index) => ({ id: entry.id, position: index + 1 }));
-    const updatePosition = db.prepare("UPDATE queue SET position = ? WHERE id = ?");
-    const transaction = db.transaction((entries) => {
-      entries.forEach((entry) => updatePosition.run(entry.position, entry.id));
-    });
-    transaction(queueEntries);
-  }
-  if (!queueColumnNames.has("added_by_user_id")) {
-    try {
-      db.prepare("ALTER TABLE queue ADD COLUMN added_by_user_id TEXT").run();
-    } catch (error) {
-      const message = String(error?.message || error).toLowerCase();
-      if (!message.includes("duplicate column")) {
-        throw error;
-      }
-    }
-  }
-
-  const poolColumns = db.prepare("PRAGMA table_info(play_pool)").all();
-  if (poolColumns.length === 0) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS play_pool (
-        id TEXT PRIMARY KEY,
-        track_id TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-    `);
-  }
-
-  const customCommandColumns = db.prepare("PRAGMA table_info(twitch_custom_commands)").all();
-  if (customCommandColumns.length === 0) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS twitch_custom_commands (
-        id TEXT PRIMARY KEY,
-        command TEXT NOT NULL UNIQUE,
-        aliases_json TEXT NOT NULL,
-        response TEXT NOT NULL,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-    `);
-  }
-  const customCommandColumnNames = new Set(
-    customCommandColumns.map((column) => column.name)
-  );
-  if (!customCommandColumnNames.has("aliases_json")) {
-    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'").run();
-  }
-  if (!customCommandColumnNames.has("enabled")) {
-    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1").run();
-  }
-  if (!customCommandColumnNames.has("created_at")) {
-    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN created_at TEXT").run();
-    db.prepare("UPDATE twitch_custom_commands SET created_at = COALESCE(created_at, updated_at, ?)").run(
-      new Date().toISOString()
-    );
-  }
-  if (!customCommandColumnNames.has("updated_at")) {
-    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN updated_at TEXT").run();
-    db.prepare("UPDATE twitch_custom_commands SET updated_at = COALESCE(updated_at, created_at, ?)").run(
-      new Date().toISOString()
-    );
   }
 
   const state = db.prepare("SELECT id FROM play_state WHERE id = 1").get();
