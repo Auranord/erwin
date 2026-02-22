@@ -325,6 +325,19 @@
     <input id="playlist-import-file" type="file" accept="application/json" class="hidden" />
     <input id="library-import-file" type="file" accept="application/json" class="hidden" />
 
+    <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+      <div class="modal-card">
+        <h3 id="rename-title">Rename Track</h3>
+        <p class="notice">Update the display title for this track.</p>
+        <label for="rename-input">New title</label>
+        <input id="rename-input" type="text" placeholder="Track title" />
+        <div class="modal-actions">
+          <button id="rename-cancel" class="secondary" type="button">Cancel</button>
+          <button id="rename-save" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const nowPlaying = document.getElementById("now-playing");
       const nowPlayingText = document.getElementById("now-playing-text");

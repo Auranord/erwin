@@ -48,6 +48,15 @@ const AUDIO_RETENTION_MAX_GB = Number(process.env.ERWIN_AUDIO_RETENTION_MAX_GB |
 const LIBRARY_QUEUE_ID = "__library__";
 
 const app = express();
+
+function ensureDbDirectory(dbUrl) {
+  if (!dbUrl || dbUrl === ":memory:") return;
+  if (/^[a-zA-Z]+:\/\//.test(dbUrl) || dbUrl.startsWith("file:")) return;
+  const dbDir = path.dirname(path.resolve(dbUrl));
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+ensureDbDirectory(DB_URL);
 const db = new Database(DB_URL);
 
 const LOG_LEVELS = {
@@ -295,20 +304,36 @@ function runMigrations() {
     .filter((fileName) => fileName.endsWith(".sql"))
     .sort((a, b) => a.localeCompare(b));
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      applied_at TEXT NOT NULL
+    CREATE TABLE IF NOT EXISTS tracks (
+      id TEXT PRIMARY KEY,
+      youtube_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT,
+      duration_sec INTEGER,
+      channel TEXT,
+      thumbnail TEXT,
+      audio_path TEXT,
+      download_status TEXT,
+      download_error TEXT,
+      downloaded_at TEXT,
+      volume_adjust_db REAL DEFAULT 0,
+      intro_sec REAL DEFAULT 0,
+      outro_sec REAL DEFAULT 0,
+      tags TEXT DEFAULT '',
+      disabled INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
     );
   `);
 
-  const appliedVersions = new Set(
-    db
-      .prepare("SELECT version FROM schema_migrations")
-      .all()
-      .map((row) => row.version)
-  );
+    CREATE TABLE IF NOT EXISTS playlist_tracks (
+      playlist_id TEXT NOT NULL,
+      track_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (playlist_id, track_id),
+      FOREIGN KEY (playlist_id) REFERENCES playlists(id),
+      FOREIGN KEY (track_id) REFERENCES tracks(id)
+    );
 
   const insertMigration = db.prepare(
     "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)"
@@ -336,11 +361,18 @@ function runMigrations() {
     }
   };
 
-  for (const fileName of migrationFiles) {
-    const version = fileName.split("_")[0];
-    if (appliedVersions.has(version)) {
-      continue;
-    }
+    CREATE TABLE IF NOT EXISTS download_queue (
+      id TEXT PRIMARY KEY,
+      playlist_id TEXT NOT NULL,
+      track_id TEXT NOT NULL,
+      attach_to_playlist INTEGER NOT NULL DEFAULT 1,
+      status TEXT NOT NULL,
+      error TEXT,
+      attempts INTEGER DEFAULT 0,
+      retry_after TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
 
     const migrationSql = fs.readFileSync(path.join(migrationsDir, fileName), "utf8");
     const appliedAt = new Date().toISOString();
@@ -393,6 +425,145 @@ function initDb() {
       ).run(nanoid(), username, password_hash, "admin", new Date().toISOString());
       log("info", "created admin user from env", { username });
     }
+  }
+
+  const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
+  const hasPausedAt = playStateColumns.some((column) => column.name === "paused_at_ms");
+  if (!hasPausedAt) {
+    db.prepare("ALTER TABLE play_state ADD COLUMN paused_at_ms INTEGER").run();
+  }
+
+  const trackColumns = db.prepare("PRAGMA table_info(tracks)").all();
+  const trackColumnNames = new Set(trackColumns.map((column) => column.name));
+  if (!trackColumnNames.has("audio_path")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN audio_path TEXT").run();
+  }
+  if (!trackColumnNames.has("download_status")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN download_status TEXT").run();
+  }
+  if (!trackColumnNames.has("download_error")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN download_error TEXT").run();
+  }
+  if (!trackColumnNames.has("downloaded_at")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN downloaded_at TEXT").run();
+  }
+  if (!trackColumnNames.has("volume_adjust_db")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN volume_adjust_db REAL DEFAULT 0").run();
+  }
+  if (!trackColumnNames.has("intro_sec")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN intro_sec REAL DEFAULT 0").run();
+  }
+  if (!trackColumnNames.has("outro_sec")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN outro_sec REAL DEFAULT 0").run();
+  }
+  if (!trackColumnNames.has("tags")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN tags TEXT DEFAULT ''").run();
+  }
+
+  const playlistTrackColumns = db.prepare("PRAGMA table_info(playlist_tracks)").all();
+  const playlistTrackColumnNames = new Set(playlistTrackColumns.map((column) => column.name));
+  if (!playlistTrackColumnNames.has("disabled")) {
+    db.prepare("ALTER TABLE playlist_tracks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0").run();
+  }
+
+  const downloadQueueColumns = db.prepare("PRAGMA table_info(download_queue)").all();
+  if (downloadQueueColumns.length === 0) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS download_queue (
+        id TEXT PRIMARY KEY,
+        playlist_id TEXT NOT NULL,
+        track_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        attempts INTEGER DEFAULT 0,
+        retry_after TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  }
+  const downloadQueueColumnNames = new Set(downloadQueueColumns.map((column) => column.name));
+  if (!downloadQueueColumnNames.has("attempts")) {
+    db.prepare("ALTER TABLE download_queue ADD COLUMN attempts INTEGER DEFAULT 0").run();
+  }
+  if (!downloadQueueColumnNames.has("retry_after")) {
+    db.prepare("ALTER TABLE download_queue ADD COLUMN retry_after TEXT").run();
+  }
+  if (!downloadQueueColumnNames.has("attach_to_playlist")) {
+    db.prepare("ALTER TABLE download_queue ADD COLUMN attach_to_playlist INTEGER NOT NULL DEFAULT 1").run();
+    db.prepare("UPDATE download_queue SET attach_to_playlist = 1 WHERE attach_to_playlist IS NULL").run();
+  }
+
+  const queueColumns = db.prepare("PRAGMA table_info(queue)").all();
+  const queueColumnNames = new Set(queueColumns.map((column) => column.name));
+  if (!queueColumnNames.has("position")) {
+    db.prepare("ALTER TABLE queue ADD COLUMN position INTEGER NOT NULL DEFAULT 0").run();
+    const queueEntries = db
+      .prepare("SELECT id FROM queue ORDER BY created_at ASC")
+      .all()
+      .map((entry, index) => ({ id: entry.id, position: index + 1 }));
+    const updatePosition = db.prepare("UPDATE queue SET position = ? WHERE id = ?");
+    const transaction = db.transaction((entries) => {
+      entries.forEach((entry) => updatePosition.run(entry.position, entry.id));
+    });
+    transaction(queueEntries);
+  }
+  if (!queueColumnNames.has("added_by_user_id")) {
+    try {
+      db.prepare("ALTER TABLE queue ADD COLUMN added_by_user_id TEXT").run();
+    } catch (error) {
+      const message = String(error?.message || error).toLowerCase();
+      if (!message.includes("duplicate column")) {
+        throw error;
+      }
+    }
+  }
+
+  const poolColumns = db.prepare("PRAGMA table_info(play_pool)").all();
+  if (poolColumns.length === 0) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS play_pool (
+        id TEXT PRIMARY KEY,
+        track_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `);
+  }
+
+  const customCommandColumns = db.prepare("PRAGMA table_info(twitch_custom_commands)").all();
+  if (customCommandColumns.length === 0) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS twitch_custom_commands (
+        id TEXT PRIMARY KEY,
+        command TEXT NOT NULL UNIQUE,
+        aliases_json TEXT NOT NULL,
+        response TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  }
+  const customCommandColumnNames = new Set(
+    customCommandColumns.map((column) => column.name)
+  );
+  if (!customCommandColumnNames.has("aliases_json")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'").run();
+  }
+  if (!customCommandColumnNames.has("enabled")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1").run();
+  }
+  if (!customCommandColumnNames.has("created_at")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN created_at TEXT").run();
+    db.prepare("UPDATE twitch_custom_commands SET created_at = COALESCE(created_at, updated_at, ?)").run(
+      new Date().toISOString()
+    );
+  }
+  if (!customCommandColumnNames.has("updated_at")) {
+    db.prepare("ALTER TABLE twitch_custom_commands ADD COLUMN updated_at TEXT").run();
+    db.prepare("UPDATE twitch_custom_commands SET updated_at = COALESCE(updated_at, created_at, ?)").run(
+      new Date().toISOString()
+    );
   }
 
   const state = db.prepare("SELECT id FROM play_state WHERE id = 1").get();
@@ -2415,7 +2586,7 @@ app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
   }
   const tracks = db
     .prepare(
-      "SELECT playlist_tracks.track_id, playlist_tracks.position, playlist_tracks.disabled FROM playlist_tracks WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
+      "SELECT tracks.id as track_id, tracks.title, tracks.youtube_id, playlist_tracks.disabled FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
     )
     .all(req.params.id);
   const payload = {
@@ -2425,7 +2596,8 @@ app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
       exported_at: new Date().toISOString(),
       tracks: tracks.map((track) => ({
         track_id: track.track_id,
-        position: track.position,
+        title: track.title || null,
+        youtube_id: track.youtube_id || null,
         disabled: Boolean(track.disabled)
       }))
     }
@@ -2475,50 +2647,31 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
     db.prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?").get(targetPlaylistId)
       .maxPosition || 0;
   let position = modeValue === "replace" ? 1 : existingPosition + 1;
-  let added = 0;
-  let skipped = 0;
+  let addedTracks = 0;
   const missingTrackIds = [];
-  const errors = [];
-
-  const seenTrackIds = new Set();
 
   for (const [index, rawTrack] of trackList.entries()) {
     const track = rawTrack || {};
     const trackId = typeof track.track_id === "string" ? track.track_id.trim() : "";
-    if (!trackId) {
-      errors.push({ index, error: "track_id is required" });
-      skipped += 1;
-      continue;
-    }
-    if (seenTrackIds.has(trackId)) {
-      skipped += 1;
-      continue;
-    }
-    seenTrackIds.add(trackId);
+    if (!trackId) continue;
     const existingLibraryTrack = findTrackById.get(trackId);
     if (!existingLibraryTrack) {
       missingTrackIds.push(trackId);
-      skipped += 1;
       continue;
     }
     const exists = existingInPlaylist.get(targetPlaylistId, trackId);
-    if (exists) {
-      skipped += 1;
-      continue;
-    }
+    if (exists) continue;
     insertMembership.run(targetPlaylistId, trackId, position, track.disabled ? 1 : 0);
     position += 1;
-    added += 1;
+    addedTracks += 1;
   }
 
   db.prepare("UPDATE playlists SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), targetPlaylistId);
   broadcast("PLAYLIST_UPDATE", { playlistId: targetPlaylistId, action: "imported_json" });
   res.json({
     playlistId: targetPlaylistId,
-    added,
-    skipped,
+    addedTracks,
     missingTrackIds,
-    errors,
     mode: modeValue
   });
 });
@@ -2989,6 +3142,205 @@ app.post("/api/library/tracks/ingest", requireAuth, async (req, res) => {
     errors: result.errors.length
   });
   res.status(201).json(result);
+});
+
+app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const updates = [];
+  const values = [];
+  if (typeof payload.title === "string") {
+    const title = payload.title.trim();
+    if (!title) {
+      return res.status(400).json({ error: "title cannot be empty" });
+    }
+    updates.push("title = ?");
+    values.push(title);
+  }
+  if (payload.volumeAdjustDb !== undefined) {
+    const v = Number(payload.volumeAdjustDb);
+    if (!Number.isFinite(v) || v < -24 || v > 24) {
+      return res.status(400).json({ error: "volumeAdjustDb must be between -24 and 24" });
+    }
+    updates.push("volume_adjust_db = ?");
+    values.push(v);
+  }
+  if (payload.introSec !== undefined) {
+    const v = Number(payload.introSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "introSec must be >= 0" });
+    }
+    updates.push("intro_sec = ?");
+    values.push(v);
+  }
+  if (payload.outroSec !== undefined) {
+    const v = Number(payload.outroSec);
+    if (!Number.isFinite(v) || v < 0) {
+      return res.status(400).json({ error: "outroSec must be >= 0" });
+    }
+    updates.push("outro_sec = ?");
+    values.push(v);
+  }
+  if (payload.tags !== undefined) {
+    const tags = Array.isArray(payload.tags)
+      ? payload.tags
+      : String(payload.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean);
+    updates.push("tags = ?");
+    values.push(tags.join(","));
+  }
+  if (!updates.length) {
+    return res.status(400).json({ error: "No valid updates" });
+  }
+  values.push(req.params.id);
+  const result = db.prepare(`UPDATE tracks SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_updated" });
+  res.json({ ok: true, id: req.params.id });
+});
+
+app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+  const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const tx = db.transaction(() => {
+    db.prepare("DELETE FROM playlist_tracks WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM queue WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM play_pool WHERE track_id = ?").run(track.id);
+    db.prepare("DELETE FROM download_queue WHERE track_id = ?").run(track.id);
+    db.prepare("UPDATE play_state SET current_track_id = NULL, started_at_ms = NULL, paused_at_ms = NULL, paused = 1, updated_at = ? WHERE current_track_id = ?").run(new Date().toISOString(), track.id);
+    db.prepare("DELETE FROM tracks WHERE id = ?").run(track.id);
+  });
+  tx();
+  if (track.audio_path) {
+    fsPromises.unlink(track.audio_path).catch(() => {});
+  }
+  broadcast("PLAYLIST_UPDATE", { trackId: track.id, action: "track_deleted" });
+  res.json({ ok: true });
+});
+
+app.get("/api/library/tracks", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  res.json(
+    tracks.map((track) => ({
+      ...track,
+      tags: String(track.tags || "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+    }))
+  );
+});
+
+app.get("/api/library/export", requireAuth, (req, res) => {
+  const tracks = db
+    .prepare(
+      "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
+    )
+    .all();
+  const payload = {
+    library: {
+      exported_at: new Date().toISOString(),
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        youtube_id: track.youtube_id,
+        url: track.url,
+        title: track.title,
+        duration_sec: track.duration_sec,
+        channel: track.channel,
+        thumbnail: track.thumbnail,
+        volume_adjust_db: track.volume_adjust_db,
+        intro_sec: track.intro_sec,
+        outro_sec: track.outro_sec,
+        tags: String(track.tags || "")
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+        created_at: track.created_at
+      }))
+    }
+  };
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("Content-Disposition", 'attachment; filename="erwin-library.json"');
+  res.send(JSON.stringify(payload, null, 2));
+});
+
+app.post("/api/library/import-json", requireAuth, (req, res) => {
+  const payload = req.body || {};
+  const data = payload.library || payload;
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  if (!tracks.length) {
+    return res.status(400).json({ error: "tracks array is required" });
+  }
+  const findById = db.prepare("SELECT id FROM tracks WHERE id = ?");
+  const updateTrack = db.prepare(
+    "UPDATE tracks SET title = COALESCE(?, title), volume_adjust_db = COALESCE(?, volume_adjust_db), intro_sec = COALESCE(?, intro_sec), outro_sec = COALESCE(?, outro_sec), tags = COALESCE(?, tags) WHERE id = ?"
+  );
+  let updated = 0;
+  const missing = [];
+  for (const raw of tracks) {
+    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+    const existing = findById.get(id);
+    if (!existing) {
+      missing.push(id);
+      continue;
+    }
+    const title = typeof raw.title === "string" ? raw.title.trim() || null : null;
+    const volumeAdjustDb = Number.isFinite(Number(raw.volume_adjust_db)) ? Number(raw.volume_adjust_db) : null;
+    const introSec = Number.isFinite(Number(raw.intro_sec)) ? Number(raw.intro_sec) : null;
+    const outroSec = Number.isFinite(Number(raw.outro_sec)) ? Number(raw.outro_sec) : null;
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.map((tag) => String(tag).trim()).filter(Boolean).join(",")
+      : typeof raw.tags === "string"
+        ? raw.tags
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+            .join(",")
+        : null;
+    updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    updated += 1;
+  }
+  broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
+  res.json({ updated, missing });
+});
+
+app.post("/api/library/tracks", requireAuth, (req, res) => {
+  const { url, playlistId } = req.body || {};
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  const youtubeId = parseYouTubeId(url);
+  if (!youtubeId) {
+    return res.status(400).json({ error: "Invalid YouTube URL or ID" });
+  }
+  let attachToPlaylist = false;
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+    attachToPlaylist = true;
+  }
+  const existing = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?").get(youtubeId);
+  const trackId = existing ? existing.id : nanoid();
+  if (!existing) {
+    const now = new Date().toISOString();
+    db.prepare(
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?)"
+    ).run(trackId, youtubeId, url, now);
+  }
+  enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist });
+  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
 });
 
 app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
