@@ -2599,16 +2599,17 @@ app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
   }
   const tracks = db
     .prepare(
-      "SELECT tracks.id as track_id, tracks.title, tracks.youtube_id, playlist_tracks.disabled FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
+      "SELECT playlist_tracks.track_id, playlist_tracks.position, playlist_tracks.disabled FROM playlist_tracks WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position ASC"
     )
     .all(req.params.id);
   const payload = {
     playlist: {
+      id: playlist.id,
       name: playlist.name,
+      exported_at: new Date().toISOString(),
       tracks: tracks.map((track) => ({
         track_id: track.track_id,
-        title: track.title || null,
-        youtube_id: track.youtube_id || null,
+        position: track.position,
         disabled: Boolean(track.disabled)
       }))
     }
@@ -2658,56 +2659,70 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
     db.prepare("SELECT MAX(position) as maxPosition FROM playlist_tracks WHERE playlist_id = ?").get(targetPlaylistId)
       .maxPosition || 0;
   let position = modeValue === "replace" ? 1 : existingPosition + 1;
-  let addedTracks = 0;
+  let added = 0;
+  let skipped = 0;
   const missingTrackIds = [];
+  const errors = [];
 
-  for (const rawTrack of trackList) {
+  const seenTrackIds = new Set();
+
+  for (const [index, rawTrack] of trackList.entries()) {
     const track = rawTrack || {};
     const trackId = typeof track.track_id === "string" ? track.track_id.trim() : "";
-    if (!trackId) continue;
+    if (!trackId) {
+      errors.push({ index, error: "track_id is required" });
+      skipped += 1;
+      continue;
+    }
+    if (seenTrackIds.has(trackId)) {
+      skipped += 1;
+      continue;
+    }
+    seenTrackIds.add(trackId);
     const existingLibraryTrack = findTrackById.get(trackId);
     if (!existingLibraryTrack) {
       missingTrackIds.push(trackId);
+      skipped += 1;
       continue;
     }
     const exists = existingInPlaylist.get(targetPlaylistId, trackId);
-    if (exists) continue;
+    if (exists) {
+      skipped += 1;
+      continue;
+    }
     insertMembership.run(targetPlaylistId, trackId, position, track.disabled ? 1 : 0);
     position += 1;
-    addedTracks += 1;
+    added += 1;
   }
 
   db.prepare("UPDATE playlists SET updated_at = ? WHERE id = ?").run(new Date().toISOString(), targetPlaylistId);
   broadcast("PLAYLIST_UPDATE", { playlistId: targetPlaylistId, action: "imported_json" });
   res.json({
     playlistId: targetPlaylistId,
-    addedTracks,
+    added,
+    skipped,
     missingTrackIds,
+    errors,
     mode: modeValue
   });
 });
 
-app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
-  const { urls } = req.body || {};
-  if (!Array.isArray(urls) || urls.length === 0) {
-    return res.status(400).json({ error: "URLs array required" });
-  }
-  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.id);
-  if (!playlist) {
-    return res.status(404).json({ error: "Playlist not found" });
-  }
+async function ingestLibrarySources({ urls, playlistId = null }) {
   const insertTrack = db.prepare(
     "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, ?)"
   );
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
-  const imported = [];
+  const added = [];
   const errors = [];
+  const skipped = [];
+  const seenYoutubeIds = new Set();
   const expandedUrls = [];
 
   for (const rawUrl of urls) {
     const url = String(rawUrl || "").trim();
     if (!url) {
+      skipped.push({ url: rawUrl, reason: "empty" });
       continue;
     }
     if (parseYouTubePlaylistId(url)) {
@@ -2731,19 +2746,24 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
     expandedUrls.push(url);
   }
 
-  if (expandedUrls.length === 0) {
-    return res.status(400).json({ error: "No valid track URLs found", errors });
-  }
+  const items = expandedUrls
+    .map((url) => ({ url, youtubeId: parseYouTubeId(url) }))
+    .filter((item) => item.youtubeId);
 
-  const transaction = db.transaction((items) => {
-    for (const item of items) {
+  const transaction = db.transaction((rows) => {
+    for (const item of rows) {
+      if (seenYoutubeIds.has(item.youtubeId)) {
+        skipped.push({ url: item.url, reason: "duplicate" });
+        continue;
+      }
+      seenYoutubeIds.add(item.youtubeId);
       const existing = findTrack.get(item.youtubeId);
       const trackId = existing ? existing.id : nanoid();
       if (!existing) {
         insertTrack.run(trackId, item.youtubeId, item.url, now);
       }
-      enqueueDownload(req.params.id, trackId);
-      imported.push({
+      enqueueDownload(playlistId || LIBRARY_QUEUE_ID, trackId, { attachToPlaylist: Boolean(playlistId) });
+      added.push({
         id: trackId,
         youtubeId: item.youtubeId,
         url: item.url,
@@ -2752,19 +2772,45 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
     }
   });
 
-  const items = expandedUrls
-    .map((url) => ({ url, youtubeId: parseYouTubeId(url) }))
-    .filter((item) => item.youtubeId);
   transaction(items);
-  log("info", "playlist import queued", {
+  return {
+    added,
+    skipped,
+    missingTrackIds: [],
+    errors,
+    expandedCount: expandedUrls.length
+  };
+}
+
+app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
+  res.status(410).json({
+    error:
+      "Deprecated endpoint. Source ingest is handled by POST /api/library/tracks or POST /api/library/tracks/ingest with playlistId."
+  });
+});
+
+app.post("/api/playlists/:id/import-sources", requireAuth, async (req, res) => {
+  const { urls } = req.body || {};
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: "URLs array required" });
+  }
+  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.id);
+  if (!playlist) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  const result = await ingestLibrarySources({ urls, playlistId: req.params.id });
+  if (result.added.length === 0 && result.errors.length > 0) {
+    return res.status(400).json({ error: "No valid track URLs found", ...result });
+  }
+  log("info", "playlist source ingest queued", {
     playlistId: req.params.id,
     requested: urls.length,
-    queued: imported.length,
-    expanded: expandedUrls.length,
-    errors: errors.length
+    queued: result.added.length,
+    expanded: result.expandedCount,
+    errors: result.errors.length
   });
-  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "imported" });
-  res.json({ importedCount: imported.length, imported, errors });
+  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "sources_ingested" });
+  res.json(result);
 });
 
 app.get("/api/library/tracks", requireAuth, (req, res) => {
@@ -2884,7 +2930,37 @@ app.post("/api/library/tracks", requireAuth, (req, res) => {
     ).run(trackId, youtubeId, url, now);
   }
   enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist });
-  res.status(201).json({ id: trackId, youtubeId, url, status: "pending" });
+  res.status(201).json({
+    added: [{ id: trackId, youtubeId, url, reused: Boolean(existing) }],
+    skipped: [],
+    missingTrackIds: [],
+    errors: []
+  });
+});
+
+app.post("/api/library/tracks/ingest", requireAuth, async (req, res) => {
+  const { urls, playlistId } = req.body || {};
+  if (!Array.isArray(urls) || urls.length === 0) {
+    return res.status(400).json({ error: "URLs array required" });
+  }
+  if (playlistId) {
+    const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(playlistId);
+    if (!playlist) {
+      return res.status(404).json({ error: "Playlist not found" });
+    }
+  }
+  const result = await ingestLibrarySources({ urls, playlistId: playlistId || null });
+  if (result.added.length === 0 && result.errors.length > 0) {
+    return res.status(400).json({ error: "No valid track URLs found", ...result });
+  }
+  log("info", "library source ingest queued", {
+    playlistId: playlistId || null,
+    requested: urls.length,
+    queued: result.added.length,
+    expanded: result.expandedCount,
+    errors: result.errors.length
+  });
+  res.status(201).json(result);
 });
 
 app.put("/api/library/tracks/:id", requireAuth, (req, res) => {

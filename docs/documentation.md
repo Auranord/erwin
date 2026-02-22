@@ -118,6 +118,21 @@ Returns `{ "status": "ok" }`
 - Deprecated global disable endpoints (`PUT /api/library/tracks/:id/disable`, `PUT /api/tracks/:id/disable`) are removed.
 - Legacy `tracks.disabled` is ignored by runtime behavior and should be dropped later in a controlled DB migration.
 
+
+### Import domain boundaries
+
+- Playlist structure I/O is handled by:
+  - `GET /api/playlists/:id/export` (exports playlist-owned fields only: playlist metadata + `track_id`, `position`, `disabled`)
+  - `POST /api/playlists/import-json` (attaches existing library tracks only by `track_id`; does not create/mutate library tracks)
+- Library/source ingest is handled by:
+  - `POST /api/library/tracks` (single URL ingest)
+  - `POST /api/library/tracks/ingest` (bulk URL ingest; optional `playlistId`)
+  - `POST /api/playlists/:id/import-sources` (explicit playlist source-ingest alias)
+- Deprecated endpoint:
+  - `POST /api/playlists/:id/import` returns `410 Gone`
+- Structured results for import/ingest flows include:
+  - `added`, `skipped`, `missingTrackIds`, `errors`
+
 ---
 
 ## Timestamp sync model (how playback stays in sync)
