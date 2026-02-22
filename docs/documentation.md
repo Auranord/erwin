@@ -133,6 +133,68 @@ Returns `{ "status": "ok" }`
 - Structured results for import/ingest flows include:
   - `added`, `skipped`, `missingTrackIds`, `errors`
 
+### Library import/export JSON schema and dry-run
+
+- `GET /api/library/export` now includes a top-level `schema` object describing the strict export payload shape and allowed ranges.
+- `POST /api/library/import-json` validates each row against a strict schema:
+  - allowed fields per row: `id`, `title`, `volume_adjust_db`, `intro_sec`, `outro_sec`, `tags`
+  - required: `id` plus at least one updatable field
+  - ranges: `volume_adjust_db` `[-24, 24]`, `intro_sec` `[0, 86400]`, `outro_sec` `[0, 86400]`
+  - `tags`: comma-separated string (`<=2048`) or array (`<=100` items, each `1..64` chars)
+- Import response returns per-row outcomes with `status`:
+  - `updated`: row valid and track exists (and would be applied)
+  - `invalid`: row failed schema validation (`reason` provided)
+  - `missing`: row valid but `id` not found
+- Dry-run support:
+  - query flag: `POST /api/library/import-json?dryRun=1`
+  - payload flag: `{ "dryRun": true, "library": { "tracks": [...] } }`
+  - dry-run validates and reports outcomes without mutating DB.
+
+Minimal round-trip example for bulk rename/tag updates:
+
+1) Export current library:
+
+```bash
+curl -sS -b cookie.txt http://localhost:3000/api/library/export > library-export.json
+```
+
+2) Build a minimal import file with selected updates:
+
+```json
+{
+  "dryRun": true,
+  "library": {
+    "tracks": [
+      {
+        "id": "track_123",
+        "title": "New Display Title",
+        "tags": ["chill", "instrumental"]
+      },
+      {
+        "id": "track_456",
+        "tags": "retro, synthwave"
+      }
+    ]
+  }
+}
+```
+
+3) Preview changes (no write):
+
+```bash
+curl -sS -b cookie.txt -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/api/library/import-json?dryRun=1' \
+  --data @library-import-preview.json
+```
+
+4) Apply changes (remove dry-run flag):
+
+```bash
+curl -sS -b cookie.txt -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/api/library/import-json' \
+  --data @library-import-apply.json
+```
+
 ---
 
 ## Timestamp sync model (how playback stays in sync)

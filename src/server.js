@@ -2646,6 +2646,210 @@ app.get("/api/library/tracks", requireAuth, (req, res) => {
   );
 });
 
+const LIBRARY_IMPORT_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    dryRun: { type: "boolean" },
+    library: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        tracks: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["id"],
+            properties: {
+              id: { type: "string", minLength: 1, maxLength: 128 },
+              title: { type: "string", minLength: 1, maxLength: 512 },
+              volume_adjust_db: { type: "number", minimum: -24, maximum: 24 },
+              intro_sec: { type: "number", minimum: 0, maximum: 86400 },
+              outro_sec: { type: "number", minimum: 0, maximum: 86400 },
+              tags: {
+                anyOf: [
+                  { type: "string", maxLength: 2048 },
+                  {
+                    type: "array",
+                    maxItems: 100,
+                    items: { type: "string", minLength: 1, maxLength: 64 }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      },
+      required: ["tracks"]
+    },
+    tracks: { type: "array" }
+  }
+};
+
+const LIBRARY_EXPORT_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["library"],
+  properties: {
+    library: {
+      type: "object",
+      additionalProperties: false,
+      required: ["exported_at", "tracks"],
+      properties: {
+        exported_at: { type: "string", format: "date-time" },
+        tracks: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: [
+              "id",
+              "youtube_id",
+              "url",
+              "title",
+              "duration_sec",
+              "channel",
+              "thumbnail",
+              "volume_adjust_db",
+              "intro_sec",
+              "outro_sec",
+              "tags",
+              "created_at"
+            ],
+            properties: {
+              id: { type: "string", minLength: 1, maxLength: 128 },
+              youtube_id: { type: ["string", "null"], minLength: 1, maxLength: 64 },
+              url: { type: ["string", "null"], minLength: 1, maxLength: 2048 },
+              title: { type: ["string", "null"], minLength: 1, maxLength: 512 },
+              duration_sec: { type: ["number", "null"], minimum: 0, maximum: 86400 },
+              channel: { type: ["string", "null"], minLength: 1, maxLength: 512 },
+              thumbnail: { type: ["string", "null"], minLength: 1, maxLength: 2048 },
+              volume_adjust_db: { type: "number", minimum: -24, maximum: 24 },
+              intro_sec: { type: "number", minimum: 0, maximum: 86400 },
+              outro_sec: { type: "number", minimum: 0, maximum: 86400 },
+              tags: {
+                type: "array",
+                maxItems: 100,
+                items: { type: "string", minLength: 1, maxLength: 64 }
+              },
+              created_at: { type: "string", format: "date-time" }
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
+function parseLibraryImportDryRun(req, payload) {
+  const queryDryRun = String(req.query?.dryRun || "").trim().toLowerCase();
+  const dryRunFromQuery = ["1", "true", "yes", "on"].includes(queryDryRun);
+  return dryRunFromQuery || payload?.dryRun === true || payload?.library?.dryRun === true;
+}
+
+function validateLibraryImportRow(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, reason: "row must be an object" };
+  }
+  const allowedKeys = new Set([
+    "id",
+    "title",
+    "volume_adjust_db",
+    "intro_sec",
+    "outro_sec",
+    "tags"
+  ]);
+  const unknownKeys = Object.keys(raw).filter((key) => !allowedKeys.has(key));
+  if (unknownKeys.length > 0) {
+    return { ok: false, reason: `unknown fields: ${unknownKeys.join(", ")}` };
+  }
+  const id = typeof raw.id === "string" ? raw.id.trim() : "";
+  if (!id || id.length > 128) {
+    return { ok: false, reason: "id is required and must be 1..128 chars" };
+  }
+
+  const hasUpdatableField =
+    raw.title !== undefined ||
+    raw.volume_adjust_db !== undefined ||
+    raw.intro_sec !== undefined ||
+    raw.outro_sec !== undefined ||
+    raw.tags !== undefined;
+  if (!hasUpdatableField) {
+    return { ok: false, reason: "at least one updatable field is required" };
+  }
+
+  let title = null;
+  if (raw.title !== undefined) {
+    if (typeof raw.title !== "string") {
+      return { ok: false, reason: "title must be a string" };
+    }
+    title = raw.title.trim();
+    if (!title || title.length > 512) {
+      return { ok: false, reason: "title must be 1..512 chars" };
+    }
+  }
+
+  let volumeAdjustDb = null;
+  if (raw.volume_adjust_db !== undefined) {
+    volumeAdjustDb = Number(raw.volume_adjust_db);
+    if (!Number.isFinite(volumeAdjustDb) || volumeAdjustDb < -24 || volumeAdjustDb > 24) {
+      return { ok: false, reason: "volume_adjust_db must be between -24 and 24" };
+    }
+  }
+
+  let introSec = null;
+  if (raw.intro_sec !== undefined) {
+    introSec = Number(raw.intro_sec);
+    if (!Number.isFinite(introSec) || introSec < 0 || introSec > 86400) {
+      return { ok: false, reason: "intro_sec must be between 0 and 86400" };
+    }
+  }
+
+  let outroSec = null;
+  if (raw.outro_sec !== undefined) {
+    outroSec = Number(raw.outro_sec);
+    if (!Number.isFinite(outroSec) || outroSec < 0 || outroSec > 86400) {
+      return { ok: false, reason: "outro_sec must be between 0 and 86400" };
+    }
+  }
+
+  let tags = null;
+  if (raw.tags !== undefined) {
+    if (Array.isArray(raw.tags)) {
+      const normalizedTags = raw.tags.map((tag) => String(tag).trim()).filter(Boolean);
+      if (normalizedTags.length > 100 || normalizedTags.some((tag) => tag.length > 64)) {
+        return { ok: false, reason: "tags array supports up to 100 items of 1..64 chars" };
+      }
+      tags = normalizedTags.join(",");
+    } else if (typeof raw.tags === "string") {
+      if (raw.tags.length > 2048) {
+        return { ok: false, reason: "tags string must be <= 2048 chars" };
+      }
+      tags = raw.tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean)
+        .join(",");
+    } else {
+      return { ok: false, reason: "tags must be a string or array of strings" };
+    }
+  }
+
+  return {
+    ok: true,
+    normalized: {
+      id,
+      title,
+      volumeAdjustDb,
+      introSec,
+      outroSec,
+      tags
+    }
+  };
+}
+
 app.get("/api/library/export", requireAuth, (req, res) => {
   const tracks = db
     .prepare(
@@ -2672,7 +2876,8 @@ app.get("/api/library/export", requireAuth, (req, res) => {
           .filter(Boolean),
         created_at: track.created_at
       }))
-    }
+    },
+    schema: LIBRARY_EXPORT_JSON_SCHEMA
   };
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Content-Disposition", 'attachment; filename="erwin-library.json"');
@@ -2682,6 +2887,7 @@ app.get("/api/library/export", requireAuth, (req, res) => {
 app.post("/api/library/import-json", requireAuth, (req, res) => {
   const payload = req.body || {};
   const data = payload.library || payload;
+  const dryRun = parseLibraryImportDryRun(req, payload);
   const tracks = Array.isArray(data.tracks) ? data.tracks : [];
   if (!tracks.length) {
     return res.status(400).json({ error: "tracks array is required" });
@@ -2690,34 +2896,40 @@ app.post("/api/library/import-json", requireAuth, (req, res) => {
   const updateTrack = db.prepare(
     "UPDATE tracks SET title = COALESCE(?, title), volume_adjust_db = COALESCE(?, volume_adjust_db), intro_sec = COALESCE(?, intro_sec), outro_sec = COALESCE(?, outro_sec), tags = COALESCE(?, tags) WHERE id = ?"
   );
+  const outcomes = [];
   let updated = 0;
-  const missing = [];
-  for (const raw of tracks) {
-    const id = typeof raw?.id === "string" ? raw.id.trim() : "";
-    if (!id) continue;
-    const existing = findById.get(id);
-    if (!existing) {
-      missing.push(id);
+  let invalid = 0;
+  let missing = 0;
+  for (let index = 0; index < tracks.length; index += 1) {
+    const raw = tracks[index];
+    const result = validateLibraryImportRow(raw);
+    if (!result.ok) {
+      invalid += 1;
+      outcomes.push({ index, id: raw?.id || null, status: "invalid", reason: result.reason });
       continue;
     }
-    const title = typeof raw.title === "string" ? raw.title.trim() || null : null;
-    const volumeAdjustDb = Number.isFinite(Number(raw.volume_adjust_db)) ? Number(raw.volume_adjust_db) : null;
-    const introSec = Number.isFinite(Number(raw.intro_sec)) ? Number(raw.intro_sec) : null;
-    const outroSec = Number.isFinite(Number(raw.outro_sec)) ? Number(raw.outro_sec) : null;
-    const tags = Array.isArray(raw.tags)
-      ? raw.tags.map((tag) => String(tag).trim()).filter(Boolean).join(",")
-      : typeof raw.tags === "string"
-        ? raw.tags
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean)
-            .join(",")
-        : null;
-    updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    const { id, title, volumeAdjustDb, introSec, outroSec, tags } = result.normalized;
+    const existing = findById.get(id);
+    if (!existing) {
+      missing += 1;
+      outcomes.push({ index, id, status: "missing" });
+      continue;
+    }
+    if (!dryRun) {
+      updateTrack.run(title, volumeAdjustDb, introSec, outroSec, tags, id);
+    }
     updated += 1;
+    outcomes.push({ index, id, status: "updated", dryRun });
   }
-  broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
-  res.json({ updated, missing });
+  if (!dryRun && updated > 0) {
+    broadcast("PLAYLIST_UPDATE", { action: "library_imported", updated });
+  }
+  res.json({
+    dryRun,
+    schema: LIBRARY_IMPORT_JSON_SCHEMA,
+    summary: { total: tracks.length, updated, invalid, missing },
+    outcomes
+  });
 });
 
 app.post("/api/library/tracks", requireAuth, (req, res) => {
