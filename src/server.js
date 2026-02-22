@@ -2359,7 +2359,7 @@ app.get("/api/audio/:trackId", requireAuth, (req, res) => {
 app.post("/api/queue/enqueue", requireAuth, (req, res) => {
   const { trackId, source } = req.body || {};
   const track = db
-    .prepare("SELECT id, disabled, download_status, audio_path FROM tracks WHERE id = ?")
+    .prepare("SELECT id, download_status, audio_path FROM tracks WHERE id = ?")
     .get(trackId);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -2594,7 +2594,9 @@ app.get("/api/playlists/:id/export", requireAuth, (req, res) => {
     .all(req.params.id);
   const payload = {
     playlist: {
+      id: playlist.id,
       name: playlist.name,
+      exported_at: new Date().toISOString(),
       tracks: tracks.map((track) => ({
         track_id: track.track_id,
         title: track.title || null,
@@ -2651,7 +2653,7 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
   let addedTracks = 0;
   const missingTrackIds = [];
 
-  for (const rawTrack of trackList) {
+  for (const [index, rawTrack] of trackList.entries()) {
     const track = rawTrack || {};
     const trackId = typeof track.track_id === "string" ? track.track_id.trim() : "";
     if (!trackId) continue;
@@ -2677,27 +2679,22 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
   });
 });
 
-app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
-  const { urls } = req.body || {};
-  if (!Array.isArray(urls) || urls.length === 0) {
-    return res.status(400).json({ error: "URLs array required" });
-  }
-  const playlist = db.prepare("SELECT id FROM playlists WHERE id = ?").get(req.params.id);
-  if (!playlist) {
-    return res.status(404).json({ error: "Playlist not found" });
-  }
+async function ingestLibrarySources({ urls, playlistId = null }) {
   const insertTrack = db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, ?)"
   );
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
-  const imported = [];
+  const added = [];
   const errors = [];
+  const skipped = [];
+  const seenYoutubeIds = new Set();
   const expandedUrls = [];
 
   for (const rawUrl of urls) {
     const url = String(rawUrl || "").trim();
     if (!url) {
+      skipped.push({ url: rawUrl, reason: "empty" });
       continue;
     }
     if (parseYouTubePlaylistId(url)) {
@@ -2721,19 +2718,24 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
     expandedUrls.push(url);
   }
 
-  if (expandedUrls.length === 0) {
-    return res.status(400).json({ error: "No valid track URLs found", errors });
-  }
+  const items = expandedUrls
+    .map((url) => ({ url, youtubeId: parseYouTubeId(url) }))
+    .filter((item) => item.youtubeId);
 
-  const transaction = db.transaction((items) => {
-    for (const item of items) {
+  const transaction = db.transaction((rows) => {
+    for (const item of rows) {
+      if (seenYoutubeIds.has(item.youtubeId)) {
+        skipped.push({ url: item.url, reason: "duplicate" });
+        continue;
+      }
+      seenYoutubeIds.add(item.youtubeId);
       const existing = findTrack.get(item.youtubeId);
       const trackId = existing ? existing.id : nanoid();
       if (!existing) {
         insertTrack.run(trackId, item.youtubeId, item.url, now);
       }
-      enqueueDownload(req.params.id, trackId);
-      imported.push({
+      enqueueDownload(playlistId || LIBRARY_QUEUE_ID, trackId, { attachToPlaylist: Boolean(playlistId) });
+      added.push({
         id: trackId,
         youtubeId: item.youtubeId,
         url: item.url,
@@ -2742,19 +2744,21 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
     }
   });
 
-  const items = expandedUrls
-    .map((url) => ({ url, youtubeId: parseYouTubeId(url) }))
-    .filter((item) => item.youtubeId);
   transaction(items);
-  log("info", "playlist import queued", {
-    playlistId: req.params.id,
-    requested: urls.length,
-    queued: imported.length,
-    expanded: expandedUrls.length,
-    errors: errors.length
+  return {
+    added,
+    skipped,
+    missingTrackIds: [],
+    errors,
+    expandedCount: expandedUrls.length
+  };
+}
+
+app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
+  res.status(410).json({
+    error:
+      "Deprecated endpoint. Source ingest is handled by POST /api/library/tracks or POST /api/library/tracks/ingest with playlistId."
   });
-  broadcast("PLAYLIST_UPDATE", { playlistId: req.params.id, action: "imported" });
-  res.json({ importedCount: imported.length, imported, errors });
 });
 
 app.get("/api/library/tracks", requireAuth, (req, res) => {
@@ -3034,13 +3038,10 @@ app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
     return res.status(400).json({ error: "title required" });
   }
   const trimmed = title.trim();
-  const result = db
-    .prepare("UPDATE tracks SET title = ? WHERE id = ?")
-    .run(trimmed, req.params.id);
+  const result = db.prepare("UPDATE tracks SET title = ? WHERE id = ?").run(trimmed, req.params.id);
   if (result.changes === 0) {
     return res.status(404).json({ error: "Track not found" });
   }
-  log("info", "track renamed", { trackId: req.params.id, title: trimmed });
   broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
   res.json({ id: req.params.id, title: trimmed });
 });
