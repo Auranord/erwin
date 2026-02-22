@@ -328,6 +328,7 @@ function initDb() {
     CREATE TABLE IF NOT EXISTS playlist_tracks (
       playlist_id TEXT NOT NULL,
       track_id TEXT NOT NULL,
+      disabled INTEGER NOT NULL DEFAULT 0,
       position INTEGER NOT NULL,
       disabled INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (playlist_id, track_id),
@@ -2368,7 +2369,7 @@ app.get("/api/audio/:trackId", requireAuth, (req, res) => {
 app.post("/api/queue/enqueue", requireAuth, (req, res) => {
   const { trackId, source } = req.body || {};
   const track = db
-    .prepare("SELECT id, disabled, download_status, audio_path FROM tracks WHERE id = ?")
+    .prepare("SELECT id, download_status, audio_path FROM tracks WHERE id = ?")
     .get(trackId);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -2696,7 +2697,7 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
     return res.status(404).json({ error: "Playlist not found" });
   }
   const insertTrack = db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, disabled, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, ?)"
   );
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
@@ -3024,7 +3025,7 @@ app.put("/api/tracks/:id", requireAuth, (req, res) => {
   const trimmed = title.trim();
   const result = db.prepare("UPDATE tracks SET title = ? WHERE id = ?").run(trimmed, req.params.id);
   if (result.changes === 0) {
-    return res.status(404).json({ error: "Track not found" });
+    return res.status(404).json({ error: "Track not found in playlist" });
   }
   broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_renamed" });
   res.json({ id: req.params.id, title: trimmed });

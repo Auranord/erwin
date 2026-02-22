@@ -325,19 +325,6 @@
     <input id="playlist-import-file" type="file" accept="application/json" class="hidden" />
     <input id="library-import-file" type="file" accept="application/json" class="hidden" />
 
-    <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
-      <div class="modal-card">
-        <h3 id="rename-title">Rename Track</h3>
-        <p class="notice">Update the display title for this track.</p>
-        <label for="rename-input">New title</label>
-        <input id="rename-input" type="text" placeholder="Track title" />
-        <div class="modal-actions">
-          <button id="rename-cancel" class="secondary" type="button">Cancel</button>
-          <button id="rename-save" type="button">Save</button>
-        </div>
-      </div>
-    </div>
-
     <script>
       const nowPlaying = document.getElementById("now-playing");
       const nowPlayingText = document.getElementById("now-playing-text");
@@ -353,10 +340,6 @@
       const trackForm = document.getElementById("track-form");
       const trackFilter = document.getElementById("track-filter");
       const trackCount = document.getElementById("track-count");
-      const renameModal = document.getElementById("rename-modal");
-      const renameInput = document.getElementById("rename-input");
-      const renameSave = document.getElementById("rename-save");
-      const renameCancel = document.getElementById("rename-cancel");
       const voteStatus = document.getElementById("vote-status");
       const voteWindow = document.getElementById("vote-window");
       const voteOptionsEl = document.getElementById("vote-options");
@@ -398,7 +381,6 @@
       let libraryTracksCache = [];
       let queueOrder = [];
       let selectedPlaylistId = null;
-      let renameTrackId = null;
       let activeVote = null;
       let voteTimer = null;
       let poolTrackIds = new Set();
@@ -426,7 +408,6 @@
         enqueue: "⚔",
         poolAdd: "✚",
         poolRemove: "✖",
-        rename: "✒",
         disable: "⛔",
         enable: "✹",
         delete: "☠",
