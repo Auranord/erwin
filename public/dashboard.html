@@ -11,7 +11,7 @@
       <div class="header-top">
         <div>
           <h1 title="Guild charter signed by Erwin the quail">Erwin Dashboard <span aria-hidden="true">🪶</span></h1>
-          <p>Manage playlists, control playback, and monitor vote rounds.</p>
+          <p>Manage library tracks, playlists, playback, and vote rounds.</p>
         </div>
         <div class="header-actions">
           <span class="status-pill"><span></span> Connected</span>
@@ -129,15 +129,45 @@
             <h2>Track Management</h2>
             <form id="track-form" class="grid">
               <div>
-                <label for="track-playlist">Playlist</label>
-                <select id="track-playlist" name="track-playlist"></select>
+                <label for="track-url">YouTube Track URL</label>
+                <input id="track-url" name="track-url" placeholder="https://youtu.be/..." />
               </div>
               <div>
-                <label for="track-url">YouTube Track or Playlist URL</label>
-                <input id="track-url" name="track-url" placeholder="https://youtu.be/... or https://www.youtube.com/playlist?list=..." />
+                <label for="track-playlist">Optional playlist to attach after download</label>
+                <select id="track-playlist" name="track-playlist">
+                  <option value="">Library only</option>
+                </select>
               </div>
-              <button type="submit">Add</button>
+              <button type="submit">Add to Library</button>
             </form>
+            <div class="actions" style="margin-top: 12px;">
+              <button id="export-library-json" class="secondary" type="button">Export Library JSON</button>
+              <button id="import-library-json" class="secondary" type="button">Import Library JSON</button>
+            </div>
+            <div class="grid" style="margin-top: 12px;">
+              <div>
+                <label for="library-search">Search title</label>
+                <input id="library-search" type="search" placeholder="Track title..." />
+              </div>
+              <div>
+                <label for="library-tags-include">Include tags (comma separated)</label>
+                <input id="library-tags-include" type="text" placeholder="vocals, acoustic" />
+              </div>
+              <div>
+                <label for="library-tags-exclude">Exclude tags (comma separated)</label>
+                <input id="library-tags-exclude" type="text" placeholder="instrumental" />
+              </div>
+              <div>
+                <label for="library-add-playlist">Add selected track to playlist</label>
+                <select id="library-add-playlist">
+                  <option value="">Select playlist...</option>
+                </select>
+              </div>
+            </div>
+            <div class="section-title" style="margin-top: 16px;">Library Tracks</div>
+            <div id="library-tracks" class="list">
+              <div class="list-item">No tracks in library yet.</div>
+            </div>
             <div class="section-title" style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between;">
               <span>Download Queue</span>
               <button id="clear-downloads" class="secondary" type="button">Clear Completed</button>
@@ -293,6 +323,7 @@
     </main>
 
     <input id="playlist-import-file" type="file" accept="application/json" class="hidden" />
+    <input id="library-import-file" type="file" accept="application/json" class="hidden" />
 
     <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
       <div class="modal-card">
@@ -316,6 +347,7 @@
       const playlistsEl = document.getElementById("playlists");
       const tracksEl = document.getElementById("tracks");
       const downloadQueueEl = document.getElementById("download-queue");
+      const libraryTracksEl = document.getElementById("library-tracks");
       const trackPlaylist = document.getElementById("track-playlist");
       const playlistForm = document.getElementById("playlist-form");
       const trackForm = document.getElementById("track-form");
@@ -363,6 +395,7 @@
       let currentUser = null;
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
+      let libraryTracksCache = [];
       let queueOrder = [];
       let selectedPlaylistId = null;
       let renameTrackId = null;
@@ -376,6 +409,13 @@
       const chatMessages = [];
       const playlistImportFile = document.getElementById("playlist-import-file");
       const importPlaylistJsonButton = document.getElementById("import-playlist-json");
+      const exportLibraryJsonButton = document.getElementById("export-library-json");
+      const importLibraryJsonButton = document.getElementById("import-library-json");
+      const libraryImportFile = document.getElementById("library-import-file");
+      const librarySearch = document.getElementById("library-search");
+      const libraryTagsInclude = document.getElementById("library-tags-include");
+      const libraryTagsExclude = document.getElementById("library-tags-exclude");
+      const libraryAddPlaylist = document.getElementById("library-add-playlist");
       const ICON_FALLBACKS = {
         play: "⯈",
         pause: "⏸",
@@ -501,7 +541,6 @@
                 <div class="actions">
                   <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">${iconHtml("enqueue")}</button>
                   <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
-                  <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">${iconHtml("rename")}</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${iconHtml(disabled ? "enable" : "disable")}</button>
                   <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">${iconHtml("delete")}</button>
                 </div>
@@ -634,8 +673,17 @@
           .join("");
       }
 
+      function handleUnauthorizedResponse(response) {
+        if (response.status === 401) {
+          window.location.href = "/login";
+          return true;
+        }
+        return false;
+      }
+
       async function fetchMe() {
         const response = await fetch("/api/me");
+        if (handleUnauthorizedResponse(response)) return null;
         if (!response.ok) return null;
         currentUser = await response.json();
         localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
@@ -663,6 +711,7 @@
 
       async function fetchState() {
         const response = await fetch("/api/state");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const { playState, queue, currentTrack } = await response.json();
         if (playState?.current_track_id && currentTrack) {
@@ -736,6 +785,7 @@
 
       async function fetchPool() {
         const response = await fetch("/api/pool");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const pool = await response.json();
         poolTrackIds = new Set(pool.map((item) => item.track_id));
@@ -761,10 +811,12 @@
 
       async function fetchPlaylists() {
         const response = await fetch("/api/playlists");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         playlistsCache = await response.json();
         playlistsEl.innerHTML = "";
-        trackPlaylist.innerHTML = "";
+        trackPlaylist.innerHTML = '<option value="">Library only</option>';
+        libraryAddPlaylist.innerHTML = '<option value="">Select playlist...</option>';
         if (playlistsCache.length === 0) {
           playlistsEl.innerHTML = '<div class="list-item">No playlists yet.</div>';
           selectedPlaylistId = null;
@@ -794,6 +846,11 @@
           trackOption.value = playlist.id;
           trackOption.textContent = playlist.name;
           trackPlaylist.appendChild(trackOption);
+
+          const addOption = document.createElement("option");
+          addOption.value = playlist.id;
+          addOption.textContent = playlist.name;
+          libraryAddPlaylist.appendChild(addOption);
         }
         const selectedExists = selectedPlaylistId
           ? playlistsCache.some((playlist) => playlist.id === selectedPlaylistId)
@@ -803,12 +860,15 @@
         }
         if (selectedPlaylistId) {
           trackPlaylist.value = selectedPlaylistId;
+        } else {
+          trackPlaylist.value = "";
         }
         renderTracks();
       }
 
       async function fetchSettings() {
         const response = await fetch("/api/settings");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const settings = await response.json();
         settingsVoteOptions.value = settings.vote_options ?? settings.voteOptions ?? 5;
@@ -841,6 +901,7 @@
 
       async function fetchActiveVote() {
         const response = await fetch("/api/votes/active");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const data = await response.json();
         if (!data.active) {
@@ -884,6 +945,7 @@
 
       async function fetchCustomCommands() {
         const response = await fetch("/api/twitch/custom-commands");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         customCommandsCache = await response.json();
         renderCustomCommands();
@@ -902,7 +964,70 @@
         customCommandName.focus();
       }
 
-      async function fetchDownloads() {
+      
+      function formatTagPills(tags) {
+        if (!Array.isArray(tags) || tags.length === 0) return "";
+        return tags.map((tag) => `<span class="badge">${tag}</span>`).join(" ");
+      }
+
+      async function fetchLibraryTracks() {
+        const response = await fetch("/api/library/tracks");
+        if (handleUnauthorizedResponse(response)) return;
+        if (!response.ok) return;
+        libraryTracksCache = await response.json();
+        renderLibraryTracks();
+      }
+
+      function parseTagFilterValue(value) {
+        return String(value || "")
+          .split(",")
+          .map((tag) => tag.trim().toLowerCase())
+          .filter(Boolean);
+      }
+
+      function renderLibraryTracks() {
+        if (!libraryTracksCache.length) {
+          libraryTracksEl.innerHTML = '<div class="list-item">No tracks in library yet.</div>';
+          return;
+        }
+        const titleQuery = String(librarySearch.value || "").trim().toLowerCase();
+        const includeTags = parseTagFilterValue(libraryTagsInclude.value);
+        const excludeTags = parseTagFilterValue(libraryTagsExclude.value);
+        const filtered = libraryTracksCache.filter((track) => {
+          const title = String(track.title || track.youtube_id || "").toLowerCase();
+          const tags = (track.tags || []).map((tag) => String(tag).toLowerCase());
+          if (titleQuery && !title.includes(titleQuery)) return false;
+          if (includeTags.length > 0 && !includeTags.every((tag) => tags.includes(tag))) return false;
+          if (excludeTags.some((tag) => tags.includes(tag))) return false;
+          return true;
+        });
+        if (!filtered.length) {
+          libraryTracksEl.innerHTML = '<div class="list-item">No library tracks match the current filters.</div>';
+          return;
+        }
+        libraryTracksEl.innerHTML = filtered
+          .map((track) => {
+            const title = track.title || track.youtube_id;
+            const tags = formatTagPills(track.tags || []);
+            const downloadState = track.download_status || "unknown";
+            return `<div class="list-item" data-library-track-id="${track.id}" data-track-title="${track.title || ""}" >
+              <div style="flex:1;">
+                <div>${title} <span class="badge">${downloadState}</span></div>
+                <div class="notice">vol ${Number(track.volume_adjust_db || 0).toFixed(1)} dB · intro ${Number(track.intro_sec || 0).toFixed(1)}s · outro ${Number(track.outro_sec || 0).toFixed(1)}s ${tags}</div>
+              </div>
+              <div class="actions">
+                <button class="secondary" data-action="library-rename">Rename</button>
+                <button class="secondary" data-action="library-tags">Tags</button>
+                <button class="secondary" data-action="library-audio">Audio</button>
+                <button class="secondary" data-action="library-add-playlist">Add to playlist</button>
+                <button class="ghost" data-action="library-delete">Delete</button>
+              </div>
+            </div>`;
+          })
+          .join("");
+      }
+
+async function fetchDownloads() {
         const response = await fetch("/api/downloads");
         if (!response.ok) return;
         const downloads = await response.json();
@@ -915,7 +1040,7 @@
             const label = item.title || item.youtube_id;
             const status = item.status;
             const details = item.error ? ` - ${item.error}` : "";
-            return `<div class="list-item"><span>${label} (${item.playlist_name})${details}</span><span class="badge">${status}</span></div>`;
+            return `<div class="list-item"><span>${label} (${item.playlist_name || "Library"})${details}</span><span class="badge">${status}</span></div>`;
           })
           .join("");
       }
@@ -995,14 +1120,8 @@
           await fetch(`/api/pool/${trackId}`, { method: "DELETE" });
           fetchPool();
         }
-        if (action === "rename") {
-          renameTrackId = trackId;
-          renameInput.value = wrapper.dataset.trackTitle || "";
-          renameModal.classList.remove("hidden");
-          renameInput.focus();
-        }
         if (action === "toggle-disabled") {
-          await fetch(`/api/tracks/${trackId}/disable`, {
+          await fetch(`/api/playlists/${selectedPlaylistId}/tracks/${trackId}/disable`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ disabled: !isDisabled })
@@ -1135,7 +1254,7 @@
       renameSave.addEventListener("click", async () => {
         const title = renameInput.value.trim();
         if (!renameTrackId || !title) return;
-        await fetch(`/api/tracks/${renameTrackId}`, {
+        await fetch(`/api/library/tracks/${renameTrackId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title })
@@ -1266,26 +1385,108 @@
         event.preventDefault();
         const playlistId = trackForm["track-playlist"].value;
         const url = trackForm["track-url"].value;
-        if (!playlistId || !url) return;
-        if (url.includes("list=")) {
-          await fetch(`/api/playlists/${playlistId}/import`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ urls: [url.trim()] })
-          });
-        } else {
-          await fetch("/api/tracks", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ playlistId, url })
-          });
-        }
+        if (!url) return;
+        await fetch("/api/library/tracks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playlistId: playlistId || undefined, url: url.trim() })
+        });
         trackForm.reset();
         fetchPlaylists();
         fetchDownloads();
+        fetchLibraryTracks();
       });
 
-      document.getElementById("logout").addEventListener("click", async () => {
+      
+      libraryTracksEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const wrapper = button.closest("[data-library-track-id]");
+        const trackId = wrapper?.dataset.libraryTrackId;
+        if (!trackId) return;
+        const action = button.dataset.action;
+        if (action === "library-rename") {
+          const next = window.prompt("New title", wrapper.dataset.trackTitle || "");
+          if (next && next.trim()) {
+            await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: next.trim() }) });
+          }
+        }
+        if (action === "library-tags") {
+          const existing = (libraryTracksCache.find((track) => track.id === trackId)?.tags || []).join(", ");
+          const next = window.prompt("Tags (comma separated)", existing);
+          if (next !== null) {
+            await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tags: next }) });
+          }
+        }
+        if (action === "library-audio") {
+          const track = libraryTracksCache.find((item) => item.id === trackId);
+          const volumeAdjustDb = window.prompt("Volume adjust (dB, -24..24)", String(track?.volume_adjust_db || 0));
+          if (volumeAdjustDb === null) return;
+          const introSec = window.prompt("Intro trim in seconds", String(track?.intro_sec || 0));
+          if (introSec === null) return;
+          const outroSec = window.prompt("Outro trim in seconds", String(track?.outro_sec || 0));
+          if (outroSec === null) return;
+          await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ volumeAdjustDb: Number(volumeAdjustDb), introSec: Number(introSec), outroSec: Number(outroSec) }) });
+        }
+        if (action === "library-add-playlist") {
+          const playlistId = libraryAddPlaylist.value;
+          if (!playlistId) {
+            window.alert("Select a playlist first in the library controls.");
+          } else {
+            await fetch(`/api/playlists/${playlistId}/tracks`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ trackId })
+            });
+          }
+        }
+        if (action === "library-delete") {
+          if (window.confirm("Delete track from library and all playlists?")) {
+            await fetch(`/api/library/tracks/${trackId}`, { method: "DELETE" });
+          }
+        }
+        fetchPlaylists();
+        fetchLibraryTracks();
+      });
+
+      [librarySearch, libraryTagsInclude, libraryTagsExclude].forEach((input) => {
+        input.addEventListener("input", () => {
+          renderLibraryTracks();
+        });
+      });
+
+      exportLibraryJsonButton.addEventListener("click", () => {
+        const a = document.createElement("a");
+        a.href = "/api/library/export";
+        a.click();
+      });
+
+      importLibraryJsonButton.addEventListener("click", () => {
+        libraryImportFile.click();
+      });
+
+      libraryImportFile.addEventListener("change", async () => {
+        const file = libraryImportFile.files?.[0];
+        if (!file) return;
+        const text = await file.text();
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          window.alert("Invalid library JSON file.");
+          return;
+        }
+        await fetch("/api/library/import-json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        libraryImportFile.value = "";
+        fetchLibraryTracks();
+        fetchPlaylists();
+      });
+
+document.getElementById("logout").addEventListener("click", async () => {
         await fetch("/api/auth/logout", { method: "POST" });
         window.location.href = "/login";
       });
@@ -1431,6 +1632,7 @@
         }
         if (message.event === "DOWNLOAD_UPDATE") {
           fetchDownloads();
+          fetchLibraryTracks();
           fetchPlaylists();
           return;
         }
@@ -1480,6 +1682,7 @@
         fetchState();
         fetchPlaylists();
         fetchDownloads();
+        fetchLibraryTracks();
         fetchSettings();
         fetchActiveVote();
         fetchPool();
