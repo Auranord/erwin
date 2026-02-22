@@ -667,8 +667,17 @@
           .join("");
       }
 
+      function handleUnauthorizedResponse(response) {
+        if (response.status === 401) {
+          window.location.href = "/login";
+          return true;
+        }
+        return false;
+      }
+
       async function fetchMe() {
         const response = await fetch("/api/me");
+        if (handleUnauthorizedResponse(response)) return null;
         if (!response.ok) return null;
         currentUser = await response.json();
         localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
@@ -696,6 +705,7 @@
 
       async function fetchState() {
         const response = await fetch("/api/state");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const { playState, queue, currentTrack } = await response.json();
         if (playState?.current_track_id && currentTrack) {
@@ -769,6 +779,7 @@
 
       async function fetchPool() {
         const response = await fetch("/api/pool");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const pool = await response.json();
         poolTrackIds = new Set(pool.map((item) => item.track_id));
@@ -794,6 +805,7 @@
 
       async function fetchPlaylists() {
         const response = await fetch("/api/playlists");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         playlistsCache = await response.json();
         playlistsEl.innerHTML = "";
@@ -850,6 +862,7 @@
 
       async function fetchSettings() {
         const response = await fetch("/api/settings");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const settings = await response.json();
         settingsVoteOptions.value = settings.vote_options ?? settings.voteOptions ?? 5;
@@ -882,6 +895,7 @@
 
       async function fetchActiveVote() {
         const response = await fetch("/api/votes/active");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         const data = await response.json();
         if (!data.active) {
@@ -925,6 +939,7 @@
 
       async function fetchCustomCommands() {
         const response = await fetch("/api/twitch/custom-commands");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         customCommandsCache = await response.json();
         renderCustomCommands();
@@ -951,6 +966,7 @@
 
       async function fetchLibraryTracks() {
         const response = await fetch("/api/library/tracks");
+        if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
         libraryTracksCache = await response.json();
         renderLibraryTracks();
