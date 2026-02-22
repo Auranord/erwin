@@ -85,6 +85,15 @@
       }
     }
 
+    function requestTrackAdvance(trackId, reason = "ended") {
+      if (mode !== "stream" || !trackId) return;
+      fetch("/api/queue/skip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentTrackId: trackId, reason })
+      }).catch(() => {});
+    }
+
     function applyStoredVolume() {
       if (!state.audio) return;
       const volume = Number(localStorage.getItem(VOLUME_KEY));
@@ -135,6 +144,7 @@
         state.lastEndedSkipTrackId !== currentTrackId
       ) {
         state.lastEndedSkipTrackId = currentTrackId;
+        requestTrackAdvance(currentTrackId, "outro_cut");
         emit("PLAYER_EVENT", { event: "ended", details: { reason: "outro_cut" } });
       }
     }
@@ -378,11 +388,7 @@
             const endedTrackId = state.currentTrack.id;
             if (state.lastEndedSkipTrackId !== endedTrackId) {
               state.lastEndedSkipTrackId = endedTrackId;
-              fetch("/api/queue/skip", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ currentTrackId: endedTrackId })
-              }).catch(() => {});
+              requestTrackAdvance(endedTrackId, "ended");
             }
           }
           emit("PLAYER_EVENT", { event: eventName, details: { readyState: state.audio.readyState } });
