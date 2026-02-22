@@ -32,11 +32,17 @@ Erwin is a self-hosted Node.js + Express music controller for livestreams.
 
 ## Request body shapes (v1.0)
 
-### Playlist import
-- Endpoint: `POST /api/playlists/:id/import`
-- Body: `{ "urls": ["..."] }`
-- `urls` accepts YouTube video URLs/IDs and playlist URLs.
-- Playlist URLs are expanded into track URLs before import.
+### Playlist structure import
+- Endpoint: `POST /api/playlists/import-json`
+- Body: `{ "name": "...", "tracks": [{ "track_id": "...", "position": 1, "disabled": false }], "mode": "append|replace", "playlistId": "optional" }`
+- Only existing library tracks are attached by `track_id`; playlist import never creates or mutates library tracks.
+- Response includes explicit counters and diagnostics: `{ added, skipped, missingTrackIds, errors }`.
+
+### Source ingest
+- Endpoint: `POST /api/library/tracks` (single URL)
+- Optional bulk endpoint: `POST /api/library/tracks/ingest` with `{ "urls": ["..."], "playlistId": "optional" }`.
+- Playlist-scoped source ingest endpoint is explicit: `POST /api/playlists/:id/import-sources`.
+- Deprecated endpoint: `POST /api/playlists/:id/import` returns `410`.
 
 ### Queue enqueue
 - Endpoint: `POST /api/queue/enqueue`
