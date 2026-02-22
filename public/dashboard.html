@@ -353,10 +353,6 @@
       const trackForm = document.getElementById("track-form");
       const trackFilter = document.getElementById("track-filter");
       const trackCount = document.getElementById("track-count");
-      const renameModal = document.getElementById("rename-modal");
-      const renameInput = document.getElementById("rename-input");
-      const renameSave = document.getElementById("rename-save");
-      const renameCancel = document.getElementById("rename-cancel");
       const voteStatus = document.getElementById("vote-status");
       const voteWindow = document.getElementById("vote-window");
       const voteOptionsEl = document.getElementById("vote-options");
@@ -398,7 +394,6 @@
       let libraryTracksCache = [];
       let queueOrder = [];
       let selectedPlaylistId = null;
-      let renameTrackId = null;
       let activeVote = null;
       let voteTimer = null;
       let poolTrackIds = new Set();
@@ -426,7 +421,6 @@
         enqueue: "⚔",
         poolAdd: "✚",
         poolRemove: "✖",
-        rename: "✒",
         disable: "⛔",
         enable: "✹",
         delete: "☠",
