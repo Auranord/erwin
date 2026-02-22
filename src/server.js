@@ -787,7 +787,7 @@ async function fetchPlaylistTrackUrls(playlistUrl) {
 }
 
 
-async function ingestLibrarySources({ urls = [], playlistId = null } = {}) {
+async function ingestLibrarySourceUrls({ urls = [], playlistId = null } = {}) {
   const normalized = Array.isArray(urls)
     ? urls.map((url) => String(url || "").trim()).filter(Boolean)
     : [];
@@ -2969,7 +2969,7 @@ app.post("/api/tracks", requireAuth, async (req, res) => {
   if (!playlist) {
     return res.status(404).json({ error: "Playlist not found" });
   }
-  const result = await ingestLibrarySources({ urls: [url], playlistId: req.params.id || playlistId });
+  const result = await ingestLibrarySourceUrls({ urls: [url], playlistId: req.params.id || playlistId });
   const first = result.imported[0];
   if (!first) {
     return res.status(400).json({ error: result.errors?.[0]?.error || "Unable to queue track" });
