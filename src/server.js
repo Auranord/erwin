@@ -3,7 +3,6 @@ import session from "express-session";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { nanoid } from "nanoid";
-import bcrypt from "bcryptjs";
 import Database from "better-sqlite3";
 import { WebSocketServer } from "ws";
 import fs from "fs";
@@ -47,26 +46,45 @@ const __dirname = path.dirname(__filename);
 
 const SCHEMA_SQL = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
 
+function envTrim(name, fallback = "") {
+  const raw = process.env[name];
+  if (raw == null) return fallback;
+  return String(raw).trim();
+}
+
+function parseCsvSet(value) {
+  return new Set(
+    String(value || "")
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+
 const PORT = process.env.PORT || 3000;
-const SESSION_SECRET = process.env.SESSION_SECRET || "erwin-dev-secret";
-const DB_URL = process.env.DB_URL || "./data/erwin.sqlite";
-const AUDIO_DIR = process.env.ERWIN_AUDIO_DIR || "./data/audio";
-const LOG_LEVEL = process.env.LOG_LEVEL || "info";
-const YTDL_COOKIE_FILE = process.env.ERWIN_YTDL_COOKIE_FILE || "/app/data/youtube.cookie";
-const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
-const YTDL_JS_RUNTIME = process.env.ERWIN_YTDL_JS_RUNTIME || `node:${process.execPath}`;
-const YTDL_REMOTE_COMPONENTS = process.env.ERWIN_YTDL_REMOTE_COMPONENTS ?? "ejs:github";
-const YTDL_FFMPEG_LOCATION = process.env.ERWIN_YTDL_FFMPEG_LOCATION || "";
-const TWITCH_BOT_USERNAME = process.env.TWITCH_BOT_USERNAME || "";
-const TWITCH_OAUTH_TOKEN = process.env.TWITCH_OAUTH_TOKEN || "";
-const TWITCH_REFRESH_TOKEN = process.env.TWITCH_REFRESH_TOKEN || "";
-const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID || "";
-const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
-const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "";
-const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
+const SESSION_SECRET = envTrim("SESSION_SECRET", "erwin-dev-secret");
+const DB_URL = envTrim("DB_URL", "./data/erwin.sqlite");
+const AUDIO_DIR = envTrim("ERWIN_AUDIO_DIR", "./data/audio");
+const LOG_LEVEL = envTrim("LOG_LEVEL", "info");
+const YTDL_COOKIE_FILE = envTrim("ERWIN_YTDL_COOKIE_FILE", "/app/data/youtube.cookie");
+const YTDL_COOKIE = envTrim("ERWIN_YTDL_COOKIE", "");
+const YTDL_JS_RUNTIME = envTrim("ERWIN_YTDL_JS_RUNTIME", `node:${process.execPath}`);
+const YTDL_REMOTE_COMPONENTS = envTrim("ERWIN_YTDL_REMOTE_COMPONENTS", "ejs:github");
+const YTDL_FFMPEG_LOCATION = envTrim("ERWIN_YTDL_FFMPEG_LOCATION", "");
+const PUBLIC_BASE_URL = envTrim("PUBLIC_BASE_URL", "");
+const TWITCH_BOT_USERNAME = envTrim("TWITCH_BOT_USERNAME", "");
+const TWITCH_OAUTH_TOKEN = envTrim("TWITCH_OAUTH_TOKEN", "");
+const TWITCH_REFRESH_TOKEN = envTrim("TWITCH_REFRESH_TOKEN", "");
+const TWITCH_CLIENT_ID = envTrim("TWITCH_CLIENT_ID", "");
+const TWITCH_CLIENT_SECRET = envTrim("TWITCH_CLIENT_SECRET", "");
+const TWITCH_REDIRECT_URI = envTrim("TWITCH_REDIRECT_URI", "");
+const TWITCH_CHANNEL = envTrim("TWITCH_CHANNEL", "");
+const TWITCH_COMMAND_PREFIX = envTrim("TWITCH_COMMAND_PREFIX", "!");
+const TWITCH_ADMINS = parseCsvSet(envTrim("TWITCH_ADMINS", ""));
+const TWITCH_CHANNEL_MEMBERS = parseCsvSet(envTrim("TWITCH_CHANNEL_MEMBERS", ""));
+const TWITCH_CHANNEL_MEMBERS_ROLE = envTrim("TWITCH_CHANNEL_MEMBERS_ROLE", "channel_member");
 const TWITCH_IRC_HOST =
-  process.env.TWITCH_IRC_HOST ||
-  "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com";
+  envTrim("TWITCH_IRC_HOST", "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com");
 const DOWNLOAD_CONCURRENCY = Math.max(
   1,
   Number(process.env.ERWIN_DOWNLOAD_CONCURRENCY || 1)
@@ -76,6 +94,7 @@ const AUDIO_RETENTION_MAX_GB = Number(process.env.ERWIN_AUDIO_RETENTION_MAX_GB |
 const LIBRARY_QUEUE_ID = "__library__";
 
 const app = express();
+app.set("trust proxy", 1);
 
 function ensureDbDirectory(dbUrl) {
   if (!dbUrl || dbUrl === ":memory:") return;
@@ -125,7 +144,7 @@ const sessionMiddleware = session({
   cookie: {
     httpOnly: true,
     sameSite: "lax",
-    secure: false
+    secure: envTrim("NODE_ENV", "development") === "production"
   }
 });
 
@@ -330,41 +349,15 @@ function initDb() {
   db.exec(SCHEMA_SQL);
 
 
-  const existing = db.prepare("SELECT COUNT(*) as count FROM users").get();
-  const envUsername = process.env.ERWIN_ADMIN_USER;
-  const envPassword = process.env.ERWIN_ADMIN_PASSWORD;
-  const username = envUsername || "admin";
-  const password = envPassword || "admin123";
-  if (existing.count === 0) {
-    const password_hash = bcrypt.hashSync(password, 10);
-    db.prepare(
-      "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(nanoid(), username, password_hash, "admin", new Date().toISOString());
-    console.log(
-      `Seeded admin user: ${username}. Set ERWIN_ADMIN_USER/ERWIN_ADMIN_PASSWORD to change.`
-    );
-    log("info", "seeded admin user", { username });
-  } else if (envUsername || envPassword) {
-    const existingAdmin = db
-      .prepare("SELECT id, username FROM users WHERE username = ?")
-      .get(username);
-    if (existingAdmin) {
-      if (envPassword) {
-        const password_hash = bcrypt.hashSync(password, 10);
-        db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(
-          password_hash,
-          existingAdmin.id
-        );
-        log("info", "updated admin password from env", { username: existingAdmin.username });
-      }
-    } else {
-      const password_hash = bcrypt.hashSync(password, 10);
-      db.prepare(
-        "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)"
-      ).run(nanoid(), username, password_hash, "admin", new Date().toISOString());
-      log("info", "created admin user from env", { username });
-    }
+  const usersColumns = db.prepare("PRAGMA table_info(users)").all();
+  const userColumnNames = new Set(usersColumns.map((column) => column.name));
+  if (!userColumnNames.has("twitch_id")) {
+    db.prepare("ALTER TABLE users ADD COLUMN twitch_id TEXT").run();
   }
+  if (!userColumnNames.has("display_name")) {
+    db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
+  }
+  db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_twitch_id ON users(twitch_id)").run();
 
   const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
   const hasPausedAt = playStateColumns.some((column) => column.name === "paused_at_ms");
@@ -704,22 +697,40 @@ const voteInterval = setInterval(() => {
   tickVoting();
 }, 1000);
 
-function requireAuth(req, res, next) {
-  if (req.session?.user) {
-    return next();
-  }
-  const isApiRequest = req.path?.startsWith("/api/");
-  if (isApiRequest) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-  if (req.accepts("html")) {
-    return res.redirect("/login");
-  }
-  res.status(401).json({ error: "Unauthorized" });
-}
-
 function isAdminUser(user) {
   return user?.role === "admin";
+}
+
+function isChannelMemberUser(user) {
+  return user?.role === "channel_member";
+}
+
+function hasDashboardAccess(user) {
+  return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function requireAuth(req, res, next) {
+  const user = req.session?.user;
+  if (!user) {
+    const isApiRequest = req.path?.startsWith("/api/");
+    if (isApiRequest) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (req.accepts("html")) {
+      return res.redirect("/login");
+    }
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  if (!hasDashboardAccess(user)) {
+    const allowedApi = new Set(["/api/me", "/api/auth/logout"]);
+    if (req.path?.startsWith("/api/") && !allowedApi.has(req.path)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    if (!req.path?.startsWith("/api/") && req.path !== "/dashboard/public") {
+      return res.redirect("/dashboard/public");
+    }
+  }
+  return next();
 }
 
 function requireAdmin(req, res, next) {
@@ -1125,6 +1136,11 @@ function getSettingString(key, fallback) {
   if (value === undefined) return fallback;
   return String(value);
 }
+
+function setSettingValue(key, value) {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, String(value));
+}
+
 
 function formatTemplate(template, values) {
   return template.replace(/\{(\w+)\}/g, (match, key) => {
@@ -2099,34 +2115,323 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-app.post("/api/auth/login", (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) {
-    return res.status(400).json({ error: "Username and password required" });
+const CALLBACK_ERROR_MESSAGES = {
+  invalid_oauth_state: "Your Twitch login session expired or was invalid. Please try again.",
+  missing_oauth_code: "Twitch did not return an authorization code. Please try again.",
+  token_exchange_failed: "Unable to complete Twitch token exchange. Please try again.",
+  twitch_user_fetch_failed: "Unable to fetch your Twitch profile. Please try again.",
+  channel_scope_missing: "The broadcaster connection is missing required Twitch scopes.",
+  db_schema_compat_error: "Database schema is missing required Twitch user columns.",
+  twitch_login_failed: "Twitch login failed. Please try again."
+};
+
+function getUserRole({ login, twitchId, isModerator = false, isVip = false }) {
+  const normalizedLogin = String(login || "").trim().toLowerCase();
+  const normalizedId = String(twitchId || "").trim().toLowerCase();
+  const inAdmins = TWITCH_ADMINS.has(normalizedLogin) || TWITCH_ADMINS.has(normalizedId);
+  const inMembers =
+    TWITCH_CHANNEL_MEMBERS.has(normalizedLogin) || TWITCH_CHANNEL_MEMBERS.has(normalizedId);
+  if (inAdmins) return "admin";
+  if (inMembers) {
+    return TWITCH_CHANNEL_MEMBERS_ROLE === "admin" ? "admin" : "channel_member";
   }
-  const user = db
-    .prepare("SELECT id, username, password_hash, role FROM users WHERE username = ?")
-    .get(username);
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    log("warn", "login failed", { username });
-    return res.status(401).json({ error: "Invalid credentials" });
+  if (isModerator) return "mod";
+  if (isVip) return "vip";
+  return "viewer";
+}
+
+function resolveTwitchRedirectUri(req) {
+  if (TWITCH_REDIRECT_URI) return TWITCH_REDIRECT_URI;
+  if (PUBLIC_BASE_URL) {
+    return `${PUBLIC_BASE_URL.replace(/\/$/, "")}/auth/twitch/callback`;
+  }
+  return `${req.protocol}://${req.get("host")}/auth/twitch/callback`;
+}
+
+function redirectLoginError(res, reason, context = {}) {
+  const safeReason = CALLBACK_ERROR_MESSAGES[reason] ? reason : "twitch_login_failed";
+  log("error", "twitch callback failed", {
+    reason: safeReason,
+    rawError: context.rawError || null,
+    redirectUri: context.redirectUri || null,
+    host: context.host || null,
+    protocol: context.protocol || null
+  });
+  return res.redirect(`/login?error=${encodeURIComponent(safeReason)}`);
+}
+
+async function fetchTwitchToken({ code, redirectUri }) {
+  const payload = new URLSearchParams({
+    client_id: TWITCH_CLIENT_ID,
+    client_secret: TWITCH_CLIENT_SECRET,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: redirectUri
+  });
+  const response = await fetch("https://id.twitch.tv/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: payload
+  });
+  if (!response.ok) {
+    const bodyText = await response.text();
+    throw new Error(`token exchange failed (${response.status}): ${bodyText}`);
+  }
+  return response.json();
+}
+
+async function fetchTwitchUser(accessToken) {
+  const response = await fetch("https://api.twitch.tv/helix/users", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Client-Id": TWITCH_CLIENT_ID
+    }
+  });
+  if (!response.ok) {
+    const bodyText = await response.text();
+    throw new Error(`user fetch failed (${response.status}): ${bodyText}`);
+  }
+  const payload = await response.json();
+  return payload?.data?.[0] || null;
+}
+
+async function fetchMembershipFlags({ accessToken, channelLogin, userId }) {
+  if (!channelLogin || !userId) return { isModerator: false, isVip: false };
+  try {
+    const broadcasterResponse = await fetch(
+      `https://api.twitch.tv/helix/users?login=${encodeURIComponent(channelLogin)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Client-Id": TWITCH_CLIENT_ID
+        }
+      }
+    );
+    if (!broadcasterResponse.ok) return { isModerator: false, isVip: false };
+    const broadcasterPayload = await broadcasterResponse.json();
+    const broadcasterId = broadcasterPayload?.data?.[0]?.id;
+    if (!broadcasterId) return { isModerator: false, isVip: false };
+
+    const [modsResponse, vipsResponse] = await Promise.all([
+      fetch(
+        `https://api.twitch.tv/helix/moderation/moderators?broadcaster_id=${encodeURIComponent(
+          broadcasterId
+        )}&user_id=${encodeURIComponent(userId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Client-Id": TWITCH_CLIENT_ID
+          }
+        }
+      ),
+      fetch(
+        `https://api.twitch.tv/helix/channels/vips?broadcaster_id=${encodeURIComponent(
+          broadcasterId
+        )}&user_id=${encodeURIComponent(userId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Client-Id": TWITCH_CLIENT_ID
+          }
+        }
+      )
+    ]);
+
+    const modsPayload = modsResponse.ok ? await modsResponse.json() : { data: [] };
+    const vipsPayload = vipsResponse.ok ? await vipsResponse.json() : { data: [] };
+    return {
+      isModerator: Array.isArray(modsPayload?.data) && modsPayload.data.length > 0,
+      isVip: Array.isArray(vipsPayload?.data) && vipsPayload.data.length > 0
+    };
+  } catch {
+    return { isModerator: false, isVip: false };
+  }
+}
+
+function beginTwitchAuth(req, res, mode = "login") {
+  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+    return redirectLoginError(res, "twitch_login_failed", {
+      rawError: "TWITCH_CLIENT_ID/TWITCH_CLIENT_SECRET missing",
+      redirectUri: resolveTwitchRedirectUri(req),
+      host: req.get("host"),
+      protocol: req.protocol
+    });
+  }
+  const redirectUri = resolveTwitchRedirectUri(req);
+  const state = nanoid();
+  const scopes =
+    mode === "channel"
+      ? ["user:read:email", "moderation:read", "channel:read:vips"]
+      : ["user:read:email"];
+  req.session.oauthState = state;
+  req.session.oauthRedirectUri = redirectUri;
+  req.session.oauthMode = mode;
+  req.session.save(() => {
+    const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
+    authUrl.searchParams.set("client_id", TWITCH_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", scopes.join(" "));
+    authUrl.searchParams.set("state", state);
+    res.redirect(authUrl.toString());
+  });
+}
+
+app.get("/auth/twitch", (req, res) => {
+  beginTwitchAuth(req, res, "login");
+});
+
+app.get("/auth/twitch/channel", requireAuth, requireAdmin, (req, res) => {
+  beginTwitchAuth(req, res, "channel");
+});
+
+app.get("/auth/twitch/callback", async (req, res) => {
+  const redirectUri = req.session?.oauthRedirectUri || resolveTwitchRedirectUri(req);
+  const host = req.get("host");
+  const protocol = req.protocol;
+  const { state, code } = req.query || {};
+  if (!req.session?.oauthState || state !== req.session.oauthState) {
+    return redirectLoginError(res, "invalid_oauth_state", { redirectUri, host, protocol });
+  }
+  if (!code) {
+    return redirectLoginError(res, "missing_oauth_code", { redirectUri, host, protocol });
   }
 
-  req.session.regenerate((regenerateError) => {
-    if (regenerateError) {
-      log("error", "session regenerate failed", { error: String(regenerateError?.message || regenerateError) });
-      return res.status(500).json({ error: "Unable to establish session" });
+  try {
+    const tokenPayload = await fetchTwitchToken({ code: String(code), redirectUri });
+    const accessToken = tokenPayload?.access_token;
+    if (!accessToken) {
+      throw new Error("missing access token in Twitch response");
     }
-    req.session.user = { id: user.id, username: user.username, role: user.role };
-    req.session.save((saveError) => {
-      if (saveError) {
-        log("error", "session save failed", { error: String(saveError?.message || saveError) });
-        return res.status(500).json({ error: "Unable to persist session" });
+    const scopeList = Array.isArray(tokenPayload?.scope)
+      ? tokenPayload.scope
+      : String(tokenPayload?.scope || "").split(" ").filter(Boolean);
+    const oauthMode = req.session?.oauthMode || "login";
+    if (oauthMode === "channel") {
+      const hasChannelScopes =
+        scopeList.includes("moderation:read") && scopeList.includes("channel:read:vips");
+      if (!hasChannelScopes) {
+        return redirectLoginError(res, "channel_scope_missing", {
+          rawError: `scopes: ${scopeList.join(",")}`,
+          redirectUri,
+          host,
+          protocol
+        });
       }
-      log("info", "login success", { username: user.username, role: user.role });
-      res.json({ id: user.id, username: user.username, role: user.role });
+    }
+
+    let twitchUser;
+    try {
+      twitchUser = await fetchTwitchUser(accessToken);
+    } catch (error) {
+      return redirectLoginError(res, "twitch_user_fetch_failed", {
+        rawError: String(error?.message || error),
+        redirectUri,
+        host,
+        protocol
+      });
+    }
+    if (!twitchUser?.id || !twitchUser?.login) {
+      return redirectLoginError(res, "twitch_user_fetch_failed", {
+        rawError: "missing id/login",
+        redirectUri,
+        host,
+        protocol
+      });
+    }
+
+    if (oauthMode === "channel" && TWITCH_CHANNEL) {
+      const normalizedExpected = TWITCH_CHANNEL.trim().toLowerCase();
+      const normalizedActual = String(twitchUser.login || "").trim().toLowerCase();
+      if (normalizedActual !== normalizedExpected) {
+        return redirectLoginError(res, "twitch_login_failed", {
+          rawError: `channel mismatch expected=${normalizedExpected} actual=${normalizedActual}`,
+          redirectUri,
+          host,
+          protocol
+        });
+      }
+      setSettingValue("twitch_channel_auth_connected", "1");
+      setSettingValue("twitch_channel_auth_login", twitchUser.login || "");
+      setSettingValue("twitch_channel_auth_display_name", twitchUser.display_name || twitchUser.login || "");
+      setSettingValue("twitch_channel_auth_updated_at", new Date().toISOString());
+      setSettingValue("twitch_channel_auth_access_token", accessToken);
+      setSettingValue("twitch_channel_auth_scope", scopeList.join(" "));
+    }
+
+    const membership = await fetchMembershipFlags({
+      accessToken: getSettingString("twitch_channel_auth_access_token", accessToken),
+      channelLogin: TWITCH_CHANNEL,
+      userId: twitchUser.id
     });
-  });
+    const role = getUserRole({
+      login: twitchUser.login,
+      twitchId: twitchUser.id,
+      isModerator: membership.isModerator,
+      isVip: membership.isVip
+    });
+
+    const now = new Date().toISOString();
+    const existing = db
+      .prepare("SELECT id, password_hash FROM users WHERE twitch_id = ? OR username = ?")
+      .get(twitchUser.id, twitchUser.login);
+    const userId = existing?.id || nanoid();
+    const passwordHashValue = existing?.password_hash ?? "";
+    try {
+      if (existing) {
+        db.prepare(
+          "UPDATE users SET username = ?, display_name = ?, twitch_id = ?, role = ? WHERE id = ?"
+        ).run(twitchUser.login, twitchUser.display_name || twitchUser.login, twitchUser.id, role, userId);
+      } else {
+        db.prepare(
+          "INSERT INTO users (id, username, password_hash, role, created_at, twitch_id, display_name) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).run(
+          userId,
+          twitchUser.login,
+          passwordHashValue,
+          role,
+          now,
+          twitchUser.id,
+          twitchUser.display_name || twitchUser.login
+        );
+      }
+    } catch (error) {
+      const msg = String(error?.message || error).toLowerCase();
+      if (msg.includes("no such column") || msg.includes("has no column")) {
+        return redirectLoginError(res, "db_schema_compat_error", {
+          rawError: String(error?.message || error),
+          redirectUri,
+          host,
+          protocol
+        });
+      }
+      throw error;
+    }
+
+    req.session.oauthState = null;
+    req.session.oauthRedirectUri = null;
+    req.session.oauthMode = null;
+    req.session.user = {
+      id: userId,
+      username: twitchUser.login,
+      login: twitchUser.login,
+      displayName: twitchUser.display_name || twitchUser.login,
+      twitchId: twitchUser.id,
+      role,
+      isAdmin: role === "admin",
+      isChannelMember: role === "channel_member"
+    };
+    req.session.save(() => {
+      res.redirect(role === "admin" || role === "channel_member" ? "/dashboard" : "/dashboard/public");
+    });
+  } catch (error) {
+    return redirectLoginError(res, "token_exchange_failed", {
+      rawError: String(error?.message || error),
+      redirectUri,
+      host,
+      protocol
+    });
+  }
 });
 
 app.post("/api/auth/logout", (req, res) => {
@@ -2140,127 +2445,52 @@ app.get("/api/me", requireAuth, (req, res) => {
   const user = req.session.user;
   res.json({
     id: user.id,
-    username: user.username,
-    isAdmin: isAdminUser(user)
+    username: user.username || user.login,
+    login: user.login || user.username,
+    role: user.role || "viewer",
+    isAdmin: isAdminUser(user),
+    isChannelMember: isChannelMemberUser(user)
   });
 });
 
 app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
   const users = db
-    .prepare(
-      "SELECT id, username, created_at, role FROM users ORDER BY created_at ASC"
-    )
-    .all()
-    .map((user) => ({
-      id: user.id,
-      username: user.username,
-      created_at: user.created_at,
-      isAdmin: user.role === "admin"
-    }));
+    .prepare("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
+    .all();
   res.json(users);
 });
 
+app.get("/api/channel-auth/status", requireAuth, requireAdmin, (req, res) => {
+  const connected = getSettingBoolean("twitch_channel_auth_connected", false);
+  const login = getSettingString("twitch_channel_auth_login", "");
+  const displayName = getSettingString("twitch_channel_auth_display_name", "");
+  const updatedAt = getSettingString("twitch_channel_auth_updated_at", "");
+  res.json({ connected, login, displayName, updatedAt });
+});
+
+
 app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
-  const usernameRaw = typeof req.body?.username === "string" ? req.body.username.trim() : "";
-  const password = typeof req.body?.password === "string" ? req.body.password : "";
-  if (!usernameRaw) {
-    return res.status(400).json({ error: "username is required" });
-  }
-  if (usernameRaw.length < 3 || usernameRaw.length > 64) {
-    return res.status(400).json({ error: "username must be between 3 and 64 characters" });
-  }
-  if (!password || password.length < 8) {
-    return res.status(400).json({ error: "password must be at least 8 characters" });
-  }
-
-  const passwordHash = bcrypt.hashSync(password, 10);
-  const id = nanoid();
-  const createdAt = new Date().toISOString();
-  try {
-    db.prepare(
-      "INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(id, usernameRaw, passwordHash, "user", createdAt);
-  } catch (error) {
-    const message = String(error?.message || error).toLowerCase();
-    if (message.includes("unique")) {
-      return res.status(409).json({ error: "username already exists" });
-    }
-    throw error;
-  }
-
-  res.status(201).json({ id, username: usernameRaw, created_at: createdAt, isAdmin: false });
+  res.status(410).json({ error: "User creation is disabled in Twitch auth mode" });
 });
 
 app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
-  const userId = req.params.id;
-  const current = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
-  if (!current) {
-    return res.status(404).json({ error: "User not found" });
-  }
-  if (current.role === "admin") {
-    return res.status(403).json({ error: "Admin users cannot be modified from the dashboard" });
-  }
-
-  const usernameRaw = typeof req.body?.username === "string" ? req.body.username.trim() : "";
-  const password = typeof req.body?.password === "string" ? req.body.password : "";
-  const updates = [];
-  const values = [];
-
-  if (usernameRaw) {
-    if (usernameRaw.length < 3 || usernameRaw.length > 64) {
-      return res.status(400).json({ error: "username must be between 3 and 64 characters" });
-    }
-    updates.push("username = ?");
-    values.push(usernameRaw);
-  }
-
-  if (password) {
-    if (password.length < 8) {
-      return res.status(400).json({ error: "password must be at least 8 characters" });
-    }
-    updates.push("password_hash = ?");
-    values.push(bcrypt.hashSync(password, 10));
-  }
-
-  if (updates.length === 0) {
-    return res.status(400).json({ error: "No updates requested" });
-  }
-
-  values.push(userId);
-  try {
-    db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
-  } catch (error) {
-    const message = String(error?.message || error).toLowerCase();
-    if (message.includes("unique")) {
-      return res.status(409).json({ error: "username already exists" });
-    }
-    throw error;
-  }
-
-  const updated = db.prepare("SELECT id, username, role, created_at FROM users WHERE id = ?").get(userId);
-  res.json({
-    id: updated.id,
-    username: updated.username,
-    created_at: updated.created_at,
-    isAdmin: updated.role === "admin"
-  });
+  res.status(410).json({ error: "User updates are disabled in Twitch auth mode" });
 });
 
 app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
   const userId = req.params.id;
-  const user = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
-  if (!user) {
-    return res.status(404).json({ error: "User not found" });
+  if (!userId) {
+    return res.status(400).json({ error: "user id required" });
   }
-  if (user.role === "admin") {
-    return res.status(403).json({ error: "Admin users cannot be deleted from the dashboard" });
-  }
-  if (req.session.user?.id === userId) {
+  if (req.session?.user?.id === userId) {
     return res.status(400).json({ error: "You cannot delete your own user" });
   }
-
+  const existing = db.prepare("SELECT id FROM users WHERE id = ?").get(userId);
+  if (!existing) {
+    return res.status(404).json({ error: "User not found" });
+  }
   db.prepare("DELETE FROM users WHERE id = ?").run(userId);
-  res.json({ ok: true });
+  return res.json({ ok: true });
 });
 
 app.get("/api/state", requireAuth, (req, res) => {
@@ -2773,7 +3003,7 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
   });
 });
 
-app.get("/api/library/tracks", requireAuth, (req, res) => {
+app.get("/api/library/tracks", requireAuth, requireAdmin, (req, res) => {
   const tracks = db
     .prepare(
       "SELECT tracks.id, tracks.youtube_id, tracks.url, tracks.title, tracks.duration_sec, tracks.channel, tracks.thumbnail, tracks.audio_path, tracks.download_status, tracks.download_error, tracks.downloaded_at, tracks.volume_adjust_db, tracks.intro_sec, tracks.outro_sec, tracks.tags, tracks.disabled, tracks.added_by_user_id, tracks.created_at, users.username AS added_by_username FROM tracks LEFT JOIN users ON users.id = tracks.added_by_user_id ORDER BY COALESCE(tracks.title, tracks.youtube_id) ASC"
@@ -2790,7 +3020,7 @@ app.get("/api/library/tracks", requireAuth, (req, res) => {
   );
 });
 
-app.get("/api/library/export", requireAuth, (req, res) => {
+app.get("/api/library/export", requireAuth, requireAdmin, (req, res) => {
   const tracks = db
     .prepare(
       "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
@@ -2823,7 +3053,7 @@ app.get("/api/library/export", requireAuth, (req, res) => {
   res.send(JSON.stringify(payload, null, 2));
 });
 
-app.post("/api/library/import", requireAuth, (req, res) => {
+app.post("/api/library/import", requireAuth, requireAdmin, (req, res) => {
   const { urls, playlistId } = req.body || {};
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: "urls array is required" });
@@ -2859,7 +3089,7 @@ app.post("/api/library/import", requireAuth, (req, res) => {
     });
 });
 
-app.post("/api/library/import-json", requireAuth, (req, res) => {
+app.post("/api/library/import-json", requireAuth, requireAdmin, (req, res) => {
   const payload = req.body || {};
   const data = payload.library || payload;
   const tracks = Array.isArray(data.tracks) ? data.tracks : [];
@@ -2900,7 +3130,7 @@ app.post("/api/library/import-json", requireAuth, (req, res) => {
   res.json({ updated, missing });
 });
 
-app.post("/api/library/tracks", requireAuth, async (req, res) => {
+app.post("/api/library/tracks", requireAuth, requireAdmin, async (req, res) => {
   const { url, playlistId } = req.body || {};
   if (!url) {
     return res.status(400).json({ error: "url required" });
@@ -2945,7 +3175,7 @@ app.post("/api/library/tracks", requireAuth, async (req, res) => {
   return res.status(201).json({ id: trackId, youtubeId, url: trimmedUrl, status: "pending" });
 });
 
-app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
+app.put("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   const payload = req.body || {};
   const updates = [];
   const values = [];
@@ -3003,7 +3233,7 @@ app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
   res.json({ ok: true, id: req.params.id });
 });
 
-app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+app.delete("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -3024,7 +3254,7 @@ app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/tracks", requireAuth, (req, res) => {
+app.post("/api/tracks", requireAuth, requireAdmin, (req, res) => {
   const { playlistId, url } = req.body || {};
   if (!playlistId || !url) {
     return res.status(400).json({ error: "playlistId and url required" });
@@ -3059,7 +3289,7 @@ app.post("/api/tracks", requireAuth, (req, res) => {
     });
 });
 
-app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
+app.put("/api/library/tracks/:id/rename", requireAuth, requireAdmin, (req, res) => {
 
   const { title } = req.body || {};
   if (!title || !title.trim()) {
@@ -3074,13 +3304,13 @@ app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
+app.put("/api/library/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 
 
 
-app.put("/api/tracks/:id", requireAuth, (req, res) => {
+app.put("/api/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   const { title } = req.body || {};
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "title required" });
@@ -3094,7 +3324,7 @@ app.put("/api/tracks/:id", requireAuth, (req, res) => {
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
+app.put("/api/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 
@@ -3411,6 +3641,11 @@ app.use("/assets", express.static(path.join(__dirname, "..", "public")));
 
 app.get("/dashboard", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "dashboard.html"));
+});
+
+app.get("/dashboard/public", requireAuth, (req, res) => {
+  const user = req.session?.user || {};
+  res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"/><title>Erwin Public Dashboard</title><link rel="stylesheet" href="/assets/styles.css"></head><body class="login"><main class="card login-card"><h1>Dashboard Access Limited</h1><p class="notice">Hi ${String(user.displayName || user.username || "viewer")}. Your role is <strong>${String(user.role || "viewer")}</strong>.</p><p class="notice">This placeholder is currently the only dashboard surface for viewer/mod/vip users.</p><p><a href="/login">Back to login</a></p></main></body></html>`);
 });
 
 app.get("/login", (req, res) => {

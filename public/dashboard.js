@@ -41,7 +41,10 @@ const nowPlaying = document.getElementById("now-playing");
       const themeToggle = document.getElementById("theme-toggle");
       const usersStatus = document.getElementById("users-status");
       const usersList = document.getElementById("users-list");
-      const userCreateForm = document.getElementById("user-create-form");
+      const usersCard = document.getElementById("users-card");
+      const connectChannelButton = document.getElementById("connect-channel");
+      const channelAuthStatus = document.getElementById("channel-auth-status");
+      const currentUserBadge = document.getElementById("current-user");
       const customCommandForm = document.getElementById("custom-command-form");
       const customCommandName = document.getElementById("custom-command-name");
       const customCommandAliases = document.getElementById("custom-command-aliases");
@@ -364,12 +367,10 @@ const nowPlaying = document.getElementById("now-playing");
         }
         usersList.innerHTML = users
           .map((user) => {
-            const adminBadge = `<span class="badge">${user.isAdmin ? "admin" : "user"}</span>`;
-            const adminLocked = user.isAdmin
-              ? '<span class="notice">Admin account locked</span>'
-              : '<button class="secondary" data-action="user-rename">Rename</button><button class="secondary" data-action="user-password">Password</button><button class="ghost" data-action="user-delete">Delete</button>';
+            const adminBadge = `<span class="badge">${user.role || "viewer"}</span>`;
+            const adminLocked = `<button class="ghost" data-action="user-delete">Delete</button>`;
             return `
-              <div class="list-item" data-user-id="${user.id}" data-username="${user.username}" data-is-admin="${user.isAdmin ? "1" : "0"}">
+              <div class="list-item" data-user-id="${user.id}" data-username="${user.username}" data-role="${user.role || "viewer"}">
                 <span>${user.username}</span>
                 <div class="actions">
                   ${adminBadge}
@@ -394,19 +395,30 @@ const nowPlaying = document.getElementById("now-playing");
         if (!response.ok) return null;
         currentUser = await response.json();
         localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
+        currentUserBadge.textContent = `${currentUser.username || "guest"} • ${currentUser.role || "viewer"}`;
+        if (!currentUser.isAdmin) {
+          usersCard.classList.add("hidden");
+          document.querySelectorAll(".tab-link[data-admin-only='1']").forEach((node) => node.classList.add("hidden"));
+          const trackPanel = document.querySelector(".tab-panel[data-tab-panel='track-manager']");
+          if (trackPanel) trackPanel.classList.remove("active");
+          const playerTab = document.querySelector(".tab-link[data-tab='player']");
+          const playerPanel = document.querySelector(".tab-panel[data-tab-panel='player']");
+          if (playerTab) playerTab.classList.add("active");
+          if (playerPanel) playerPanel.classList.add("active");
+        }
         return currentUser;
       }
 
       async function fetchUsers() {
         if (!currentUser?.isAdmin) {
           usersStatus.textContent = "Not permitted.";
-          userCreateForm.classList.add("hidden");
           usersList.classList.add("hidden");
+          connectChannelButton.classList.add("hidden");
           return;
         }
         usersStatus.textContent = "";
-        userCreateForm.classList.remove("hidden");
         usersList.classList.remove("hidden");
+        connectChannelButton.classList.remove("hidden");
         const response = await fetch("/api/users");
         if (!response.ok) {
           usersStatus.textContent = "Failed to load users.";
@@ -414,6 +426,46 @@ const nowPlaying = document.getElementById("now-playing");
         }
         const users = await response.json();
         renderUsers(users);
+        fetchChannelAuthStatus();
+      }
+
+      usersList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action='user-delete']");
+        if (!button) return;
+        const row = button.closest("[data-user-id]");
+        if (!row) return;
+        const userId = row.dataset.userId;
+        const username = row.dataset.username || "user";
+        if (!window.confirm(`Delete user ${username}?`)) {
+          return;
+        }
+        const response = await fetch(`/api/users/${userId}`, { method: "DELETE" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          usersStatus.textContent = payload.error || "Failed to delete user.";
+          return;
+        }
+        usersStatus.textContent = "User deleted.";
+        fetchUsers();
+      });
+
+      async function fetchChannelAuthStatus() {
+        if (!currentUser?.isAdmin) {
+          channelAuthStatus.textContent = "Channel auth status is only visible to admins.";
+          return;
+        }
+        const response = await fetch("/api/channel-auth/status");
+        if (!response.ok) {
+          channelAuthStatus.textContent = "Channel auth: unavailable";
+          return;
+        }
+        const status = await response.json();
+        if (!status.connected) {
+          channelAuthStatus.textContent = "Channel auth: not connected";
+          return;
+        }
+        const label = status.displayName || status.login || "connected";
+        channelAuthStatus.textContent = `Channel auth: connected as ${label}`;
       }
 
       async function fetchState() {
@@ -1044,43 +1096,6 @@ async function fetchDownloads() {
         playlistImportFile.click();
       });
 
-      usersList.addEventListener("click", async (event) => {
-        const button = event.target.closest("button");
-        if (!button) return;
-        const wrapper = button.closest("[data-user-id]");
-        const userId = wrapper?.dataset.userId;
-        const username = wrapper?.dataset.username;
-        if (!userId) return;
-        if (wrapper?.dataset.isAdmin === "1") {
-          return;
-        }
-        if (button.dataset.action === "user-rename") {
-          const next = window.prompt("New username", username || "");
-          if (!next || next.trim() === username) return;
-          await fetch(`/api/users/${userId}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username: next.trim() })
-          });
-          fetchUsers();
-        }
-        if (button.dataset.action === "user-password") {
-          const nextPassword = window.prompt(`New password for ${username}`);
-          if (!nextPassword) return;
-          await fetch(`/api/users/${userId}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password: nextPassword })
-          });
-          fetchUsers();
-        }
-        if (button.dataset.action === "user-delete") {
-          if (!window.confirm(`Delete user ${username}?`)) return;
-          await fetch(`/api/users/${userId}`, { method: "DELETE" });
-          fetchUsers();
-        }
-      });
-
       playlistImportFile.addEventListener("change", async () => {
         const file = playlistImportFile.files?.[0];
         if (!file) return;
@@ -1453,23 +1468,8 @@ document.getElementById("logout").addEventListener("click", async () => {
       });
 
 
-      userCreateForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const username = userCreateForm["new-username"].value.trim();
-        const password = userCreateForm["new-password"].value;
-        const response = await fetch("/api/users", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password })
-        });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          usersStatus.textContent = payload.error || "Failed to create user.";
-          return;
-        }
-        userCreateForm.reset();
-        usersStatus.textContent = "User created.";
-        fetchUsers();
+      connectChannelButton.addEventListener("click", () => {
+        window.location.href = "/auth/twitch/channel";
       });
 
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
@@ -1534,6 +1534,7 @@ document.getElementById("logout").addEventListener("click", async () => {
           return;
         }
         await fetchUsers();
+        await fetchChannelAuthStatus();
         resetCustomCommandForm();
         fetchState();
         fetchPlaylists();
