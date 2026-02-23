@@ -16,6 +16,10 @@ import { randomBytes } from "crypto";
 
 dotenv.config();
 
+function normalizeEnvString(value) {
+  return String(value || "").trim();
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -29,18 +33,18 @@ const YTDL_COOKIE = process.env.ERWIN_YTDL_COOKIE || "";
 const YTDL_JS_RUNTIME = process.env.ERWIN_YTDL_JS_RUNTIME || `node:${process.execPath}`;
 const YTDL_REMOTE_COMPONENTS = process.env.ERWIN_YTDL_REMOTE_COMPONENTS ?? "ejs:github";
 const YTDL_FFMPEG_LOCATION = process.env.ERWIN_YTDL_FFMPEG_LOCATION || "";
-const TWITCH_BOT_USERNAME = process.env.TWITCH_BOT_USERNAME || "";
-const TWITCH_OAUTH_TOKEN = process.env.TWITCH_OAUTH_TOKEN || "";
-const TWITCH_REFRESH_TOKEN = process.env.TWITCH_REFRESH_TOKEN || "";
-const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID || "";
-const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
-const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "";
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
-const TWITCH_REDIRECT_URI = process.env.TWITCH_REDIRECT_URI || "";
-const TWITCH_CHANNEL_MEMBERS_ROLE = process.env.TWITCH_CHANNEL_MEMBERS_ROLE || "channel_member";
-const TWITCH_ADMINS = process.env.TWITCH_ADMINS || "";
-const TWITCH_CHANNEL_MEMBERS = process.env.TWITCH_CHANNEL_MEMBERS || "";
-const TWITCH_COMMAND_PREFIX = process.env.TWITCH_COMMAND_PREFIX || "!";
+const TWITCH_BOT_USERNAME = normalizeEnvString(process.env.TWITCH_BOT_USERNAME);
+const TWITCH_OAUTH_TOKEN = normalizeEnvString(process.env.TWITCH_OAUTH_TOKEN);
+const TWITCH_REFRESH_TOKEN = normalizeEnvString(process.env.TWITCH_REFRESH_TOKEN);
+const TWITCH_CLIENT_ID = normalizeEnvString(process.env.TWITCH_CLIENT_ID);
+const TWITCH_CLIENT_SECRET = normalizeEnvString(process.env.TWITCH_CLIENT_SECRET);
+const TWITCH_CHANNEL = normalizeEnvString(process.env.TWITCH_CHANNEL);
+const PUBLIC_BASE_URL = normalizeEnvString(process.env.PUBLIC_BASE_URL);
+const TWITCH_REDIRECT_URI = normalizeEnvString(process.env.TWITCH_REDIRECT_URI);
+const TWITCH_CHANNEL_MEMBERS_ROLE = normalizeEnvString(process.env.TWITCH_CHANNEL_MEMBERS_ROLE) || "channel_member";
+const TWITCH_ADMINS = normalizeEnvString(process.env.TWITCH_ADMINS);
+const TWITCH_CHANNEL_MEMBERS = normalizeEnvString(process.env.TWITCH_CHANNEL_MEMBERS);
+const TWITCH_COMMAND_PREFIX = normalizeEnvString(process.env.TWITCH_COMMAND_PREFIX) || "!";
 const TWITCH_IRC_HOST =
   process.env.TWITCH_IRC_HOST ||
   "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com";
@@ -1108,7 +1112,9 @@ async function twitchTokenRequest(params) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`twitch token exchange failed (${response.status}): ${text}`);
+    const error = new Error(`twitch token exchange failed (${response.status}): ${text}`);
+    error.name = "TwitchTokenExchangeError";
+    throw error;
   }
   return response.json();
 }
@@ -2211,10 +2217,24 @@ app.get("/auth/twitch/callback", async (req, res) => {
     });
     return res.redirect(hasAppControlPermissions(req.session.user) ? "/dashboard" : "/dashboard/public");
   } catch (error) {
+    const rawMessage = String(error?.message || error);
+    let reason = "twitch_login_failed";
+    if (rawMessage.includes("token exchange")) {
+      reason = "token_exchange_failed";
+    } else if (rawMessage.includes("Unable to fetch Twitch user profile")) {
+      reason = "twitch_user_fetch_failed";
+    } else if (rawMessage.includes("required scopes")) {
+      reason = "channel_scope_missing";
+    }
+
     log("error", "twitch oauth callback failed", {
-      error: String(error?.message || error)
+      error: rawMessage,
+      reason,
+      redirectUri: oauthState?.redirectUri || null,
+      host: req.get("host") || null,
+      protocol: req.protocol
     });
-    return res.redirect(`/login?error=${encodeURIComponent("twitch_login_failed")}`);
+    return res.redirect(`/login?error=${encodeURIComponent(reason)}`);
   }
 });
 

@@ -62,7 +62,7 @@ Erwin uses Twitch-only login. Current role behavior:
    ```
 5. Visit `http://localhost:3000/login` and sign in with Twitch.
 6. After first admin login, use **Settings → Connect Channel** to authorize broadcaster scopes (`moderation:read`, `channel:read:vips`).
-7. If Twitch callback exchange fails, set `TWITCH_REDIRECT_URI` explicitly to your exact callback URL (for example `https://your-domain/auth/twitch/callback`).
+7. If Twitch callback exchange fails, set `TWITCH_REDIRECT_URI` explicitly to your exact callback URL (for example `https://your-domain/auth/twitch/callback`). Ensure there is no leading/trailing whitespace in env values.
 
 ## Docker (local)
 
@@ -138,3 +138,14 @@ If you see errors like `Error solving challenge requests`, `Signature solving fa
 ## License
 
 TBD.
+
+
+### OAuth login troubleshooting
+
+If redirected back to `/login?error=...`, use:
+
+- `token_exchange_failed`: usually client ID/secret mismatch or redirect URI mismatch in Twitch app settings.
+- `twitch_user_fetch_failed`: token was issued but user profile fetch failed; verify app credentials and headers.
+- `invalid_oauth_state`: session/cookie mismatch (often proxy/cookie/domain issues).
+
+Check server logs for `twitch oauth callback failed` details (`reason`, `redirectUri`, `host`, `protocol`).
