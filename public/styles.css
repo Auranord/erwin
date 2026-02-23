@@ -359,7 +359,93 @@ main {
 }
 
 .track-manager-grid {
-  grid-template-columns: minmax(280px, 1fr);
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+.track-manager-top-row {
+  grid-template-columns: minmax(340px, 1.1fr) minmax(260px, 0.9fr);
+  align-items: stretch;
+}
+
+.track-manager-top-row > .card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.section-title-split {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.compact-header {
+  margin-bottom: 0.5rem;
+}
+
+.library-filter-grid {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  margin-bottom: 0.75rem;
+}
+
+.library-table-wrap {
+  overflow: auto;
+  border: 1px solid rgba(107, 83, 45, 0.45);
+  border-radius: 0.65rem;
+}
+
+.library-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.83rem;
+}
+
+.library-table th,
+.library-table td {
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid rgba(107, 83, 45, 0.35);
+  vertical-align: top;
+}
+
+.library-table tbody tr:nth-child(odd) {
+  background: rgba(194, 166, 122, 0.42);
+}
+
+.library-table tbody tr:nth-child(even) {
+  background: rgba(154, 124, 84, 0.42);
+}
+
+.library-table .table-actions {
+  white-space: nowrap;
+}
+
+.library-table .table-actions button {
+  width: 28px;
+  height: 28px;
+}
+
+.table-sort {
+  all: unset;
+  cursor: pointer;
+  font-weight: 700;
+  color: inherit;
+}
+
+.table-title {
+  font-weight: 700;
+}
+
+.library-table a {
+  color: #1b3f8a;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+body[data-theme="darkwood"] .library-table a {
+  color: #9fc7ff;
 }
 
 label {
@@ -560,6 +646,9 @@ select:focus-visible,
   font-family: "Noto Sans Symbols", "Segoe UI Symbol", "Inter", sans-serif;
   font-size: 1rem;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   text-shadow: 0 1px 0 rgba(255, 232, 182, 0.25);
 }
 
@@ -579,6 +668,7 @@ select:focus-visible,
   height: 16px;
   object-fit: contain;
   display: block;
+  margin: 0 auto;
 }
 
 .button-icon-fallback {
@@ -587,6 +677,7 @@ select:focus-visible,
   justify-content: center;
   width: 16px;
   height: 16px;
+  margin: 0 auto;
 }
 
 .draggable-item {
@@ -870,8 +961,13 @@ body.listen-page #listen-track {
 
 @media (max-width: 880px) {
   .playlist-editor-grid,
-  .track-manager-grid {
+  .track-manager-grid,
+  .track-manager-top-row {
     grid-template-columns: 1fr;
+  }
+
+  .library-filter-grid {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
   }
 
   .player-footer {
@@ -891,6 +987,10 @@ body.listen-page #listen-track {
 }
 
 @media (max-width: 640px) {
+  .library-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
   main {
     padding-inline: 0.8rem;
   }
