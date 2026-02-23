@@ -124,38 +124,40 @@
       </section>
 
       <section class="tab-panel" data-tab-panel="track-manager">
-        <div class="grid track-manager-grid vertical-stack">
-          <div class="card">
-            <h2>Download Tracks</h2>
-            <p class="notice">Add a single video URL/ID or a full playlist link. Playlist links queue every video found.</p>
-            <form id="track-form" class="grid" method="post">
-              <div>
-                <label for="track-url">YouTube video URL, playlist URL, or video ID</label>
-                <input id="track-url" name="track-url" placeholder="https://youtu.be/... or https://youtube.com/playlist?..." />
+        <div class="grid track-manager-grid">
+          <div class="grid track-manager-top-row">
+            <div class="card">
+              <h2>Download Tracks</h2>
+              <p class="notice">Add a single video URL/ID or a full playlist link. Playlist links queue every video found.</p>
+              <form id="track-form" class="grid" method="post">
+                <div>
+                  <label for="track-url">YouTube video URL, playlist URL, or video ID</label>
+                  <input id="track-url" name="track-url" placeholder="https://youtu.be/... or https://youtube.com/playlist?..." />
+                </div>
+                <div>
+                  <label for="track-playlist">Optional playlist to attach downloaded tracks</label>
+                  <select id="track-playlist" name="track-playlist">
+                    <option value="">Library only</option>
+                  </select>
+                </div>
+                <button type="submit">Queue Download</button>
+              </form>
+              <div class="section-title section-title-split" style="margin-top: 16px;">
+                <span>Download Queue</span>
+                <button id="clear-downloads" class="secondary" type="button">Clear Completed</button>
               </div>
-              <div>
-                <label for="track-playlist">Optional playlist to attach downloaded tracks</label>
-                <select id="track-playlist" name="track-playlist">
-                  <option value="">Library only</option>
-                </select>
+              <div id="download-queue" class="list">
+                <div class="list-item">No downloads yet.</div>
               </div>
-              <button type="submit">Queue Download</button>
-            </form>
-            <div class="section-title section-title-split" style="margin-top: 16px;">
-              <span>Download Queue</span>
-              <button id="clear-downloads" class="secondary" type="button">Clear Completed</button>
             </div>
-            <div id="download-queue" class="list">
-              <div class="list-item">No downloads yet.</div>
-            </div>
-          </div>
 
-          <div class="card">
-            <h2>Library Management</h2>
-            <p class="notice">Import or export metadata for your existing library tracks.</p>
-            <div class="grid">
-              <button id="export-library-json" class="secondary" type="button">Export Library JSON</button>
-              <button id="import-library-json" class="secondary" type="button">Import Library JSON</button>
+            <div class="card">
+              <h2>Library Management</h2>
+              <p class="notice">Import or export metadata for your existing library tracks.</p>
+              <div class="grid">
+                <button id="export-library-json" class="secondary" type="button">Export Library JSON</button>
+                <button id="import-library-json" class="secondary" type="button">Import Library JSON</button>
+              </div>
             </div>
           </div>
 
@@ -170,6 +172,10 @@
               <div>
                 <label for="library-search">Search</label>
                 <input id="library-search" type="search" placeholder="Name / YouTube ID" />
+              </div>
+              <div>
+                <label for="library-added-by-search">Added by user</label>
+                <input id="library-added-by-search" type="search" placeholder="admin" />
               </div>
               <div>
                 <label for="library-tags-include">Include tags</label>

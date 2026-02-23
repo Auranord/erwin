@@ -78,6 +78,7 @@ const nowPlaying = document.getElementById("now-playing");
         { key: "addedAt", label: "Added", sortable: true, defaultVisible: true }
       ];
       const DEFAULT_LIBRARY_COLUMNS = LIBRARY_COLUMNS.filter((column) => column.defaultVisible).map((column) => column.key);
+      const LIBRARY_COLUMNS_STORAGE_KEY = "erwin_library_visible_columns";
       let visibleLibraryColumns = new Set(DEFAULT_LIBRARY_COLUMNS);
       let librarySort = { key: "name", direction: "asc" };
       let playlistPickTrackId = null;
@@ -89,6 +90,7 @@ const nowPlaying = document.getElementById("now-playing");
       const librarySearch = document.getElementById("library-search");
       const libraryTagsInclude = document.getElementById("library-tags-include");
       const libraryTagsExclude = document.getElementById("library-tags-exclude");
+      const libraryAddedBySearch = document.getElementById("library-added-by-search");
       const libraryColumnsButton = document.getElementById("library-columns-button");
       const libraryColumnsModal = document.getElementById("library-columns-modal");
       const libraryColumnsOptions = document.getElementById("library-columns-options");
@@ -134,6 +136,8 @@ const nowPlaying = document.getElementById("now-playing");
 
       const savedTheme = localStorage.getItem(getThemeStorageKey()) || "guild";
       applyTheme(savedTheme);
+      restoreLibraryColumnPrefs();
+
       themeToggle.addEventListener("click", () => {
         const nextTheme = document.body.dataset.theme === "darkwood" ? "guild" : "darkwood";
         applyTheme(nextTheme);
@@ -185,6 +189,23 @@ const nowPlaying = document.getElementById("now-playing");
           return `<img src="/assets/icons/${name}.png" class="button-icon" alt="" aria-hidden="true" />`;
         }
         return `<span class="button-icon-fallback" aria-hidden="true">${fallback}</span>`;
+      }
+
+
+      function restoreLibraryColumnPrefs() {
+        try {
+          const raw = localStorage.getItem(LIBRARY_COLUMNS_STORAGE_KEY);
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) return;
+          const allowed = new Set(LIBRARY_COLUMNS.map((column) => column.key));
+          const keys = parsed.filter((key) => allowed.has(key));
+          if (keys.length) {
+            visibleLibraryColumns = new Set(keys);
+          }
+        } catch {
+          // Ignore invalid local preferences.
+        }
       }
 
       function renderTracks() {
@@ -725,12 +746,15 @@ const nowPlaying = document.getElementById("now-playing");
         const titleQuery = String(librarySearch.value || "").trim().toLowerCase();
         const includeTags = parseTagFilterValue(libraryTagsInclude.value);
         const excludeTags = parseTagFilterValue(libraryTagsExclude.value);
+        const addedByQuery = String(libraryAddedBySearch?.value || "").trim().toLowerCase();
         const filtered = libraryTracksCache.filter((track) => {
           const title = String(track.title || track.youtube_id || "").toLowerCase();
           const tags = (track.tags || []).map((tag) => String(tag).toLowerCase());
           if (titleQuery && !title.includes(titleQuery)) return false;
           if (includeTags.length > 0 && !includeTags.every((tag) => tags.includes(tag))) return false;
           if (excludeTags.some((tag) => tags.includes(tag))) return false;
+          const addedBy = String(track.added_by_username || "admin").toLowerCase();
+          if (addedByQuery && !addedBy.includes(addedByQuery)) return false;
           return true;
         });
         if (!filtered.length) {
@@ -1204,7 +1228,7 @@ async function fetchDownloads() {
         fetchLibraryTracks();
       });
 
-      [librarySearch, libraryTagsInclude, libraryTagsExclude].forEach((input) => {
+      [librarySearch, libraryTagsInclude, libraryTagsExclude, libraryAddedBySearch].forEach((input) => {
         input.addEventListener("input", () => {
           renderLibraryTracks();
         });
@@ -1239,6 +1263,7 @@ async function fetchDownloads() {
           .map((input) => input.dataset.columnKey)
           .filter(Boolean);
         visibleLibraryColumns = new Set(checked.length ? checked : DEFAULT_LIBRARY_COLUMNS);
+        localStorage.setItem(LIBRARY_COLUMNS_STORAGE_KEY, JSON.stringify(Array.from(visibleLibraryColumns)));
         libraryColumnsModal.classList.add("hidden");
         renderLibraryTracks();
       });
