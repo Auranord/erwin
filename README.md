@@ -30,6 +30,14 @@ For deployment guidance on TrueNAS SCALE, including update workflows, see
 - `/player/listen` (team listening, audio on)
 - `/dashboard` (tabs, audio off by default)
 
+## Auth and roles
+
+Erwin uses Twitch-only login. Current role behavior:
+
+- `admin`: defined by `TWITCH_ADMINS` (comma-separated Twitch login names and/or Twitch user IDs), full access.
+- `channel_member`: defined by `TWITCH_CHANNEL_MEMBERS` and assigned role name `TWITCH_CHANNEL_MEMBERS_ROLE` (default `channel_member`), broad access except admin-only endpoints.
+- `mod`, `vip`, `viewer`: resolved through Twitch API (mod/vip) or fallback viewer; currently limited to a public dashboard placeholder.
+
 ## OBS audio split (recommended MVP approach)
 
 1. Add the Erwin `/player/stream` page as an OBS **Browser Source**.
@@ -39,7 +47,7 @@ For deployment guidance on TrueNAS SCALE, including update workflows, see
 ## Next steps
 
 - Implement the MVP data model and API surface described in the spec.
-- Add Docker Compose, `.env.example`, and persistent volumes.
+- Keep Docker Compose, `.env.example`, and persistent volumes aligned with Twitch OAuth settings.
 - Build the tabbed dashboard and the stream player view.
 
 ## Quickstart (local)
@@ -52,7 +60,9 @@ For deployment guidance on TrueNAS SCALE, including update workflows, see
    npm install
    npm start
    ```
-5. Visit `http://localhost:3000/login` and use the seeded admin credentials.
+5. Visit `http://localhost:3000/login` and sign in with Twitch.
+6. After first admin login, use **Settings → Connect Channel** to authorize broadcaster scopes (`moderation:read`, `channel:read:vips`).
+7. If Twitch callback exchange fails, set `TWITCH_REDIRECT_URI` explicitly to your exact callback URL (for example `https://your-domain/auth/twitch/callback`).
 
 ## Docker (local)
 
@@ -62,6 +72,28 @@ docker compose up --build
 ```
 
 Docker Compose reads `.env` for variable substitution in `docker-compose.yml`.
+
+Required Twitch OAuth variables:
+
+- `PUBLIC_BASE_URL`
+- `SESSION_SECRET`
+- `TWITCH_CLIENT_ID`
+- `TWITCH_CLIENT_SECRET`
+- `TWITCH_CHANNEL`
+- `TWITCH_REDIRECT_URI` (optional explicit callback override)
+
+Role configuration variables:
+
+- `TWITCH_ADMINS` (admins list)
+- `TWITCH_CHANNEL_MEMBERS` (channel member list)
+- `TWITCH_CHANNEL_MEMBERS_ROLE` (defaults to `channel_member`)
+
+Optional integration variables:
+
+- `TWITCH_BOT_USERNAME`, `TWITCH_OAUTH_TOKEN`, `TWITCH_REFRESH_TOKEN`
+- `TWITCH_COMMAND_PREFIX`, `TWITCH_IRC_HOST`
+- `ERWIN_YTDL_COOKIE_FILE`, `ERWIN_YTDL_COOKIE`, `ERWIN_YTDL_JS_RUNTIME`, `ERWIN_YTDL_REMOTE_COMPONENTS`, `ERWIN_YTDL_FFMPEG_LOCATION`
+- `ERWIN_DOWNLOAD_CONCURRENCY`, `ERWIN_AUDIO_RETENTION_DAYS`, `ERWIN_AUDIO_RETENTION_MAX_GB`
 
 ### Docker watch (optional)
 
