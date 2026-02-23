@@ -41,7 +41,9 @@ const nowPlaying = document.getElementById("now-playing");
       const themeToggle = document.getElementById("theme-toggle");
       const usersStatus = document.getElementById("users-status");
       const usersList = document.getElementById("users-list");
+      const usersCard = document.getElementById("users-card");
       const connectChannelButton = document.getElementById("connect-channel");
+      const channelAuthStatus = document.getElementById("channel-auth-status");
       const currentUserBadge = document.getElementById("current-user");
       const customCommandForm = document.getElementById("custom-command-form");
       const customCommandName = document.getElementById("custom-command-name");
@@ -366,7 +368,7 @@ const nowPlaying = document.getElementById("now-playing");
         usersList.innerHTML = users
           .map((user) => {
             const adminBadge = `<span class="badge">${user.role || "viewer"}</span>`;
-            const adminLocked = "";
+            const adminLocked = `<button class="ghost" data-action="user-delete">Delete</button>`;
             return `
               <div class="list-item" data-user-id="${user.id}" data-username="${user.username}" data-role="${user.role || "viewer"}">
                 <span>${user.username}</span>
@@ -394,6 +396,16 @@ const nowPlaying = document.getElementById("now-playing");
         currentUser = await response.json();
         localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
         currentUserBadge.textContent = `${currentUser.username || "guest"} • ${currentUser.role || "viewer"}`;
+        if (!currentUser.isAdmin) {
+          usersCard.classList.add("hidden");
+          document.querySelectorAll(".tab-link[data-admin-only='1']").forEach((node) => node.classList.add("hidden"));
+          const trackPanel = document.querySelector(".tab-panel[data-tab-panel='track-manager']");
+          if (trackPanel) trackPanel.classList.remove("active");
+          const playerTab = document.querySelector(".tab-link[data-tab='player']");
+          const playerPanel = document.querySelector(".tab-panel[data-tab-panel='player']");
+          if (playerTab) playerTab.classList.add("active");
+          if (playerPanel) playerPanel.classList.add("active");
+        }
         return currentUser;
       }
 
@@ -414,6 +426,46 @@ const nowPlaying = document.getElementById("now-playing");
         }
         const users = await response.json();
         renderUsers(users);
+        fetchChannelAuthStatus();
+      }
+
+      usersList.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action='user-delete']");
+        if (!button) return;
+        const row = button.closest("[data-user-id]");
+        if (!row) return;
+        const userId = row.dataset.userId;
+        const username = row.dataset.username || "user";
+        if (!window.confirm(`Delete user ${username}?`)) {
+          return;
+        }
+        const response = await fetch(`/api/users/${userId}`, { method: "DELETE" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          usersStatus.textContent = payload.error || "Failed to delete user.";
+          return;
+        }
+        usersStatus.textContent = "User deleted.";
+        fetchUsers();
+      });
+
+      async function fetchChannelAuthStatus() {
+        if (!currentUser?.isAdmin) {
+          channelAuthStatus.textContent = "Channel auth status is only visible to admins.";
+          return;
+        }
+        const response = await fetch("/api/channel-auth/status");
+        if (!response.ok) {
+          channelAuthStatus.textContent = "Channel auth: unavailable";
+          return;
+        }
+        const status = await response.json();
+        if (!status.connected) {
+          channelAuthStatus.textContent = "Channel auth: not connected";
+          return;
+        }
+        const label = status.displayName || status.login || "connected";
+        channelAuthStatus.textContent = `Channel auth: connected as ${label}`;
       }
 
       async function fetchState() {
@@ -1482,6 +1534,7 @@ document.getElementById("logout").addEventListener("click", async () => {
           return;
         }
         await fetchUsers();
+        await fetchChannelAuthStatus();
         resetCustomCommandForm();
         fetchState();
         fetchPlaylists();

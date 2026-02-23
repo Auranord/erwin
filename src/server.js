@@ -1137,6 +1137,11 @@ function getSettingString(key, fallback) {
   return String(value);
 }
 
+function setSettingValue(key, value) {
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, String(value));
+}
+
+
 function formatTemplate(template, values) {
   return template.replace(/\{(\w+)\}/g, (match, key) => {
     if (Object.prototype.hasOwnProperty.call(values, key)) {
@@ -2335,8 +2340,27 @@ app.get("/auth/twitch/callback", async (req, res) => {
       });
     }
 
+    if (oauthMode === "channel" && TWITCH_CHANNEL) {
+      const normalizedExpected = TWITCH_CHANNEL.trim().toLowerCase();
+      const normalizedActual = String(twitchUser.login || "").trim().toLowerCase();
+      if (normalizedActual !== normalizedExpected) {
+        return redirectLoginError(res, "twitch_login_failed", {
+          rawError: `channel mismatch expected=${normalizedExpected} actual=${normalizedActual}`,
+          redirectUri,
+          host,
+          protocol
+        });
+      }
+      setSettingValue("twitch_channel_auth_connected", "1");
+      setSettingValue("twitch_channel_auth_login", twitchUser.login || "");
+      setSettingValue("twitch_channel_auth_display_name", twitchUser.display_name || twitchUser.login || "");
+      setSettingValue("twitch_channel_auth_updated_at", new Date().toISOString());
+      setSettingValue("twitch_channel_auth_access_token", accessToken);
+      setSettingValue("twitch_channel_auth_scope", scopeList.join(" "));
+    }
+
     const membership = await fetchMembershipFlags({
-      accessToken,
+      accessToken: getSettingString("twitch_channel_auth_access_token", accessToken),
       channelLogin: TWITCH_CHANNEL,
       userId: twitchUser.id
     });
@@ -2436,6 +2460,15 @@ app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
   res.json(users);
 });
 
+app.get("/api/channel-auth/status", requireAuth, requireAdmin, (req, res) => {
+  const connected = getSettingBoolean("twitch_channel_auth_connected", false);
+  const login = getSettingString("twitch_channel_auth_login", "");
+  const displayName = getSettingString("twitch_channel_auth_display_name", "");
+  const updatedAt = getSettingString("twitch_channel_auth_updated_at", "");
+  res.json({ connected, login, displayName, updatedAt });
+});
+
+
 app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "User creation is disabled in Twitch auth mode" });
 });
@@ -2445,7 +2478,19 @@ app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
 });
 
 app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
-  res.status(410).json({ error: "User deletion is disabled in Twitch auth mode" });
+  const userId = req.params.id;
+  if (!userId) {
+    return res.status(400).json({ error: "user id required" });
+  }
+  if (req.session?.user?.id === userId) {
+    return res.status(400).json({ error: "You cannot delete your own user" });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE id = ?").get(userId);
+  if (!existing) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+  return res.json({ ok: true });
 });
 
 app.get("/api/state", requireAuth, (req, res) => {
@@ -2958,7 +3003,7 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
   });
 });
 
-app.get("/api/library/tracks", requireAuth, (req, res) => {
+app.get("/api/library/tracks", requireAuth, requireAdmin, (req, res) => {
   const tracks = db
     .prepare(
       "SELECT tracks.id, tracks.youtube_id, tracks.url, tracks.title, tracks.duration_sec, tracks.channel, tracks.thumbnail, tracks.audio_path, tracks.download_status, tracks.download_error, tracks.downloaded_at, tracks.volume_adjust_db, tracks.intro_sec, tracks.outro_sec, tracks.tags, tracks.disabled, tracks.added_by_user_id, tracks.created_at, users.username AS added_by_username FROM tracks LEFT JOIN users ON users.id = tracks.added_by_user_id ORDER BY COALESCE(tracks.title, tracks.youtube_id) ASC"
@@ -2975,7 +3020,7 @@ app.get("/api/library/tracks", requireAuth, (req, res) => {
   );
 });
 
-app.get("/api/library/export", requireAuth, (req, res) => {
+app.get("/api/library/export", requireAuth, requireAdmin, (req, res) => {
   const tracks = db
     .prepare(
       "SELECT id, youtube_id, url, title, duration_sec, channel, thumbnail, volume_adjust_db, intro_sec, outro_sec, tags, created_at FROM tracks ORDER BY COALESCE(title, youtube_id) ASC"
@@ -3008,7 +3053,7 @@ app.get("/api/library/export", requireAuth, (req, res) => {
   res.send(JSON.stringify(payload, null, 2));
 });
 
-app.post("/api/library/import", requireAuth, (req, res) => {
+app.post("/api/library/import", requireAuth, requireAdmin, (req, res) => {
   const { urls, playlistId } = req.body || {};
   if (!Array.isArray(urls) || urls.length === 0) {
     return res.status(400).json({ error: "urls array is required" });
@@ -3044,7 +3089,7 @@ app.post("/api/library/import", requireAuth, (req, res) => {
     });
 });
 
-app.post("/api/library/import-json", requireAuth, (req, res) => {
+app.post("/api/library/import-json", requireAuth, requireAdmin, (req, res) => {
   const payload = req.body || {};
   const data = payload.library || payload;
   const tracks = Array.isArray(data.tracks) ? data.tracks : [];
@@ -3085,7 +3130,7 @@ app.post("/api/library/import-json", requireAuth, (req, res) => {
   res.json({ updated, missing });
 });
 
-app.post("/api/library/tracks", requireAuth, async (req, res) => {
+app.post("/api/library/tracks", requireAuth, requireAdmin, async (req, res) => {
   const { url, playlistId } = req.body || {};
   if (!url) {
     return res.status(400).json({ error: "url required" });
@@ -3130,7 +3175,7 @@ app.post("/api/library/tracks", requireAuth, async (req, res) => {
   return res.status(201).json({ id: trackId, youtubeId, url: trimmedUrl, status: "pending" });
 });
 
-app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
+app.put("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   const payload = req.body || {};
   const updates = [];
   const values = [];
@@ -3188,7 +3233,7 @@ app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
   res.json({ ok: true, id: req.params.id });
 });
 
-app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+app.delete("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -3209,7 +3254,7 @@ app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/tracks", requireAuth, (req, res) => {
+app.post("/api/tracks", requireAuth, requireAdmin, (req, res) => {
   const { playlistId, url } = req.body || {};
   if (!playlistId || !url) {
     return res.status(400).json({ error: "playlistId and url required" });
@@ -3244,7 +3289,7 @@ app.post("/api/tracks", requireAuth, (req, res) => {
     });
 });
 
-app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
+app.put("/api/library/tracks/:id/rename", requireAuth, requireAdmin, (req, res) => {
 
   const { title } = req.body || {};
   if (!title || !title.trim()) {
@@ -3259,13 +3304,13 @@ app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
+app.put("/api/library/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 
 
 
-app.put("/api/tracks/:id", requireAuth, (req, res) => {
+app.put("/api/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   const { title } = req.body || {};
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "title required" });
@@ -3279,7 +3324,7 @@ app.put("/api/tracks/:id", requireAuth, (req, res) => {
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
+app.put("/api/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 

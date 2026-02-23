@@ -23,7 +23,7 @@
       <nav class="tabs" aria-label="Dashboard tabs">
         <a class="tab-link active" href="#" data-tab="player">Music Player Dashboard</a>
         <a class="tab-link" href="#" data-tab="playlists">Playlist Editor</a>
-        <a class="tab-link" href="#" data-tab="track-manager">Track Manager</a>
+        <a class="tab-link" href="#" data-tab="track-manager" data-admin-only="1">Track Manager</a>
         <a class="tab-link" href="#" data-tab="chat">Live Chat Feed</a>
         <a class="tab-link" href="#" data-tab="custom-commands">Custom Commands</a>
         <a class="tab-link" href="#" data-tab="settings">Settings</a>
@@ -249,10 +249,11 @@
       <section class="tab-panel" data-tab-panel="settings">
         <div class="grid two">
           <div class="card" id="users-card">
+            <p id="channel-auth-status" class="notice">Channel auth: not connected</p>
             <h2>Admin Panel</h2>
             <button id="connect-channel" class="twitch-action-button hidden" type="button">Connect Channel</button>
             <p id="users-status" class="notice">Checking permissions...</p>
-                        <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
+            <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
           </div>
 
           <div class="card">
