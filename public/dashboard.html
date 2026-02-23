@@ -15,6 +15,7 @@
         </div>
         <div class="header-actions">
           <span class="status-pill"><span></span> Connected</span>
+          <span id="current-user" class="status-pill">Guest • viewer</span>
           <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Toggle Dark Wood mode">🌒 Dark Wood</button>
           <button id="logout" class="secondary">Logout</button>
         </div>
@@ -248,20 +249,10 @@
       <section class="tab-panel" data-tab-panel="settings">
         <div class="grid two">
           <div class="card" id="users-card">
-            <h2>Users</h2>
+            <h2>Admin Panel</h2>
+            <button id="connect-channel" class="twitch-action-button hidden" type="button">Connect Channel</button>
             <p id="users-status" class="notice">Checking permissions...</p>
-            <form id="user-create-form" class="grid hidden" method="post">
-              <div>
-                <label for="new-username">Username</label>
-                <input id="new-username" name="new-username" minlength="3" maxlength="64" required />
-              </div>
-              <div>
-                <label for="new-password">Password</label>
-                <input id="new-password" name="new-password" type="password" minlength="8" required />
-              </div>
-              <button type="submit">Create User</button>
-            </form>
-            <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
+                        <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
           </div>
 
           <div class="card">
