@@ -82,6 +82,7 @@ const nowPlaying = document.getElementById("now-playing");
       let visibleLibraryColumns = new Set(DEFAULT_LIBRARY_COLUMNS);
       let librarySort = { key: "name", direction: "asc" };
       let playlistPickTrackId = null;
+      let playlistPickInitialSelection = new Set();
       const playlistImportFile = document.getElementById("playlist-import-file");
       const importPlaylistJsonButton = document.getElementById("import-playlist-json");
       const exportLibraryJsonButton = document.getElementById("export-library-json");
@@ -1210,9 +1211,14 @@ async function fetchDownloads() {
         }
         if (action === "library-add-playlist") {
           playlistPickTrackId = trackId;
+          playlistPickInitialSelection = new Set(
+            playlistsCache
+              .filter((playlist) => Array.isArray(playlist.tracks) && playlist.tracks.some((track) => track.id === trackId))
+              .map((playlist) => playlist.id)
+          );
           playlistPickOptions.innerHTML = playlistsCache.map((playlist) => `
             <label class="card-toggle">
-              <input type="checkbox" value="${playlist.id}" />
+              <input type="checkbox" value="${playlist.id}" ${playlistPickInitialSelection.has(playlist.id) ? "checked" : ""} />
               ${playlist.name}
             </label>
           `).join("");
@@ -1270,22 +1276,36 @@ async function fetchDownloads() {
 
       playlistPickCancel?.addEventListener("click", () => {
         playlistPickTrackId = null;
+        playlistPickInitialSelection = new Set();
         playlistPickModal.classList.add("hidden");
       });
 
       playlistPickSave?.addEventListener("click", async () => {
         if (!playlistPickTrackId) return;
-        const selectedIds = Array.from(playlistPickOptions.querySelectorAll("input[type='checkbox']:checked")).map((input) => input.value);
-        for (const playlistId of selectedIds) {
+        const selectedIds = new Set(
+          Array.from(playlistPickOptions.querySelectorAll("input[type='checkbox']:checked")).map((input) => input.value)
+        );
+        const toAdd = Array.from(selectedIds).filter((playlistId) => !playlistPickInitialSelection.has(playlistId));
+        const toRemove = Array.from(playlistPickInitialSelection).filter((playlistId) => !selectedIds.has(playlistId));
+
+        for (const playlistId of toAdd) {
           await fetch(`/api/playlists/${playlistId}/tracks`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ trackId: playlistPickTrackId })
           });
         }
+        for (const playlistId of toRemove) {
+          await fetch(`/api/playlists/${playlistId}/tracks/${playlistPickTrackId}`, {
+            method: "DELETE"
+          });
+        }
+
         playlistPickTrackId = null;
+        playlistPickInitialSelection = new Set();
         playlistPickModal.classList.add("hidden");
         fetchPlaylists();
+        fetchLibraryTracks();
       });
 
       exportLibraryJsonButton.addEventListener("click", () => {
