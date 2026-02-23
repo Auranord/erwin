@@ -16,6 +16,7 @@
         <div class="header-actions">
           <span class="status-pill"><span></span> Connected</span>
           <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Toggle Dark Wood mode">🌒 Dark Wood</button>
+          <div id="current-user-pill" class="badge">User: --</div>
           <button id="logout" class="secondary">Logout</button>
         </div>
       </div>
@@ -166,20 +167,12 @@
       <section class="tab-panel" data-tab-panel="settings">
         <div class="grid two">
           <div class="card" id="users-card">
-            <h2>Users</h2>
-            <p id="users-status" class="notice">Checking permissions...</p>
-            <form id="user-create-form" class="grid hidden">
-              <div>
-                <label for="new-username">Username</label>
-                <input id="new-username" name="new-username" minlength="3" maxlength="64" required />
-              </div>
-              <div>
-                <label for="new-password">Password</label>
-                <input id="new-password" name="new-password" type="password" minlength="8" required />
-              </div>
-              <button type="submit">Create User</button>
-            </form>
-            <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
+            <h2>Admin Panel</h2>
+            <p id="users-status" class="notice">Admin tools are available for Twitch admins.</p>
+            <div id="connect-channel-row" class="actions hidden" style="margin-bottom: 12px;">
+              <a href="/auth/twitch/channel" class="twitch-button twitch-button-compact"><span aria-hidden="true">💬</span> Connect Channel</a>
+            </div>
+            <div id="users-list" class="list"></div>
           </div>
 
           <div class="card">
@@ -311,8 +304,9 @@
       const settingsTwitchResume = document.getElementById("settings-twitch-resume");
       const themeToggle = document.getElementById("theme-toggle");
       const usersStatus = document.getElementById("users-status");
+      const connectChannelRow = document.getElementById("connect-channel-row");
       const usersList = document.getElementById("users-list");
-      const userCreateForm = document.getElementById("user-create-form");
+      const currentUserPill = document.getElementById("current-user-pill");
       let currentUser = null;
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
@@ -562,54 +556,38 @@
           .join("");
       }
 
-      function renderUsers(users) {
-        if (!users || users.length === 0) {
-          usersList.innerHTML = '<div class="list-item">No users found.</div>';
-          return;
-        }
-        usersList.innerHTML = users
-          .map((user) => {
-            const adminBadge = `<span class="badge">${user.isAdmin ? "admin" : "user"}</span>`;
-            const adminLocked = user.isAdmin
-              ? '<span class="notice">Admin account locked</span>'
-              : '<button class="secondary" data-action="user-rename">Rename</button><button class="secondary" data-action="user-password">Password</button><button class="ghost" data-action="user-delete">Delete</button>';
-            return `
-              <div class="list-item" data-user-id="${user.id}" data-username="${user.username}" data-is-admin="${user.isAdmin ? "1" : "0"}">
-                <span>${user.username}</span>
-                <div class="actions">
-                  ${adminBadge}
-                  ${adminLocked}
-                </div>
-              </div>`;
-          })
-          .join("");
-      }
-
       async function fetchMe() {
         const response = await fetch("/api/me");
         if (!response.ok) return null;
         currentUser = await response.json();
         localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
+        const role = currentUser.role || "viewer";
+        currentUserPill.textContent = `${currentUser.username || "unknown"} • ${role}`;
         return currentUser;
       }
 
       async function fetchUsers() {
         if (!currentUser?.isAdmin) {
-          usersStatus.textContent = "Not permitted.";
-          userCreateForm.classList.add("hidden");
-          usersList.classList.add("hidden");
+          connectChannelRow.classList.add("hidden");
+          usersStatus.textContent = "Only Twitch admins can view this panel.";
+          usersList.innerHTML = '<div class="list-item">No access.</div>';
           return;
         }
-        usersStatus.textContent = "";
-        userCreateForm.classList.remove("hidden");
-        usersList.classList.remove("hidden");
+        connectChannelRow.classList.remove("hidden");
+        usersStatus.textContent = "Known users and resolved roles.";
         const response = await fetch("/api/users");
         if (!response.ok) {
-          usersStatus.textContent = "Failed to load users.";
+          usersList.innerHTML = '<div class="list-item">Failed to load users.</div>';
           return;
         }
         const users = await response.json();
-        renderUsers(users);
+        if (!users.length) {
+          usersList.innerHTML = '<div class="list-item">No users found yet.</div>';
+          return;
+        }
+        usersList.innerHTML = users
+          .map((user) => `<div class="list-item"><span>${user.username}</span><span class="badge">${user.role}</span></div>`)
+          .join("");
       }
 
       async function fetchState() {
@@ -1048,42 +1026,6 @@
         playlistImportFile.click();
       });
 
-      usersList.addEventListener("click", async (event) => {
-        const button = event.target.closest("button");
-        if (!button) return;
-        const wrapper = button.closest("[data-user-id]");
-        const userId = wrapper?.dataset.userId;
-        const username = wrapper?.dataset.username;
-        if (!userId) return;
-        if (wrapper?.dataset.isAdmin === "1") {
-          return;
-        }
-        if (button.dataset.action === "user-rename") {
-          const next = window.prompt("New username", username || "");
-          if (!next || next.trim() === username) return;
-          await fetch(`/api/users/${userId}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username: next.trim() })
-          });
-          fetchUsers();
-        }
-        if (button.dataset.action === "user-password") {
-          const nextPassword = window.prompt(`New password for ${username}`);
-          if (!nextPassword) return;
-          await fetch(`/api/users/${userId}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password: nextPassword })
-          });
-          fetchUsers();
-        }
-        if (button.dataset.action === "user-delete") {
-          if (!window.confirm(`Delete user ${username}?`)) return;
-          await fetch(`/api/users/${userId}`, { method: "DELETE" });
-          fetchUsers();
-        }
-      });
 
       playlistImportFile.addEventListener("change", async () => {
         const file = playlistImportFile.files?.[0];
@@ -1233,24 +1175,6 @@
       });
 
 
-      userCreateForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        const username = userCreateForm["new-username"].value.trim();
-        const password = userCreateForm["new-password"].value;
-        const response = await fetch("/api/users", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password })
-        });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          usersStatus.textContent = payload.error || "Failed to create user.";
-          return;
-        }
-        userCreateForm.reset();
-        usersStatus.textContent = "User created.";
-        fetchUsers();
-      });
 
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
       ws.addEventListener("message", (event) => {

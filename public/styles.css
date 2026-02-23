@@ -908,3 +908,32 @@ body.listen-page #listen-track {
     scroll-behavior: auto !important;
   }
 }
+
+
+#current-user-pill {
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.twitch-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.62rem 1rem;
+  border-radius: 0.7rem;
+  border: 1px solid #7f5af0;
+  background: linear-gradient(180deg, #9147ff, #772ce8);
+  color: #ffffff;
+  font-weight: 700;
+  text-decoration: none;
+  box-shadow: 0 8px 18px rgba(145, 71, 255, 0.35);
+}
+
+.twitch-button:hover {
+  filter: brightness(1.06);
+}
+
+.twitch-button-compact {
+  font-size: 0.9rem;
+  padding: 0.5rem 0.8rem;
+}
