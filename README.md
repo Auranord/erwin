@@ -1,109 +1,89 @@
 # Erwin
 
-Erwin is a self-hosted, Dockerized web application that serves as a long-term Twitch chatbot platform. The MVP ships with a music player, playlist curation tools, and a chat-driven voting system.
+Erwin is a self-hosted Twitch-integrated music dashboard with playlist management, queue control, and chat-driven voting.
 
-## MVP scope
+## Authentication model
 
-- Curated playlists stored on the server with create/edit/delete flows.
-- Tracks stored as YouTube IDs/URLs, with metadata fetched asynchronously and audio downloaded to MP3 for playback.
-- Automated vote rounds in Twitch chat to pick the next song.
-- Custom Twitch chat commands (`!dc`, aliases, editable responses) from a dedicated dashboard tab.
-- Web-based music player with continuous playback and queue.
-- Authentication required for dashboard and listening pages.
-- OBS-friendly player view for separating music audio from VOD audio.
+Erwin now uses **Twitch OAuth only** for dashboard access.
 
-See the detailed product framing and acceptance criteria in [docs/mvp-spec.md](docs/mvp-spec.md).
+- Login flow: `GET /auth/twitch`
+- Admin broadcaster connect flow: `GET /auth/twitch/channel`
+- Shared callback: `GET /auth/twitch/callback`
 
-For a wide architecture overview and a delivery plan, see [docs/architecture-plan.md](docs/architecture-plan.md).
+OAuth callback errors are redirected to `/login?error=<code>`.
 
-For deployment guidance on TrueNAS SCALE, including update workflows, see
-[docs/deployment-truenas.md](docs/deployment-truenas.md).
+## Environment variables
 
-## Architecture (planned)
+### Required for Twitch login
 
-- **Backend**: Orchestrator + Twitch bot (IRC), REST + WebSocket APIs.
-- **Frontend**: SPA dashboard and dedicated player views.
-- **Database**: Postgres (SQLite acceptable for earliest MVP).
+- `PUBLIC_BASE_URL` (recommended; used for callback URL resolution)
+- `TWITCH_CLIENT_ID`
+- `TWITCH_CLIENT_SECRET`
+- `TWITCH_CHANNEL`
 
-## Views
+### Optional Twitch auth/role variables
 
-- `/player/stream` (OBS browser source, audio on)
-- `/player/listen` (team listening, audio on)
-- `/dashboard` (tabs, audio off by default)
+- `TWITCH_REDIRECT_URI` (explicit callback URI override)
+- `TWITCH_ADMINS` (comma-separated Twitch logins and/or IDs)
+- `TWITCH_CHANNEL_MEMBERS` (comma-separated Twitch logins and/or IDs)
+- `TWITCH_CHANNEL_MEMBERS_ROLE` (default: `channel_member`)
 
-## OBS audio split (recommended MVP approach)
+### Existing Twitch bot variables
 
-1. Add the Erwin `/player/stream` page as an OBS **Browser Source**.
-2. Enable **Control audio via OBS** on that source.
-3. In **Advanced Audio Properties**, route the browser source to Track 1 only (live), and exclude it from the VOD track.
+- `TWITCH_BOT_USERNAME`
+- `TWITCH_OAUTH_TOKEN`
+- `TWITCH_REFRESH_TOKEN`
+- `TWITCH_IRC_HOST`
+- `TWITCH_COMMAND_PREFIX`
 
-## Next steps
+### App/runtime variables
 
-- Implement the MVP data model and API surface described in the spec.
-- Add Docker Compose, `.env.example`, and persistent volumes.
-- Build the tabbed dashboard and the stream player view.
+- `SESSION_SECRET`
+- `DB_URL`
+- `LOG_LEVEL`
+- `PORT`
 
-## Quickstart (local)
+### yt-dlp / download variables
 
-1. Use Node.js LTS (20 or 22). This project depends on native SQLite bindings.
-2. Copy `.env.example` to `.env` and adjust credentials.
-3. Install `yt-dlp` and `ffmpeg` so the download worker can fetch and transcode audio (both must be in your `PATH`).
-4. Install dependencies and start the server:
-   ```bash
-   npm install
-   npm start
-   ```
-5. Visit `http://localhost:3000/login` and use the seeded admin credentials.
+- `ERWIN_YTDL_COOKIE_FILE`
+- `ERWIN_YTDL_COOKIE`
+- `ERWIN_YTDL_JS_RUNTIME`
+- `ERWIN_YTDL_REMOTE_COMPONENTS`
+- `ERWIN_YTDL_FFMPEG_LOCATION`
+- `ERWIN_DOWNLOAD_CONCURRENCY`
 
-## Docker (local)
+### Audio retention variables
+
+- `ERWIN_AUDIO_RETENTION_DAYS`
+- `ERWIN_AUDIO_RETENTION_MAX_GB`
+
+## Roles
+
+Resolved in this order:
+
+1. `admin` (from `TWITCH_ADMINS`)
+2. `channel_member` (from `TWITCH_CHANNEL_MEMBERS`)
+3. `mod` (Twitch moderator lookup)
+4. `vip` (Twitch VIP lookup)
+5. `viewer` (default)
+
+`admin` has full access. `channel_member` has broad dashboard access. `mod`/`vip`/`viewer` are currently routed to `/dashboard/public`.
+
+## OAuth callback troubleshooting (`/login?error=...`)
+
+- `invalid_oauth_state`: session/state mismatch; restart login from `/login`.
+- `missing_oauth_code`: Twitch callback missing `code`.
+- `token_exchange_failed`: token exchange with Twitch failed.
+- `twitch_user_fetch_failed`: Twitch user lookup failed.
+- `channel_scope_missing`: broadcaster connect flow missing required scopes.
+- `db_schema_compat_error`: DB schema missing Twitch-compatible user columns.
+- `twitch_login_failed`: fallback generic login failure.
+
+## Local quickstart
 
 ```bash
-cp .env.example .env
-docker compose up --build
+npm install
+npm start
 ```
 
-Docker Compose reads `.env` for variable substitution in `docker-compose.yml`.
-
-### Docker watch (optional)
-
-Use Compose file watch to sync changes without opening another terminal:
-
-```bash
-docker compose watch
-```
-
-## Logs
-
-- Docker: `docker compose logs -f erwin`
-- Set `LOG_LEVEL=debug` for verbose output.
-
-## YouTube download troubleshooting
-
-Downloads use `yt-dlp`. Some videos require authenticated requests to download. If downloads fail with 403 errors, provide cookies:
-
-1. Export your YouTube cookies to a Netscape-format text file (recommended).
-   - JSON exports are also accepted and will be converted automatically at runtime.
-2. Set either:
-   - `ERWIN_YTDL_COOKIE_FILE=/app/data/youtube.cookie` (recommended with Docker volume mount)
-   - or `ERWIN_YTDL_COOKIE=YOUR_COOKIE_HEADER_VALUE`
-
-If you see errors about a missing JavaScript runtime or `ffprobe`/`ffmpeg`, ensure `node` and `ffmpeg` are installed and available. You can override detection with:
-
-- `ERWIN_YTDL_JS_RUNTIME=node:/path/to/node`
-- `ERWIN_YTDL_FFMPEG_LOCATION=/path/to/ffmpeg`
-
-Recent YouTube downloads may require yt-dlp's remote component solver. Erwin enables it by default. You can override with:
-
-- `ERWIN_YTDL_REMOTE_COMPONENTS=ejs:github` (default)
-- Set `ERWIN_YTDL_REMOTE_COMPONENTS=` to disable remote components.
-
-If you see errors like `Error solving challenge requests`, `Signature solving failed`, or `Only images are available`, try the following:
-
-1. Update to the latest `yt-dlp` release (Docker users should rebuild the image).
-2. Ensure `node` is available (Node 18+ recommended), or set `ERWIN_YTDL_JS_RUNTIME=node:/path/to/node`.
-3. Clear the `yt-dlp` cache: `yt-dlp --rm-cache-dir`.
-4. Re-enable remote components explicitly: `ERWIN_YTDL_REMOTE_COMPONENTS=ejs:github`.
-
-## License
-
-TBD.
+Open `http://localhost:3000/login` and click **Login with Twitch**.

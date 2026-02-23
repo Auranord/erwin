@@ -1023,3 +1023,33 @@ body.listen-page #listen-track {
     scroll-behavior: auto !important;
   }
 }
+
+.twitch-login-button,
+.twitch-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 0.65rem;
+  border: 1px solid #5f3dc4;
+  background: linear-gradient(180deg, #9147ff, #772ce8);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(55, 17, 119, 0.35);
+}
+
+.twitch-login-button:hover,
+.twitch-action-button:hover {
+  filter: brightness(1.06);
+}
+
+.twitch-icon {
+  font-size: 1.05rem;
+}
+
+.login-error {
+  color: #fecaca;
+}

@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS users (
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL,
+      twitch_id TEXT UNIQUE,
+      display_name TEXT,
       created_at TEXT NOT NULL
     );
 
