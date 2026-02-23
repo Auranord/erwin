@@ -36,6 +36,7 @@ const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID || "";
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "";
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "";
+const TWITCH_REDIRECT_URI = process.env.TWITCH_REDIRECT_URI || "";
 const TWITCH_CHANNEL_MEMBERS_ROLE = process.env.TWITCH_CHANNEL_MEMBERS_ROLE || "channel_member";
 const TWITCH_ADMINS = process.env.TWITCH_ADMINS || "";
 const TWITCH_CHANNEL_MEMBERS = process.env.TWITCH_CHANNEL_MEMBERS || "";
@@ -1080,16 +1081,22 @@ function setSettingValue(key, value) {
   );
 }
 
-function buildTwitchRedirectUri() {
-  if (!PUBLIC_BASE_URL) {
-    throw new Error("PUBLIC_BASE_URL is required for Twitch OAuth");
+function buildTwitchRedirectUri(req = null) {
+  if (TWITCH_REDIRECT_URI) {
+    return TWITCH_REDIRECT_URI.trim();
   }
-  return `${PUBLIC_BASE_URL.replace(/\/$/, "")}/auth/twitch/callback`;
+  if (PUBLIC_BASE_URL) {
+    return `${PUBLIC_BASE_URL.replace(/\/$/, "")}/auth/twitch/callback`;
+  }
+  if (!req) {
+    throw new Error("PUBLIC_BASE_URL or TWITCH_REDIRECT_URI is required for Twitch OAuth");
+  }
+  return `${req.protocol}://${req.get("host")}/auth/twitch/callback`;
 }
 
 function requireTwitchOAuthConfig() {
-  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET || !PUBLIC_BASE_URL) {
-    throw new Error("TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, and PUBLIC_BASE_URL are required");
+  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+    throw new Error("TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET are required");
   }
 }
 
@@ -1237,9 +1244,9 @@ async function resolveTwitchRoleForUser(twitchUserId, twitchLogin) {
   return fallbackRole;
 }
 
-function createOAuthState(req, purpose) {
+function createOAuthState(req, purpose, redirectUri) {
   const nonce = randomBytes(24).toString("hex");
-  req.session.oauthState = { nonce, purpose };
+  req.session.oauthState = { nonce, purpose, redirectUri };
   return nonce;
 }
 
@@ -2069,11 +2076,12 @@ app.get("/api/health", (req, res) => {
 app.get("/auth/twitch", (req, res) => {
   try {
     requireTwitchOAuthConfig();
-    const state = createOAuthState(req, "login");
+    const redirectUri = buildTwitchRedirectUri(req);
+    const state = createOAuthState(req, "login", redirectUri);
     const authorizeUrl = new URL("https://id.twitch.tv/oauth2/authorize");
     authorizeUrl.searchParams.set("response_type", "code");
     authorizeUrl.searchParams.set("client_id", TWITCH_CLIENT_ID);
-    authorizeUrl.searchParams.set("redirect_uri", buildTwitchRedirectUri());
+    authorizeUrl.searchParams.set("redirect_uri", redirectUri);
     authorizeUrl.searchParams.set("state", state);
     authorizeUrl.searchParams.set("scope", "");
     return res.redirect(authorizeUrl.toString());
@@ -2088,11 +2096,12 @@ app.get("/auth/twitch", (req, res) => {
 app.get("/auth/twitch/channel", requireAuth, requireAdmin, (req, res) => {
   try {
     requireTwitchOAuthConfig();
-    const state = createOAuthState(req, "channel");
+    const redirectUri = buildTwitchRedirectUri(req);
+    const state = createOAuthState(req, "channel", redirectUri);
     const authorizeUrl = new URL("https://id.twitch.tv/oauth2/authorize");
     authorizeUrl.searchParams.set("response_type", "code");
     authorizeUrl.searchParams.set("client_id", TWITCH_CLIENT_ID);
-    authorizeUrl.searchParams.set("redirect_uri", buildTwitchRedirectUri());
+    authorizeUrl.searchParams.set("redirect_uri", redirectUri);
     authorizeUrl.searchParams.set("state", state);
     authorizeUrl.searchParams.set("scope", "moderation:read channel:read:vips");
     return res.redirect(authorizeUrl.toString());
@@ -2108,10 +2117,10 @@ app.get("/auth/twitch/callback", async (req, res) => {
   const { code, state } = req.query || {};
   const oauthState = consumeOAuthState(req, state);
   if (!oauthState) {
-    return res.status(400).send("Invalid OAuth state");
+    return res.redirect(`/login?error=${encodeURIComponent("invalid_oauth_state")}`);
   }
   if (!code) {
-    return res.status(400).send("Missing OAuth code");
+    return res.redirect(`/login?error=${encodeURIComponent("missing_oauth_code")}`);
   }
 
   try {
@@ -2121,7 +2130,7 @@ app.get("/auth/twitch/callback", async (req, res) => {
       client_secret: TWITCH_CLIENT_SECRET,
       code,
       grant_type: "authorization_code",
-      redirect_uri: buildTwitchRedirectUri()
+      redirect_uri: oauthState.redirectUri || buildTwitchRedirectUri(req)
     });
 
     const tokenValidation = await validateTwitchToken(tokenData.access_token);
@@ -2205,7 +2214,7 @@ app.get("/auth/twitch/callback", async (req, res) => {
     log("error", "twitch oauth callback failed", {
       error: String(error?.message || error)
     });
-    return res.status(500).send("Twitch login failed");
+    return res.redirect(`/login?error=${encodeURIComponent("twitch_login_failed")}`);
   }
 });
 

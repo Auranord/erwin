@@ -62,6 +62,7 @@ Erwin uses Twitch-only login. Current role behavior:
    ```
 5. Visit `http://localhost:3000/login` and sign in with Twitch.
 6. After first admin login, use **Settings → Connect Channel** to authorize broadcaster scopes (`moderation:read`, `channel:read:vips`).
+7. If Twitch callback exchange fails, set `TWITCH_REDIRECT_URI` explicitly to your exact callback URL (for example `https://your-domain/auth/twitch/callback`).
 
 ## Docker (local)
 
@@ -79,6 +80,7 @@ Required Twitch OAuth variables:
 - `TWITCH_CLIENT_ID`
 - `TWITCH_CLIENT_SECRET`
 - `TWITCH_CHANNEL`
+- `TWITCH_REDIRECT_URI` (optional explicit callback override)
 
 Role configuration variables:
 
