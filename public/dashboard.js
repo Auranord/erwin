@@ -66,6 +66,21 @@ const nowPlaying = document.getElementById("now-playing");
       let customCommandsCache = [];
       let editingCustomCommandId = null;
       const chatMessages = [];
+      const LIBRARY_COLUMNS = [
+        { key: "name", label: "Name", sortable: true, defaultVisible: true },
+        { key: "youtube", label: "YouTube", sortable: true, defaultVisible: true },
+        { key: "duration", label: "Duration", sortable: true, defaultVisible: true },
+        { key: "volume", label: "Volume", sortable: true, defaultVisible: true },
+        { key: "intro", label: "Intro", sortable: true, defaultVisible: true },
+        { key: "outro", label: "Outro", sortable: true, defaultVisible: true },
+        { key: "status", label: "Status", sortable: true, defaultVisible: true },
+        { key: "addedBy", label: "Added By", sortable: true, defaultVisible: true },
+        { key: "addedAt", label: "Added", sortable: true, defaultVisible: true }
+      ];
+      const DEFAULT_LIBRARY_COLUMNS = LIBRARY_COLUMNS.filter((column) => column.defaultVisible).map((column) => column.key);
+      let visibleLibraryColumns = new Set(DEFAULT_LIBRARY_COLUMNS);
+      let librarySort = { key: "name", direction: "asc" };
+      let playlistPickTrackId = null;
       const playlistImportFile = document.getElementById("playlist-import-file");
       const importPlaylistJsonButton = document.getElementById("import-playlist-json");
       const exportLibraryJsonButton = document.getElementById("export-library-json");
@@ -74,7 +89,15 @@ const nowPlaying = document.getElementById("now-playing");
       const librarySearch = document.getElementById("library-search");
       const libraryTagsInclude = document.getElementById("library-tags-include");
       const libraryTagsExclude = document.getElementById("library-tags-exclude");
-      const libraryAddPlaylist = document.getElementById("library-add-playlist");
+      const libraryColumnsButton = document.getElementById("library-columns-button");
+      const libraryColumnsModal = document.getElementById("library-columns-modal");
+      const libraryColumnsOptions = document.getElementById("library-columns-options");
+      const libraryColumnsSave = document.getElementById("library-columns-save");
+      const libraryColumnsCancel = document.getElementById("library-columns-cancel");
+      const playlistPickModal = document.getElementById("playlist-pick-modal");
+      const playlistPickOptions = document.getElementById("playlist-pick-options");
+      const playlistPickSave = document.getElementById("playlist-pick-save");
+      const playlistPickCancel = document.getElementById("playlist-pick-cancel");
       const ICON_FALLBACKS = {
         play: "⯈",
         pause: "⏸",
@@ -89,7 +112,10 @@ const nowPlaying = document.getElementById("now-playing");
         disable: "⛔",
         enable: "✹",
         delete: "☠",
-        download: "⤓"
+        download: "⤓",
+        tags: "🏷",
+        audio: "🎚",
+        playlistAdd: "☑"
       };
       const availableIcons = new Set();
 
@@ -475,7 +501,6 @@ const nowPlaying = document.getElementById("now-playing");
         playlistsCache = await response.json();
         playlistsEl.innerHTML = "";
         trackPlaylist.innerHTML = '<option value="">Library only</option>';
-        libraryAddPlaylist.innerHTML = '<option value="">Select playlist...</option>';
         if (playlistsCache.length === 0) {
           playlistsEl.innerHTML = '<div class="list-item">No playlists yet.</div>';
           selectedPlaylistId = null;
@@ -506,10 +531,6 @@ const nowPlaying = document.getElementById("now-playing");
           trackOption.textContent = playlist.name;
           trackPlaylist.appendChild(trackOption);
 
-          const addOption = document.createElement("option");
-          addOption.value = playlist.id;
-          addOption.textContent = playlist.name;
-          libraryAddPlaylist.appendChild(addOption);
         }
         const selectedExists = selectedPlaylistId
           ? playlistsCache.some((playlist) => playlist.id === selectedPlaylistId)
@@ -644,6 +665,58 @@ const nowPlaying = document.getElementById("now-playing");
           .filter(Boolean);
       }
 
+      function formatDuration(totalSeconds) {
+        const value = Number(totalSeconds);
+        if (!Number.isFinite(value) || value <= 0) return "--";
+        const hours = Math.floor(value / 3600);
+        const minutes = Math.floor((value % 3600) / 60);
+        const seconds = Math.floor(value % 60);
+        if (hours > 0) {
+          return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+        }
+        return `${minutes}:${String(seconds).padStart(2, "0")}`;
+      }
+
+      function formatDateTime(value) {
+        if (!value) return "--";
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) return "--";
+        return parsed.toLocaleString();
+      }
+
+      function getSortValue(track, key) {
+        if (key === "name") return String(track.title || track.youtube_id || "").toLowerCase();
+        if (key === "youtube") return String(track.youtube_id || "").toLowerCase();
+        if (key === "duration") return Number(track.duration_sec || 0);
+        if (key === "volume") return Number(track.volume_adjust_db || 0);
+        if (key === "intro") return Number(track.intro_sec || 0);
+        if (key === "outro") return Number(track.outro_sec || 0);
+        if (key === "status") return String(track.download_status || "").toLowerCase();
+        if (key === "addedBy") return String(track.added_by_username || "").toLowerCase();
+        if (key === "addedAt") return String(track.created_at || "").toLowerCase();
+        return "";
+      }
+
+      function sortLibraryTracks(tracks) {
+        const direction = librarySort.direction === "desc" ? -1 : 1;
+        return [...tracks].sort((a, b) => {
+          const left = getSortValue(a, librarySort.key);
+          const right = getSortValue(b, librarySort.key);
+          if (left < right) return -1 * direction;
+          if (left > right) return 1 * direction;
+          return 0;
+        });
+      }
+
+      function renderLibraryColumnsOptions() {
+        libraryColumnsOptions.innerHTML = LIBRARY_COLUMNS.map((column) => `
+          <label class="card-toggle">
+            <input type="checkbox" data-column-key="${column.key}" ${visibleLibraryColumns.has(column.key) ? "checked" : ""} />
+            ${column.label}
+          </label>
+        `).join("");
+      }
+
       function renderLibraryTracks() {
         if (!libraryTracksCache.length) {
           libraryTracksEl.innerHTML = '<div class="list-item">No tracks in library yet.</div>';
@@ -664,28 +737,47 @@ const nowPlaying = document.getElementById("now-playing");
           libraryTracksEl.innerHTML = '<div class="list-item">No library tracks match the current filters.</div>';
           return;
         }
-        libraryTracksEl.innerHTML = filtered
-          .map((track) => {
-            const title = track.title || track.youtube_id;
-            const tags = formatTagPills(track.tags || []);
-            const downloadState = track.download_status || "unknown";
-            return `<div class="list-item" data-library-track-id="${track.id}" data-track-title="${track.title || ""}" >
-              <div style="flex:1;">
-                <div>${title} <span class="badge">${downloadState}</span></div>
-                <div class="notice">vol ${Number(track.volume_adjust_db || 0).toFixed(1)} dB · intro ${Number(track.intro_sec || 0).toFixed(1)}s · outro ${Number(track.outro_sec || 0).toFixed(1)}s ${tags}</div>
-              </div>
-              <div class="actions">
-                <button class="secondary" data-action="library-rename">Rename</button>
-                <button class="secondary" data-action="library-tags">Tags</button>
-                <button class="secondary" data-action="library-audio">Audio</button>
-                <button class="secondary" data-action="library-add-playlist">Add to playlist</button>
-                <button class="ghost" data-action="library-delete">Delete</button>
-              </div>
-            </div>`;
+
+        const sorted = sortLibraryTracks(filtered);
+        const headers = LIBRARY_COLUMNS.filter((column) => visibleLibraryColumns.has(column.key));
+        const headerHtml = headers
+          .map((column) => {
+            const active = librarySort.key === column.key;
+            const arrow = active ? (librarySort.direction === "asc" ? " ▲" : " ▼") : "";
+            return `<th><button class="table-sort" data-action="library-sort" data-sort-key="${column.key}">${column.label}${arrow}</button></th>`;
           })
           .join("");
-      }
+        const rowsHtml = sorted
+          .map((track) => {
+            const status = track.download_status || "unknown";
+            const tags = formatTagPills(track.tags || []);
+            const cells = [];
+            if (visibleLibraryColumns.has("name")) {
+              const isNew = status === "pending" || status === "downloading";
+              cells.push(`<td><div class="table-title">${track.title || track.youtube_id} ${isNew ? '<span class="badge">new</span>' : ''}</div><div class="notice">${tags}</div></td>`);
+            }
+            if (visibleLibraryColumns.has("youtube")) cells.push(`<td><a href="${track.url}" target="_blank" rel="noopener noreferrer">${track.youtube_id}</a></td>`);
+            if (visibleLibraryColumns.has("duration")) cells.push(`<td>${formatDuration(track.duration_sec)}</td>`);
+            if (visibleLibraryColumns.has("volume")) cells.push(`<td>${Number(track.volume_adjust_db || 0).toFixed(1)} dB</td>`);
+            if (visibleLibraryColumns.has("intro")) cells.push(`<td>${Number(track.intro_sec || 0).toFixed(1)}s</td>`);
+            if (visibleLibraryColumns.has("outro")) cells.push(`<td>${Number(track.outro_sec || 0).toFixed(1)}s</td>`);
+            if (visibleLibraryColumns.has("status")) cells.push(`<td><span class="badge">${status}</span></td>`);
+            if (visibleLibraryColumns.has("addedBy")) cells.push(`<td>${track.added_by_username || "admin"}</td>`);
+            if (visibleLibraryColumns.has("addedAt")) cells.push(`<td>${formatDateTime(track.created_at)}</td>`);
+            return `<tr data-library-track-id="${track.id}" data-track-title="${track.title || ""}">${cells.join("")}
+              <td class="table-actions">
+                <button class="secondary icon-only" data-action="library-rename" title="Rename" aria-label="Rename">${iconHtml("rename")}</button>
+                <button class="secondary icon-only" data-action="library-tags" title="Tags" aria-label="Edit tags">${iconHtml("tags")}</button>
+                <button class="secondary icon-only" data-action="library-audio" title="Audio settings" aria-label="Audio settings">${iconHtml("audio")}</button>
+                <button class="secondary icon-only" data-action="library-add-playlist" title="Add to playlists" aria-label="Add to playlists">${iconHtml("playlistAdd")}</button>
+                <button class="ghost icon-only" data-action="library-delete" title="Delete" aria-label="Delete">${iconHtml("delete")}</button>
+              </td>
+            </tr>`;
+          })
+          .join("");
 
+        libraryTracksEl.innerHTML = `<table class="library-table"><thead><tr>${headerHtml}<th>Actions</th></tr></thead><tbody>${rowsHtml}</tbody></table>`;
+      }
 async function fetchDownloads() {
         const response = await fetch("/api/downloads");
         if (!response.ok) return;
@@ -1045,11 +1137,16 @@ async function fetchDownloads() {
         const playlistId = trackForm["track-playlist"].value;
         const url = trackForm["track-url"].value;
         if (!url) return;
-        await fetch("/api/library/tracks", {
+        const response = await fetch("/api/library/tracks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ playlistId: playlistId || undefined, url: url.trim() })
         });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          window.alert(payload.error || "Unable to queue download.");
+          return;
+        }
         trackForm.reset();
         fetchPlaylists();
         fetchDownloads();
@@ -1088,16 +1185,15 @@ async function fetchDownloads() {
           await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ volumeAdjustDb: Number(volumeAdjustDb), introSec: Number(introSec), outroSec: Number(outroSec) }) });
         }
         if (action === "library-add-playlist") {
-          const playlistId = libraryAddPlaylist.value;
-          if (!playlistId) {
-            window.alert("Select a playlist first in the library controls.");
-          } else {
-            await fetch(`/api/playlists/${playlistId}/tracks`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ trackId })
-            });
-          }
+          playlistPickTrackId = trackId;
+          playlistPickOptions.innerHTML = playlistsCache.map((playlist) => `
+            <label class="card-toggle">
+              <input type="checkbox" value="${playlist.id}" />
+              ${playlist.name}
+            </label>
+          `).join("");
+          playlistPickModal.classList.remove("hidden");
+          return;
         }
         if (action === "library-delete") {
           if (window.confirm("Delete track from library and all playlists?")) {
@@ -1112,6 +1208,59 @@ async function fetchDownloads() {
         input.addEventListener("input", () => {
           renderLibraryTracks();
         });
+      });
+
+
+      libraryTracksEl.addEventListener("click", (event) => {
+        const sortButton = event.target.closest("[data-action='library-sort']");
+        if (!sortButton) return;
+        const sortKey = sortButton.dataset.sortKey;
+        if (!sortKey) return;
+        if (librarySort.key === sortKey) {
+          librarySort.direction = librarySort.direction === "asc" ? "desc" : "asc";
+        } else {
+          librarySort.key = sortKey;
+          librarySort.direction = "asc";
+        }
+        renderLibraryTracks();
+      });
+
+      libraryColumnsButton?.addEventListener("click", () => {
+        renderLibraryColumnsOptions();
+        libraryColumnsModal.classList.remove("hidden");
+      });
+
+      libraryColumnsCancel?.addEventListener("click", () => {
+        libraryColumnsModal.classList.add("hidden");
+      });
+
+      libraryColumnsSave?.addEventListener("click", () => {
+        const checked = Array.from(libraryColumnsOptions.querySelectorAll("input[type='checkbox']:checked"))
+          .map((input) => input.dataset.columnKey)
+          .filter(Boolean);
+        visibleLibraryColumns = new Set(checked.length ? checked : DEFAULT_LIBRARY_COLUMNS);
+        libraryColumnsModal.classList.add("hidden");
+        renderLibraryTracks();
+      });
+
+      playlistPickCancel?.addEventListener("click", () => {
+        playlistPickTrackId = null;
+        playlistPickModal.classList.add("hidden");
+      });
+
+      playlistPickSave?.addEventListener("click", async () => {
+        if (!playlistPickTrackId) return;
+        const selectedIds = Array.from(playlistPickOptions.querySelectorAll("input[type='checkbox']:checked")).map((input) => input.value);
+        for (const playlistId of selectedIds) {
+          await fetch(`/api/playlists/${playlistId}/tracks`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trackId: playlistPickTrackId })
+          });
+        }
+        playlistPickTrackId = null;
+        playlistPickModal.classList.add("hidden");
+        fetchPlaylists();
       });
 
       exportLibraryJsonButton.addEventListener("click", () => {

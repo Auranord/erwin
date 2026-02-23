@@ -124,56 +124,64 @@
       </section>
 
       <section class="tab-panel" data-tab-panel="track-manager">
-        <div class="grid track-manager-grid">
+        <div class="grid track-manager-grid vertical-stack">
           <div class="card">
-            <h2>Track Management</h2>
+            <h2>Download Tracks</h2>
+            <p class="notice">Add a single video URL/ID or a full playlist link. Playlist links queue every video found.</p>
             <form id="track-form" class="grid" method="post">
               <div>
-                <label for="track-url">YouTube Track URL</label>
-                <input id="track-url" name="track-url" placeholder="https://youtu.be/..." />
+                <label for="track-url">YouTube video URL, playlist URL, or video ID</label>
+                <input id="track-url" name="track-url" placeholder="https://youtu.be/... or https://youtube.com/playlist?..." />
               </div>
               <div>
-                <label for="track-playlist">Optional playlist to attach after download</label>
+                <label for="track-playlist">Optional playlist to attach downloaded tracks</label>
                 <select id="track-playlist" name="track-playlist">
                   <option value="">Library only</option>
                 </select>
               </div>
-              <button type="submit">Add to Library</button>
+              <button type="submit">Queue Download</button>
             </form>
-            <div class="actions" style="margin-top: 12px;">
-              <button id="export-library-json" class="secondary" type="button">Export Library JSON</button>
-              <button id="import-library-json" class="secondary" type="button">Import Library JSON</button>
-            </div>
-            <div class="grid" style="margin-top: 12px;">
-              <div>
-                <label for="library-search">Search title</label>
-                <input id="library-search" type="search" placeholder="Track title..." />
-              </div>
-              <div>
-                <label for="library-tags-include">Include tags (comma separated)</label>
-                <input id="library-tags-include" type="text" placeholder="vocals, acoustic" />
-              </div>
-              <div>
-                <label for="library-tags-exclude">Exclude tags (comma separated)</label>
-                <input id="library-tags-exclude" type="text" placeholder="instrumental" />
-              </div>
-              <div>
-                <label for="library-add-playlist">Add selected track to playlist</label>
-                <select id="library-add-playlist">
-                  <option value="">Select playlist...</option>
-                </select>
-              </div>
-            </div>
-            <div class="section-title" style="margin-top: 16px;">Library Tracks</div>
-            <div id="library-tracks" class="list">
-              <div class="list-item">No tracks in library yet.</div>
-            </div>
-            <div class="section-title" style="margin-top: 16px; display: flex; align-items: center; justify-content: space-between;">
+            <div class="section-title section-title-split" style="margin-top: 16px;">
               <span>Download Queue</span>
               <button id="clear-downloads" class="secondary" type="button">Clear Completed</button>
             </div>
             <div id="download-queue" class="list">
               <div class="list-item">No downloads yet.</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Library Management</h2>
+            <p class="notice">Import or export metadata for your existing library tracks.</p>
+            <div class="grid">
+              <button id="export-library-json" class="secondary" type="button">Export Library JSON</button>
+              <button id="import-library-json" class="secondary" type="button">Import Library JSON</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="track-editor-header compact-header">
+              <h2>Library</h2>
+              <div class="actions">
+                <button id="library-columns-button" class="secondary" type="button">Columns</button>
+              </div>
+            </div>
+            <div class="library-filter-grid">
+              <div>
+                <label for="library-search">Search</label>
+                <input id="library-search" type="search" placeholder="Name / YouTube ID" />
+              </div>
+              <div>
+                <label for="library-tags-include">Include tags</label>
+                <input id="library-tags-include" type="text" placeholder="vocals, acoustic" />
+              </div>
+              <div>
+                <label for="library-tags-exclude">Exclude tags</label>
+                <input id="library-tags-exclude" type="text" placeholder="instrumental" />
+              </div>
+            </div>
+            <div id="library-tracks" class="library-table-wrap">
+              <div class="list-item">No tracks in library yet.</div>
             </div>
           </div>
         </div>
@@ -334,6 +342,31 @@
         <div class="modal-actions">
           <button id="rename-cancel" class="secondary" type="button">Cancel</button>
           <button id="rename-save" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+
+
+    <div id="library-columns-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="library-columns-title">
+      <div class="modal-card">
+        <h3 id="library-columns-title">Choose Library Columns</h3>
+        <p class="notice">Toggle which columns are visible in the library table.</p>
+        <div id="library-columns-options" class="grid"></div>
+        <div class="modal-actions">
+          <button id="library-columns-cancel" class="secondary" type="button">Cancel</button>
+          <button id="library-columns-save" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="playlist-pick-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="playlist-pick-title">
+      <div class="modal-card">
+        <h3 id="playlist-pick-title">Add Track to Playlists</h3>
+        <p class="notice">Choose one or more playlists for this track.</p>
+        <div id="playlist-pick-options" class="grid"></div>
+        <div class="modal-actions">
+          <button id="playlist-pick-cancel" class="secondary" type="button">Cancel</button>
+          <button id="playlist-pick-save" type="button">Add</button>
         </div>
       </div>
     </div>
