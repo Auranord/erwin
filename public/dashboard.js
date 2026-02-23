@@ -777,7 +777,7 @@ const nowPlaying = document.getElementById("now-playing");
             const tags = formatTagPills(track.tags || []);
             const cells = [];
             if (visibleLibraryColumns.has("name")) {
-              const isNew = status === "pending" || status === "downloading";
+              const isNew = (track.tags || []).some((tag) => String(tag).trim().toLowerCase() === "new");
               cells.push(`<td><div class="table-title">${track.title || track.youtube_id} ${isNew ? '<span class="badge">new</span>' : ''}</div><div class="notice">${tags}</div></td>`);
             }
             if (visibleLibraryColumns.has("youtube")) cells.push(`<td><a href="${track.url}" target="_blank" rel="noopener noreferrer">${track.youtube_id}</a></td>`);

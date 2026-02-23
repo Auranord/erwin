@@ -804,7 +804,7 @@ async function ingestLibrarySourceUrls({ urls = [], playlistId = null, addedByUs
   }
 
   const insertTrack = db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, added_by_user_id, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, added_by_user_id, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, 'new', 0, ?, ?)"
   );
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
@@ -823,9 +823,9 @@ async function ingestLibrarySourceUrls({ urls = [], playlistId = null, addedByUs
       insertTrack.run(trackId, youtubeId, url, addedByUserId, now);
     }
     if (playlistId) {
-      enqueueDownload(playlistId, trackId, { attachToPlaylist: true });
+      enqueueDownload(playlistId, trackId, { attachToPlaylist: true, addedByUserId });
     } else {
-      enqueueDownload(LIBRARY_QUEUE_ID, trackId, { attachToPlaylist: false });
+      enqueueDownload(LIBRARY_QUEUE_ID, trackId, { attachToPlaylist: false, addedByUserId });
     }
     imported.push({ id: trackId, youtubeId, url, reused: Boolean(existing) });
   }
@@ -869,6 +869,7 @@ function addTrackToPlaylist(playlistId, trackId) {
 
 function enqueueDownload(playlistId, trackId, options = {}) {
   const attachToPlaylist = options.attachToPlaylist !== false;
+  const addedByUserId = options.addedByUserId || null;
   const targetPlaylistId = playlistId || LIBRARY_QUEUE_ID;
   const track = db
     .prepare("SELECT download_status FROM tracks WHERE id = ?")
@@ -893,6 +894,9 @@ function enqueueDownload(playlistId, trackId, options = {}) {
     db.prepare(
       "UPDATE tracks SET download_status = 'pending', download_error = NULL WHERE id = ?"
     ).run(trackId);
+  }
+  if (addedByUserId) {
+    db.prepare("UPDATE tracks SET added_by_user_id = ? WHERE id = ?").run(addedByUserId, trackId);
   }
   console.log(`Queued download for track ${trackId} (playlist ${targetPlaylistId}).`);
   broadcast("DOWNLOAD_UPDATE", { trackId, playlistId: targetPlaylistId, status });
@@ -2689,7 +2693,7 @@ app.post("/api/playlists/import-json", requireAuth, (req, res) => {
 
 async function ingestLibrarySources({ urls, playlistId = null, addedByUserId = null }) {
   const insertTrack = db.prepare(
-    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, added_by_user_id, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, ?, ?)"
+    "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, tags, added_by_user_id, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 'new', ?, ?)"
   );
   const findTrack = db.prepare("SELECT id FROM tracks WHERE youtube_id = ?");
   const now = new Date().toISOString();
@@ -2742,7 +2746,7 @@ async function ingestLibrarySources({ urls, playlistId = null, addedByUserId = n
       if (!existing) {
         insertTrack.run(trackId, item.youtubeId, item.url, addedByUserId, now);
       }
-      enqueueDownload(playlistId || LIBRARY_QUEUE_ID, trackId, { attachToPlaylist: Boolean(playlistId) });
+      enqueueDownload(playlistId || LIBRARY_QUEUE_ID, trackId, { attachToPlaylist: Boolean(playlistId), addedByUserId });
       added.push({
         id: trackId,
         youtubeId: item.youtubeId,
@@ -2831,7 +2835,7 @@ app.post("/api/library/import", requireAuth, (req, res) => {
     }
   }
 
-  ingestLibrarySourceUrls({ urls, playlistId: playlistId || null, addedByUserId: req.user?.id || null })
+  ingestLibrarySourceUrls({ urls, playlistId: playlistId || null, addedByUserId: req.session?.user?.id || null })
     .then((result) => {
       const importedCount = Number(result?.importedCount || 0);
       broadcast("PLAYLIST_UPDATE", {
@@ -2911,7 +2915,7 @@ app.post("/api/library/tracks", requireAuth, async (req, res) => {
   const trimmedUrl = String(url).trim();
   if (parseYouTubePlaylistId(trimmedUrl)) {
     try {
-      const result = await ingestLibrarySources({ urls: [trimmedUrl], playlistId: playlistId || null, addedByUserId: req.user?.id || null });
+      const result = await ingestLibrarySources({ urls: [trimmedUrl], playlistId: playlistId || null, addedByUserId: req.session?.user?.id || null });
       if (!result.added.length) {
         return res.status(400).json({ error: result.errors?.[0]?.error || "Unable to queue playlist" });
       }
@@ -2934,10 +2938,10 @@ app.post("/api/library/tracks", requireAuth, async (req, res) => {
   if (!existing) {
     const now = new Date().toISOString();
     db.prepare(
-      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, added_by_user_id, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, '', 0, ?, ?)"
-    ).run(trackId, youtubeId, trimmedUrl, req.user?.id || null, now);
+      "INSERT INTO tracks (id, youtube_id, url, title, duration_sec, channel, thumbnail, audio_path, download_status, download_error, downloaded_at, volume_adjust_db, intro_sec, outro_sec, tags, disabled, added_by_user_id, created_at) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL, 0, 0, 0, 'new', 0, ?, ?)"
+    ).run(trackId, youtubeId, trimmedUrl, req.session?.user?.id || null, now);
   }
-  enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist });
+  enqueueDownload(attachToPlaylist ? playlistId : LIBRARY_QUEUE_ID, trackId, { attachToPlaylist, addedByUserId: req.session?.user?.id || null });
   return res.status(201).json({ id: trackId, youtubeId, url: trimmedUrl, status: "pending" });
 });
 
@@ -3030,7 +3034,7 @@ app.post("/api/tracks", requireAuth, (req, res) => {
     return res.status(404).json({ error: "Playlist not found" });
   }
 
-  ingestLibrarySourceUrls({ urls: [url], playlistId, addedByUserId: req.user?.id || null })
+  ingestLibrarySourceUrls({ urls: [url], playlistId, addedByUserId: req.session?.user?.id || null })
     .then((result) => {
       const first = result.imported[0];
       if (!first) {
