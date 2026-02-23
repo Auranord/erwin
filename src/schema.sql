@@ -28,8 +28,9 @@ CREATE TABLE IF NOT EXISTS users (
       volume_adjust_db REAL DEFAULT 0,
       intro_sec REAL DEFAULT 0,
       outro_sec REAL DEFAULT 0,
-      tags TEXT DEFAULT '',
+      tags TEXT DEFAULT 'new',
       disabled INTEGER DEFAULT 0,
+      added_by_user_id TEXT,
       created_at TEXT NOT NULL
     );
 
