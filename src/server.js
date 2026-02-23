@@ -2193,10 +2193,11 @@ app.get("/auth/twitch/callback", async (req, res) => {
     } else {
       userId = nanoid();
       db.prepare(
-        "INSERT INTO users (id, username, twitch_id, display_name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+        "INSERT INTO users (id, username, password_hash, twitch_id, display_name, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
       ).run(
         userId,
         twitchUser.login,
+        "",
         twitchUser.id,
         twitchUser.display_name || twitchUser.login,
         resolvedRole,
@@ -2225,6 +2226,8 @@ app.get("/auth/twitch/callback", async (req, res) => {
       reason = "twitch_user_fetch_failed";
     } else if (rawMessage.includes("required scopes")) {
       reason = "channel_scope_missing";
+    } else if (rawMessage.includes("users.password_hash")) {
+      reason = "db_schema_compat_error";
     }
 
     log("error", "twitch oauth callback failed", {

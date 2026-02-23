@@ -147,5 +147,6 @@ If redirected back to `/login?error=...`, use:
 - `token_exchange_failed`: usually client ID/secret mismatch or redirect URI mismatch in Twitch app settings.
 - `twitch_user_fetch_failed`: token was issued but user profile fetch failed; verify app credentials and headers.
 - `invalid_oauth_state`: session/cookie mismatch (often proxy/cookie/domain issues).
+- `db_schema_compat_error`: DB schema is older than expected (for example `users.password_hash` non-null insert compatibility).
 
 Check server logs for `twitch oauth callback failed` details (`reason`, `redirectUri`, `host`, `protocol`).

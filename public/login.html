@@ -26,7 +26,8 @@
           twitch_login_failed: "Twitch login failed. Check redirect URI/client settings and try again.",
           token_exchange_failed: "Token exchange failed. Verify TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET and exact callback URL in Twitch app settings.",
           twitch_user_fetch_failed: "Twitch user lookup failed after login. Check TWITCH_CLIENT_ID consistency and retry.",
-          channel_scope_missing: "Missing required scopes. Reconnect channel with requested scopes."
+          channel_scope_missing: "Missing required scopes. Reconnect channel with requested scopes.",
+          db_schema_compat_error: "Database schema compatibility issue detected. Restart with latest migration/runtime patch and try again."
         };
         el.textContent = map[code] || "Login failed. Please try again.";
         el.style.display = "block";
