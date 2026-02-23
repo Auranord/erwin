@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Public Dashboard</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body class="dashboard-page">
+    <main class="card" style="margin: 32px auto; max-width: 920px;">
+      <h1>Erwin Public Dashboard</h1>
+      <p class="notice">You are signed in with a limited role.</p>
+      <p>Placeholder: role-specific dashboard features for mod, vip, and viewer will be added soon.</p>
+      <div class="actions" style="margin-top: 16px;">
+        <button id="logout" class="secondary">Logout</button>
+      </div>
+    </main>
+    <script>
+      document.getElementById("logout").addEventListener("click", async () => {
+        await fetch("/api/auth/logout", { method: "POST" });
+        window.location.href = "/login";
+      });
+    </script>
+  </body>
+</html>
