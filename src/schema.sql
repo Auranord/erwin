@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
       outro_sec REAL DEFAULT 0,
       tags TEXT DEFAULT '',
       disabled INTEGER DEFAULT 0,
+      added_by_user_id TEXT,
       created_at TEXT NOT NULL
     );
 
