@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
       outro_sec REAL DEFAULT 0,
       tags TEXT DEFAULT 'new',
       disabled INTEGER DEFAULT 0,
+      score INTEGER NOT NULL DEFAULT 0,
       added_by_user_id TEXT,
       created_at TEXT NOT NULL
     );
@@ -96,6 +97,15 @@ CREATE TABLE IF NOT EXISTS users (
       option_index INTEGER NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (vote_round_id, user_twitch_name)
+    );
+
+    CREATE TABLE IF NOT EXISTS track_score_feedback (
+      track_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      feedback_date TEXT NOT NULL,
+      signal INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (track_id, user_id, feedback_date)
     );
 
     CREATE TABLE IF NOT EXISTS settings (
