@@ -1398,9 +1398,12 @@ async function fetchDownloads() {
           });
           const result = await response.json().catch(() => ({}));
           if (!response.ok) {
-            const errorMessage = typeof result.error === "string" && result.error.trim()
+            let errorMessage = typeof result.error === "string" && result.error.trim()
               ? result.error.trim()
               : "Unable to import library JSON.";
+            if (response.status === 413) {
+              errorMessage = "JSON file is too large. Increase server import size limit or split the file.";
+            }
             if (libraryImportStatus) {
               libraryImportStatus.textContent = `Import failed: ${errorMessage}`;
             }
