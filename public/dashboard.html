@@ -441,17 +441,23 @@
             const disabled = Boolean(track.disabled);
             const disabledLabel = disabled ? '<span class="badge">Disabled</span>' : "";
             const toggleLabel = disabled ? "Enable track" : "Disable track";
+            const score = Number.isFinite(Number(track.score)) ? Number(track.score) : 0;
             const inPool = poolTrackIds.has(track.id);
             const poolAction = inPool ? "pool-remove" : "pool-add";
             const poolLabel = inPool ? "Remove from pool" : "Add to pool";
             const poolIcon = iconHtml(inPool ? "poolRemove" : "poolAdd");
+            const calibrateButton = currentUser?.isAdmin
+              ? '<button class="secondary icon-only" data-action="calibrate-score" title="Calibrate score" aria-label="Calibrate score">±</button>'
+              : "";
             return `<div class="list-item draggable-item ${disabled ? "disabled" : ""}" draggable="true" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
                   <div style="display: flex; gap: 8px; align-items: center;"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${label} ${disabledLabel}</div>
                 </div>
+                <div class="track-library-score" title="Library score">${score}</div>
                 <div class="actions">
                   <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">${iconHtml("enqueue")}</button>
                   <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
+                  ${calibrateButton}
                   <button class="secondary icon-only" data-action="rename" title="Rename track" aria-label="Rename track">${iconHtml("rename")}</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${iconHtml(disabled ? "enable" : "disable")}</button>
                   <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">${iconHtml("delete")}</button>
@@ -899,6 +905,21 @@
           renameInput.value = wrapper.dataset.trackTitle || "";
           renameModal.classList.remove("hidden");
           renameInput.focus();
+        }
+        if (action === "calibrate-score") {
+          const currentScore = Number(wrapper.querySelector(".track-library-score")?.textContent || 0) || 0;
+          const nextValue = window.prompt("Set score (-100 to 100)", String(currentScore));
+          if (nextValue === null) return;
+          const parsed = Number(nextValue);
+          if (!Number.isFinite(parsed)) {
+            window.alert("Please enter a valid number.");
+            return;
+          }
+          await fetch(`/api/tracks/${trackId}/score`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ score: parsed })
+          });
         }
         if (action === "toggle-disabled") {
           await fetch(`/api/tracks/${trackId}/disable`, {

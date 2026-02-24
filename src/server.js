@@ -121,6 +121,95 @@ const HEARTBEAT_TIMEOUT_MS = 15000;
 const AUTO_SKIP_ERROR_WINDOW_MS = 30000;
 const AUTO_SKIP_STUCK_MS = 10000;
 const AUTO_SKIP_COOLDOWN_MS = 30000;
+const TRACK_SCORE_MIN = -100;
+const TRACK_SCORE_MAX = 100;
+
+function clampTrackScore(value) {
+  return Math.max(TRACK_SCORE_MIN, Math.min(TRACK_SCORE_MAX, value));
+}
+
+function calculateTrackScoreDelta(currentScore, signalStrength) {
+  const boundedScore = clampTrackScore(Number(currentScore) || 0);
+  const boundedSignal = Number(signalStrength) || 0;
+  if (boundedSignal === 0) return 0;
+  const distanceFactor = (TRACK_SCORE_MAX - Math.abs(boundedScore)) / TRACK_SCORE_MAX;
+  const influenceFactor = Math.max(0.1, distanceFactor);
+  return boundedSignal * influenceFactor;
+}
+
+function calculateVoteEloSignals(voteEntries, totalVotes) {
+  if (!Array.isArray(voteEntries) || voteEntries.length < 2 || totalVotes <= 0) {
+    return new Map();
+  }
+
+  const trackIds = voteEntries.map((entry) => entry.option?.trackId).filter(Boolean);
+  const trackRows = db
+    .prepare(`SELECT id, score FROM tracks WHERE id IN (${trackIds.map(() => "?").join(",")})`)
+    .all(...trackIds);
+  const scoreByTrackId = new Map(trackRows.map((row) => [row.id, Number(row.score) || 0]));
+  const signalByTrackId = new Map(trackIds.map((trackId) => [trackId, 0]));
+
+  const toEloRating = (score) => 1000 + score * 6;
+  const K_FACTOR = 18;
+
+  for (let i = 0; i < voteEntries.length; i += 1) {
+    for (let j = i + 1; j < voteEntries.length; j += 1) {
+      const a = voteEntries[i];
+      const b = voteEntries[j];
+      const aTrackId = a.option?.trackId;
+      const bTrackId = b.option?.trackId;
+      if (!aTrackId || !bTrackId) continue;
+
+      const aVotes = Number(a.count) || 0;
+      const bVotes = Number(b.count) || 0;
+      const voteDiff = Math.abs(aVotes - bVotes);
+      const pairParticipation = (aVotes + bVotes) / totalVotes;
+      const marginFactor = 1 + voteDiff / Math.max(1, totalVotes);
+
+      const aScore = scoreByTrackId.get(aTrackId) || 0;
+      const bScore = scoreByTrackId.get(bTrackId) || 0;
+      const aRating = toEloRating(aScore);
+      const bRating = toEloRating(bScore);
+
+      const expectedA = 1 / (1 + 10 ** ((bRating - aRating) / 400));
+      const expectedB = 1 - expectedA;
+
+      const actualA = aVotes > bVotes ? 1 : aVotes < bVotes ? 0 : 0.5;
+      const actualB = 1 - actualA;
+
+      const pairK = K_FACTOR * pairParticipation * marginFactor;
+      const deltaA = pairK * (actualA - expectedA);
+      const deltaB = pairK * (actualB - expectedB);
+
+      signalByTrackId.set(aTrackId, (signalByTrackId.get(aTrackId) || 0) + deltaA);
+      signalByTrackId.set(bTrackId, (signalByTrackId.get(bTrackId) || 0) + deltaB);
+    }
+  }
+
+  return signalByTrackId;
+}
+
+function applyTrackScoreSignal(trackId, signalStrength, source = "unknown") {
+  if (!trackId) return null;
+  const track = db.prepare("SELECT id, score FROM tracks WHERE id = ?").get(trackId);
+  if (!track) return null;
+  const currentScore = Number(track.score) || 0;
+  const delta = calculateTrackScoreDelta(currentScore, signalStrength);
+  const nextScore = clampTrackScore(Math.round(currentScore + delta));
+  if (nextScore === currentScore) {
+    return { id: trackId, score: currentScore, changed: false };
+  }
+  db.prepare("UPDATE tracks SET score = ? WHERE id = ?").run(nextScore, trackId);
+  log("info", "track score updated", {
+    trackId,
+    source,
+    signalStrength,
+    previousScore: currentScore,
+    nextScore
+  });
+  broadcast("PLAYLIST_UPDATE", { trackId, action: "track_score_updated", score: nextScore });
+  return { id: trackId, score: nextScore, changed: true };
+}
 
 function sendWsMessage(ws, message) {
   if (ws.readyState === 1) {
@@ -309,6 +398,7 @@ function initDb() {
       youtube_id TEXT NOT NULL,
       url TEXT NOT NULL,
       title TEXT,
+      score INTEGER NOT NULL DEFAULT 0,
       duration_sec INTEGER,
       channel TEXT,
       thumbnail TEXT,
@@ -380,6 +470,15 @@ function initDb() {
       PRIMARY KEY (vote_round_id, user_twitch_name)
     );
 
+    CREATE TABLE IF NOT EXISTS track_score_feedback (
+      track_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      feedback_date TEXT NOT NULL,
+      signal INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (track_id, user_id, feedback_date)
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -442,6 +541,10 @@ function initDb() {
   if (!trackColumnNames.has("downloaded_at")) {
     db.prepare("ALTER TABLE tracks ADD COLUMN downloaded_at TEXT").run();
   }
+  if (!trackColumnNames.has("score")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN score INTEGER NOT NULL DEFAULT 0").run();
+  }
+  db.prepare("UPDATE tracks SET score = 0 WHERE score IS NULL").run();
 
   const downloadQueueColumns = db.prepare("PRAGMA table_info(download_queue)").all();
   if (downloadQueueColumns.length === 0) {
@@ -857,7 +960,7 @@ function getQueue() {
 function getPlaylistTrackRows() {
   return db
     .prepare(
-      "SELECT playlist_tracks.playlist_id, tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id ORDER BY playlist_tracks.position ASC"
+      "SELECT playlist_tracks.playlist_id, tracks.id, tracks.title, tracks.youtube_id, tracks.url, tracks.disabled, tracks.score, playlist_tracks.position FROM playlist_tracks JOIN tracks ON tracks.id = playlist_tracks.track_id ORDER BY playlist_tracks.position ASC"
     )
     .all();
 }
@@ -1476,6 +1579,17 @@ function endVoteRound(round) {
   if (!winnerEntry) {
     return null;
   }
+
+  const totalVotes = voteEntries.reduce((sum, entry) => sum + entry.count, 0);
+  const hasMinimumTotalVotes = totalVotes >= options.length;
+  if (hasMinimumTotalVotes) {
+    const signals = calculateVoteEloSignals(voteEntries, totalVotes);
+    voteEntries.forEach((entry) => {
+      const signalStrength = signals.get(entry.option.trackId) || 0;
+      applyTrackScoreSignal(entry.option.trackId, signalStrength, "vote_result_elo");
+    });
+  }
+
   db.prepare("UPDATE vote_rounds SET winner_track_id = ? WHERE id = ?").run(
     winnerEntry.option.trackId,
     round.id
@@ -2594,6 +2708,56 @@ app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
     return res.status(404).json({ error: "Track not found" });
   }
   res.json({ id: req.params.id, disabled: Boolean(value) });
+});
+
+app.post("/api/tracks/:id/score-feedback", requireAuth, (req, res) => {
+  const { signal } = req.body || {};
+  const numericSignal = Number(signal);
+  if (!Number.isInteger(numericSignal) || ![-1, 1].includes(numericSignal)) {
+    return res.status(400).json({ error: "signal must be +1 or -1" });
+  }
+  const track = db.prepare("SELECT id, score FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const userId = req.session?.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date().toISOString();
+  try {
+    db.prepare(
+      "INSERT INTO track_score_feedback (track_id, user_id, feedback_date, signal, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(req.params.id, userId, today, numericSignal, now);
+  } catch (error) {
+    const message = String(error?.message || error).toLowerCase();
+    if (message.includes("unique") || message.includes("constraint")) {
+      return res.status(409).json({ error: "You already rated this track today." });
+    }
+    throw error;
+  }
+  const result = applyTrackScoreSignal(req.params.id, numericSignal * 10, "stream_feedback");
+  res.json({ ok: true, trackId: req.params.id, score: result?.score ?? track.score });
+});
+
+app.put("/api/tracks/:id/score", requireAuth, requireAdmin, (req, res) => {
+  const numericScore = Number(req.body?.score);
+  if (!Number.isFinite(numericScore)) {
+    return res.status(400).json({ error: "score must be a number" });
+  }
+  const normalized = clampTrackScore(Math.round(numericScore));
+  const result = db.prepare("UPDATE tracks SET score = ? WHERE id = ?").run(normalized, req.params.id);
+  if (result.changes === 0) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  log("info", "track score calibrated", {
+    trackId: req.params.id,
+    score: normalized,
+    adminUserId: req.session?.user?.id || null
+  });
+  broadcast("PLAYLIST_UPDATE", { trackId: req.params.id, action: "track_score_calibrated", score: normalized });
+  res.json({ id: req.params.id, score: normalized });
 });
 
 app.post(

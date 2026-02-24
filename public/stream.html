@@ -31,6 +31,11 @@
             <button id="skip-track" class="icon-button ghost" title="Skip track">⚔</button>
             <button id="mute-toggle" class="icon-button ghost" title="Mute or unmute">◌</button>
           </div>
+          <div class="player-actions score-actions">
+            <span class="notice">Track score</span>
+            <button id="score-up" class="icon-button secondary" title="Upvote track">＋</button>
+            <button id="score-down" class="icon-button ghost" title="Downvote track">－</button>
+          </div>
           <div class="player-row compact">
             <span class="notice">Volume</span>
             <input id="volume-control" type="range" min="0" max="100" value="80" aria-label="Volume" />
@@ -51,8 +56,11 @@
       const timeEl = document.getElementById("playback-time");
       const volumeEl = document.getElementById("volume-control");
       const muteToggle = document.getElementById("mute-toggle");
+      const scoreUp = document.getElementById("score-up");
+      const scoreDown = document.getElementById("score-down");
       let isMuted = false;
       let isPaused = true;
+      let activeTrackId = null;
 
       const STREAM_ICON_FALLBACKS = {
         play: "⯈",
@@ -109,11 +117,30 @@
         const response = await fetch("/api/state");
         if (!response.ok) return;
         const { playState, currentTrack } = await response.json();
+        activeTrackId = currentTrack?.id || null;
         player.setState({ playState, currentTrack });
         isPaused = playState?.paused ?? true;
         const playToggle = document.getElementById("play-toggle");
         playToggle.innerHTML = isPaused ? streamIcon("play") : streamIcon("pause");
         playToggle.title = isPaused ? "Play" : "Pause";
+      }
+
+      async function submitScoreFeedback(signal) {
+        if (!activeTrackId) return;
+        const response = await fetch(`/api/tracks/${activeTrackId}/score-feedback`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ signal })
+        });
+        if (response.status === 409) {
+          window.alert("You already rated this track today.");
+          return;
+        }
+        if (!response.ok) {
+          window.alert("Could not submit score feedback.");
+          return;
+        }
+        await refresh();
       }
 
       loadStreamIcons().then(() => {
@@ -168,6 +195,8 @@
           muteToggle.title = "Mute";
         }
       });
+      scoreUp.addEventListener("click", () => submitScoreFeedback(1));
+      scoreDown.addEventListener("click", () => submitScoreFeedback(-1));
       volumeEl.addEventListener("input", () => {
         const value = Number(volumeEl.value);
         player.setVolume(value);

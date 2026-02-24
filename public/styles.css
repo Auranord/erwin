@@ -325,6 +325,15 @@ main {
   justify-content: flex-start;
 }
 
+.player-actions.score-actions {
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.player-actions.score-actions .notice {
+  margin: 0;
+}
+
 .player-row {
   display: flex;
   align-items: center;
@@ -533,6 +542,16 @@ select:focus-visible,
 .list-item .actions {
   display: inline-flex;
   gap: 0.4rem;
+}
+
+.track-library-score {
+  min-width: 52px;
+  text-align: center;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(44, 67, 116, 0.12);
+  border: 1px solid rgba(74, 61, 35, 0.35);
 }
 
 .list-item .actions button {
