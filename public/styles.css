@@ -1053,3 +1053,16 @@ body.listen-page #listen-track {
 .login-error {
   color: #fecaca;
 }
+
+
+.stream-score-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding-top: 0.25rem;
+}
+
+.stream-score-actions .player-actions {
+  justify-content: flex-end;
+}
