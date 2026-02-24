@@ -42,6 +42,7 @@ const nowPlaying = document.getElementById("now-playing");
       const usersStatus = document.getElementById("users-status");
       const usersList = document.getElementById("users-list");
       const usersCard = document.getElementById("users-card");
+      const libraryManagementCard = document.getElementById("library-management-card");
       const connectChannelButton = document.getElementById("connect-channel");
       const channelAuthStatus = document.getElementById("channel-auth-status");
       const currentUserBadge = document.getElementById("current-user");
@@ -59,7 +60,8 @@ const nowPlaying = document.getElementById("now-playing");
       let playlistsCache = [];
       let libraryTracksCache = [];
       let queueOrder = [];
-      let selectedPlaylistId = null;
+      const SELECTED_PLAYLIST_STORAGE_KEY = "erwin_selected_playlist";
+      let selectedPlaylistId = localStorage.getItem(SELECTED_PLAYLIST_STORAGE_KEY) || null;
       let renameTrackId = null;
       let activeVote = null;
       let voteTimer = null;
@@ -74,6 +76,7 @@ const nowPlaying = document.getElementById("now-playing");
         { key: "youtube", label: "YouTube", sortable: true, defaultVisible: true },
         { key: "duration", label: "Duration", sortable: true, defaultVisible: true },
         { key: "volume", label: "Volume", sortable: true, defaultVisible: true },
+        { key: "score", label: "Score", sortable: true, defaultVisible: true },
         { key: "intro", label: "Intro", sortable: true, defaultVisible: true },
         { key: "outro", label: "Outro", sortable: true, defaultVisible: true },
         { key: "status", label: "Status", sortable: true, defaultVisible: true },
@@ -121,6 +124,8 @@ const nowPlaying = document.getElementById("now-playing");
         download: "⤓",
         tags: "🏷",
         audio: "🎚",
+        trim: "✂",
+        score: "◉",
         playlistAdd: "☑"
       };
       const availableIcons = new Set();
@@ -398,13 +403,10 @@ const nowPlaying = document.getElementById("now-playing");
         currentUserBadge.textContent = `${currentUser.username || "guest"} • ${currentUser.role || "viewer"}`;
         if (!currentUser.isAdmin) {
           usersCard.classList.add("hidden");
-          document.querySelectorAll(".tab-link[data-admin-only='1']").forEach((node) => node.classList.add("hidden"));
-          const trackPanel = document.querySelector(".tab-panel[data-tab-panel='track-manager']");
-          if (trackPanel) trackPanel.classList.remove("active");
-          const playerTab = document.querySelector(".tab-link[data-tab='player']");
-          const playerPanel = document.querySelector(".tab-panel[data-tab-panel='player']");
-          if (playerTab) playerTab.classList.add("active");
-          if (playerPanel) playerPanel.classList.add("active");
+          if (libraryManagementCard) libraryManagementCard.classList.add("hidden");
+        } else {
+          usersCard.classList.remove("hidden");
+          if (libraryManagementCard) libraryManagementCard.classList.remove("hidden");
         }
         return currentUser;
       }
@@ -610,12 +612,16 @@ const nowPlaying = document.getElementById("now-playing");
           ? playlistsCache.some((playlist) => playlist.id === selectedPlaylistId)
           : false;
         if (!selectedExists && playlistsCache.length > 0) {
-          selectedPlaylistId = playlistsCache[0].id;
+          const stored = localStorage.getItem(SELECTED_PLAYLIST_STORAGE_KEY);
+          const storedExists = stored ? playlistsCache.some((playlist) => playlist.id === stored) : false;
+          selectedPlaylistId = storedExists ? stored : playlistsCache[0].id;
         }
         if (selectedPlaylistId) {
           trackPlaylist.value = selectedPlaylistId;
+          localStorage.setItem(SELECTED_PLAYLIST_STORAGE_KEY, selectedPlaylistId);
         } else {
           trackPlaylist.value = "";
+          localStorage.removeItem(SELECTED_PLAYLIST_STORAGE_KEY);
         }
         renderTracks();
       }
@@ -763,6 +769,7 @@ const nowPlaying = document.getElementById("now-playing");
         if (key === "youtube") return String(track.youtube_id || "").toLowerCase();
         if (key === "duration") return Number(track.duration_sec || 0);
         if (key === "volume") return Number(track.volume_adjust_db || 0);
+        if (key === "score") return Number(track.score || 0);
         if (key === "intro") return Number(track.intro_sec || 0);
         if (key === "outro") return Number(track.outro_sec || 0);
         if (key === "status") return String(track.download_status || "").toLowerCase();
@@ -836,6 +843,7 @@ const nowPlaying = document.getElementById("now-playing");
             if (visibleLibraryColumns.has("youtube")) cells.push(`<td><a href="${track.url}" target="_blank" rel="noopener noreferrer">${track.youtube_id}</a></td>`);
             if (visibleLibraryColumns.has("duration")) cells.push(`<td>${formatDuration(track.duration_sec)}</td>`);
             if (visibleLibraryColumns.has("volume")) cells.push(`<td>${Number(track.volume_adjust_db || 0).toFixed(1)} dB</td>`);
+            if (visibleLibraryColumns.has("score")) cells.push(`<td>${Number(track.score || 0)}</td>`);
             if (visibleLibraryColumns.has("intro")) cells.push(`<td>${Number(track.intro_sec || 0).toFixed(1)}s</td>`);
             if (visibleLibraryColumns.has("outro")) cells.push(`<td>${Number(track.outro_sec || 0).toFixed(1)}s</td>`);
             if (visibleLibraryColumns.has("status")) cells.push(`<td><span class="badge">${status}</span></td>`);
@@ -846,6 +854,8 @@ const nowPlaying = document.getElementById("now-playing");
                 <button class="secondary icon-only" data-action="library-rename" title="Rename" aria-label="Rename">${iconHtml("rename")}</button>
                 <button class="secondary icon-only" data-action="library-tags" title="Tags" aria-label="Edit tags">${iconHtml("tags")}</button>
                 <button class="secondary icon-only" data-action="library-audio" title="Audio settings" aria-label="Audio settings">${iconHtml("audio")}</button>
+                <button class="secondary icon-only" data-action="library-trim" title="Set intro/outro" aria-label="Set intro/outro">${iconHtml("trim")}</button>
+                ${currentUser?.role === "admin" ? `<button class="secondary icon-only" data-action="library-calibrate-score" title="Calibrate score" aria-label="Calibrate score">${iconHtml("score")}</button>` : ""}
                 <button class="secondary icon-only" data-action="library-add-playlist" title="Add to playlists" aria-label="Add to playlists">${iconHtml("playlistAdd")}</button>
                 <button class="ghost icon-only" data-action="library-delete" title="Delete" aria-label="Delete">${iconHtml("delete")}</button>
               </td>
@@ -882,6 +892,7 @@ async function fetchDownloads() {
         if (action === "select") {
           selectedPlaylistId = playlistId;
           trackPlaylist.value = playlistId;
+          localStorage.setItem(SELECTED_PLAYLIST_STORAGE_KEY, selectedPlaylistId);
           renderTracks();
         }
         if (action === "play") {
@@ -903,6 +914,7 @@ async function fetchDownloads() {
             await fetch(`/api/playlists/${playlistId}`, { method: "DELETE" });
             if (selectedPlaylistId === playlistId) {
               selectedPlaylistId = null;
+              localStorage.removeItem(SELECTED_PLAYLIST_STORAGE_KEY);
             }
             fetchPlaylists();
           }
@@ -911,6 +923,11 @@ async function fetchDownloads() {
 
       trackPlaylist.addEventListener("change", () => {
         selectedPlaylistId = trackPlaylist.value || null;
+        if (selectedPlaylistId) {
+          localStorage.setItem(SELECTED_PLAYLIST_STORAGE_KEY, selectedPlaylistId);
+        } else {
+          localStorage.removeItem(SELECTED_PLAYLIST_STORAGE_KEY);
+        }
         renderTracks();
       });
 
@@ -1223,6 +1240,29 @@ async function fetchDownloads() {
           const outroSec = window.prompt("Outro trim in seconds", String(track?.outro_sec || 0));
           if (outroSec === null) return;
           await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ volumeAdjustDb: Number(volumeAdjustDb), introSec: Number(introSec), outroSec: Number(outroSec) }) });
+        }
+        if (action === "library-trim") {
+          const track = libraryTracksCache.find((item) => item.id === trackId);
+          const introSec = window.prompt("Intro trim in seconds", String(track?.intro_sec || 0));
+          if (introSec === null) return;
+          const outroSec = window.prompt("Outro trim in seconds", String(track?.outro_sec || 0));
+          if (outroSec === null) return;
+          await fetch(`/api/library/tracks/${trackId}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ introSec: Number(introSec), outroSec: Number(outroSec) }) });
+        }
+        if (action === "library-calibrate-score") {
+          const track = libraryTracksCache.find((item) => item.id === trackId);
+          const next = window.prompt("Set track score (-100 to 100)", String(track?.score ?? 0));
+          if (next === null) return;
+          const response = await fetch(`/api/tracks/${trackId}/score`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ score: Number(next) })
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            alert(payload.error || "Unable to calibrate score");
+            return;
+          }
         }
         if (action === "library-add-playlist") {
           playlistPickTrackId = trackId;

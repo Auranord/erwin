@@ -92,6 +92,8 @@ const DOWNLOAD_CONCURRENCY = Math.max(
 const AUDIO_RETENTION_DAYS = Number(process.env.ERWIN_AUDIO_RETENTION_DAYS || 0);
 const AUDIO_RETENTION_MAX_GB = Number(process.env.ERWIN_AUDIO_RETENTION_MAX_GB || 0);
 const LIBRARY_QUEUE_ID = "__library__";
+const TRACK_SCORE_MIN = -100;
+const TRACK_SCORE_MAX = 100;
 
 const app = express();
 app.set("trust proxy", 1);
@@ -203,6 +205,35 @@ function broadcastType(type, payload = {}) {
       client.send(message);
     }
   });
+}
+
+function clampTrackScore(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(TRACK_SCORE_MIN, Math.min(TRACK_SCORE_MAX, numeric));
+}
+
+function calculateTrackScoreDelta(currentScore, signalStrength) {
+  const score = clampTrackScore(currentScore);
+  const strength = Number(signalStrength);
+  if (!Number.isFinite(strength) || strength === 0) return 0;
+  const influence = Math.max(0.1, (100 - Math.abs(score)) / 100);
+  return strength * influence;
+}
+
+function applyTrackScoreSignal(trackId, signalStrength, source = "unknown") {
+  const row = db.prepare("SELECT id, score FROM tracks WHERE id = ?").get(trackId);
+  if (!row) return null;
+  const currentScore = clampTrackScore(row.score ?? 0);
+  const delta = calculateTrackScoreDelta(currentScore, signalStrength);
+  const nextScore = clampTrackScore(Math.round(currentScore + delta));
+  if (nextScore === currentScore) {
+    return { trackId, score: currentScore, delta: 0, source };
+  }
+  db.prepare("UPDATE tracks SET score = ? WHERE id = ?").run(nextScore, trackId);
+  log("info", "track score updated", { trackId, source, signalStrength, delta, previousScore: currentScore, nextScore });
+  broadcast("PLAYLIST_UPDATE", { action: "track_score_updated", trackId, score: nextScore, source, delta: Math.round(delta) });
+  return { trackId, score: nextScore, delta: Math.round(delta), source };
 }
 
 function computeExpectedSeconds(playState, serverNow, durationSec = null) {
@@ -394,6 +425,12 @@ function initDb() {
   if (!trackColumnNames.has("added_by_user_id")) {
     db.prepare("ALTER TABLE tracks ADD COLUMN added_by_user_id TEXT").run();
   }
+  if (!trackColumnNames.has("score")) {
+    db.prepare("ALTER TABLE tracks ADD COLUMN score INTEGER NOT NULL DEFAULT 0").run();
+  }
+  db.prepare("UPDATE tracks SET score = 0 WHERE score IS NULL").run();
+  db.prepare("UPDATE tracks SET score = ? WHERE score < ?").run(TRACK_SCORE_MIN, TRACK_SCORE_MIN);
+  db.prepare("UPDATE tracks SET score = ? WHERE score > ?").run(TRACK_SCORE_MAX, TRACK_SCORE_MAX);
   const adminUser = db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1").get();
   if (adminUser?.id) {
     db.prepare("UPDATE tracks SET added_by_user_id = ? WHERE added_by_user_id IS NULL OR TRIM(added_by_user_id) = ''").run(adminUser.id);
@@ -458,6 +495,17 @@ function initDb() {
       }
     }
   }
+
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS track_score_feedback (
+        track_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        feedback_date TEXT NOT NULL,
+        signal INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (track_id, user_id, feedback_date)
+      );
+    `);
 
   const poolColumns = db.prepare("PRAGMA table_info(play_pool)").all();
   if (poolColumns.length === 0) {
@@ -952,7 +1000,7 @@ function isTrackPlayable(track) {
 function getEligiblePoolTracks({ excludedTrackIds = new Set() } = {}) {
   const poolTracks = db
     .prepare(
-      "SELECT play_pool.id as pool_id, play_pool.track_id, play_pool.created_at, tracks.title, tracks.channel, tracks.download_status, tracks.audio_path FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id ORDER BY play_pool.created_at ASC"
+      "SELECT play_pool.id as pool_id, play_pool.track_id, play_pool.created_at, tracks.title, tracks.channel, tracks.score, tracks.download_status, tracks.audio_path FROM play_pool JOIN tracks ON tracks.id = play_pool.track_id ORDER BY play_pool.created_at ASC"
     )
     .all();
   return poolTracks.filter(
@@ -1633,7 +1681,8 @@ function getVoteCandidates() {
   ).map((track) => ({
     id: track.track_id,
     title: track.title,
-    channel: track.channel
+    channel: track.channel,
+    score: track.score
   }));
 }
 
@@ -1649,7 +1698,8 @@ function startVoteRound() {
   const options = selected.map((track) => ({
     trackId: track.id,
     title: track.title,
-    channel: track.channel
+    channel: track.channel,
+    score: track.score
   }));
   const now = new Date();
   const endsAt = new Date(now.getTime() + settings.duration * 1000);
@@ -1695,6 +1745,40 @@ function startVoteRound() {
   return parsed;
 }
 
+function calculateVoteEloSignals(voteEntries, totalVotes) {
+  const baseK = 18;
+  const ratings = new Map();
+  voteEntries.forEach((entry) => {
+    ratings.set(entry.option.trackId, 1000 + clampTrackScore(entry.option.score ?? 0) * 6);
+  });
+  const signals = new Map();
+  voteEntries.forEach((aEntry, index) => {
+    for (let j = index + 1; j < voteEntries.length; j += 1) {
+      const bEntry = voteEntries[j];
+      const aVotes = aEntry.count;
+      const bVotes = bEntry.count;
+      const pairVotes = aVotes + bVotes;
+      if (pairVotes <= 0) continue;
+      const aRating = ratings.get(aEntry.option.trackId) || 1000;
+      const bRating = ratings.get(bEntry.option.trackId) || 1000;
+      const expectedA = 1 / (1 + 10 ** ((bRating - aRating) / 400));
+      const expectedB = 1 - expectedA;
+      let actualA = 0.5;
+      if (aVotes > bVotes) actualA = 1;
+      if (aVotes < bVotes) actualA = 0;
+      const actualB = 1 - actualA;
+      const participationFactor = pairVotes / Math.max(1, totalVotes);
+      const marginFactor = 1 + Math.abs(aVotes - bVotes) / Math.max(1, totalVotes);
+      const pairScale = baseK * participationFactor * marginFactor;
+      const deltaA = (actualA - expectedA) * pairScale;
+      const deltaB = (actualB - expectedB) * pairScale;
+      signals.set(aEntry.option.trackId, (signals.get(aEntry.option.trackId) || 0) + deltaA);
+      signals.set(bEntry.option.trackId, (signals.get(bEntry.option.trackId) || 0) + deltaB);
+    }
+  });
+  return signals;
+}
+
 function endVoteRound(round) {
   const counts = getVoteTallies(round.id);
   const options = round.options || [];
@@ -1703,10 +1787,17 @@ function endVoteRound(round) {
     count: counts[index + 1] || 0,
     option
   }));
+  const totalVotes = voteEntries.reduce((sum, entry) => sum + entry.count, 0);
   const maxVotes = Math.max(...voteEntries.map((entry) => entry.count));
   const topEntries = voteEntries.filter((entry) => entry.count === maxVotes);
   const winnerEntry =
     maxVotes > 0 ? pickRandom(topEntries) : pickRandom(voteEntries);
+  if (totalVotes >= options.length && options.length > 1) {
+    const scoreSignals = calculateVoteEloSignals(voteEntries, totalVotes);
+    scoreSignals.forEach((signal, trackId) => {
+      applyTrackScoreSignal(trackId, signal, "vote_result_elo");
+    });
+  }
   if (!winnerEntry) {
     return null;
   }
@@ -3309,6 +3400,43 @@ app.put("/api/library/tracks/:id/disable", requireAuth, requireAdmin, (req, res)
 });
 
 
+
+app.post("/api/tracks/:id/score-feedback", requireAuth, (req, res) => {
+  const signal = Number(req.body?.signal);
+  if (![1, -1].includes(signal)) {
+    return res.status(400).json({ error: "signal must be 1 or -1" });
+  }
+  const track = db.prepare("SELECT id, score FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const now = new Date();
+  const feedbackDate = now.toISOString().slice(0, 10);
+  try {
+    db.prepare(
+      "INSERT INTO track_score_feedback (track_id, user_id, feedback_date, signal, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(track.id, req.session.user.id, feedbackDate, signal, now.toISOString());
+  } catch (error) {
+    const message = String(error?.message || error).toLowerCase();
+    if (message.includes("unique") || message.includes("constraint")) {
+      return res.status(409).json({ error: "already rated today" });
+    }
+    throw error;
+  }
+  const updated = applyTrackScoreSignal(track.id, signal * 10, "stream_feedback");
+  res.json({ ok: true, trackId: track.id, score: updated?.score ?? clampTrackScore(track.score ?? 0) });
+});
+
+app.put("/api/tracks/:id/score", requireAuth, requireAdmin, (req, res) => {
+  const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(req.params.id);
+  if (!track) {
+    return res.status(404).json({ error: "Track not found" });
+  }
+  const nextScore = clampTrackScore(Math.round(Number(req.body?.score)));
+  db.prepare("UPDATE tracks SET score = ? WHERE id = ?").run(nextScore, track.id);
+  broadcast("PLAYLIST_UPDATE", { action: "track_score_calibrated", trackId: track.id, score: nextScore });
+  res.json({ ok: true, trackId: track.id, score: nextScore });
+});
 
 app.put("/api/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   const { title } = req.body || {};
