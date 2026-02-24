@@ -94,6 +94,7 @@ const nowPlaying = document.getElementById("now-playing");
       const exportLibraryJsonButton = document.getElementById("export-library-json");
       const importLibraryJsonButton = document.getElementById("import-library-json");
       const libraryImportFile = document.getElementById("library-import-file");
+      const libraryImportStatus = document.getElementById("library-import-status");
       const librarySearch = document.getElementById("library-search");
       const libraryTagsInclude = document.getElementById("library-tags-include");
       const libraryTagsExclude = document.getElementById("library-tags-exclude");
@@ -1376,22 +1377,50 @@ async function fetchDownloads() {
       libraryImportFile.addEventListener("change", async () => {
         const file = libraryImportFile.files?.[0];
         if (!file) return;
-        const text = await file.text();
-        let payload;
-        try {
-          payload = JSON.parse(text);
-        } catch {
-          window.alert("Invalid library JSON file.");
-          return;
+        if (libraryImportStatus) {
+          libraryImportStatus.textContent = `Importing ${file.name}...`;
         }
-        await fetch("/api/library/import-json", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        libraryImportFile.value = "";
-        fetchLibraryTracks();
-        fetchPlaylists();
+        try {
+          const text = await file.text();
+          let payload;
+          try {
+            payload = JSON.parse(text);
+          } catch {
+            if (libraryImportStatus) {
+              libraryImportStatus.textContent = "Import failed: invalid library JSON file.";
+            }
+            return;
+          }
+          const response = await fetch("/api/library/import-json", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            const errorMessage = typeof result.error === "string" && result.error.trim()
+              ? result.error.trim()
+              : "Unable to import library JSON.";
+            if (libraryImportStatus) {
+              libraryImportStatus.textContent = `Import failed: ${errorMessage}`;
+            }
+            return;
+          }
+          const updated = Number(result.updated || 0);
+          const missing = Array.isArray(result.missing) ? result.missing.length : 0;
+          const missingSuffix = missing ? ` (${missing} track IDs were not found in this library)` : "";
+          if (libraryImportStatus) {
+            libraryImportStatus.textContent = `Import complete: updated ${updated} track${updated === 1 ? "" : "s"}${missingSuffix}.`;
+          }
+          fetchLibraryTracks();
+          fetchPlaylists();
+        } catch {
+          if (libraryImportStatus) {
+            libraryImportStatus.textContent = "Import failed: network or server error.";
+          }
+        } finally {
+          libraryImportFile.value = "";
+        }
       });
 
 document.getElementById("logout").addEventListener("click", async () => {
