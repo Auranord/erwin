@@ -36,6 +36,13 @@
             <input id="volume-control" type="range" min="0" max="100" value="80" aria-label="Volume" />
           </div>
         </div>
+        <div class="stream-score-actions">
+          <span class="notice">Song score</span>
+          <div class="player-actions">
+            <button id="score-up" class="icon-button secondary" title="Upvote current song">＋</button>
+            <button id="score-down" class="icon-button ghost" title="Downvote current song">－</button>
+          </div>
+        </div>
         <p class="notice">Use Control audio via OBS to isolate music audio.</p>
       </section>
     </main>
@@ -53,6 +60,7 @@
       const muteToggle = document.getElementById("mute-toggle");
       let isMuted = false;
       let isPaused = true;
+      let currentTrackId = null;
 
       const STREAM_ICON_FALLBACKS = {
         play: "⯈",
@@ -110,6 +118,7 @@
         if (!response.ok) return;
         const { playState, currentTrack } = await response.json();
         player.setState({ playState, currentTrack });
+        currentTrackId = currentTrack?.id || null;
         isPaused = playState?.paused ?? true;
         const playToggle = document.getElementById("play-toggle");
         playToggle.innerHTML = isPaused ? streamIcon("play") : streamIcon("pause");
@@ -172,6 +181,26 @@
         const value = Number(volumeEl.value);
         player.setVolume(value);
       });
+      async function sendScoreFeedback(signal) {
+        if (!currentTrackId) return;
+        const response = await fetch(`/api/tracks/${currentTrackId}/score-feedback`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ signal })
+        });
+        if (response.status === 409) {
+          alert("You already rated this song today.");
+          return;
+        }
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          alert(payload.error || "Unable to send feedback");
+          return;
+        }
+        refresh();
+      }
+      document.getElementById("score-up").addEventListener("click", () => sendScoreFeedback(1));
+      document.getElementById("score-down").addEventListener("click", () => sendScoreFeedback(-1));
       progressEl.addEventListener("change", () => {
         const duration = player.getDuration();
         if (!duration) return;
