@@ -249,14 +249,16 @@ const nowPlaying = document.getElementById("now-playing");
             const poolAction = inPool ? "pool-remove" : "pool-add";
             const poolLabel = inPool ? "Remove from pool" : "Add to pool";
             const poolIcon = iconHtml(inPool ? "poolRemove" : "poolAdd");
+            const score = Number.isFinite(Number(track.score)) ? Number(track.score) : 0;
             return `<div class="list-item draggable-item ${disabled ? "disabled" : ""}" draggable="true" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
-                  <div style="display: flex; gap: 8px; align-items: center;"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${label} ${disabledLabel}</div>
+                  <div style="display: flex; gap: 8px; align-items: center;"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${label} ${disabledLabel} <span class="badge score-pill">Score ${score}</span></div>
                 </div>
                 <div class="actions">
                   <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">${iconHtml("enqueue")}</button>
                   <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${iconHtml(disabled ? "enable" : "disable")}</button>
+                  ${currentUser?.role === "admin" ? `<button class="secondary" data-action="calibrate-score" title="Calibrate score">Calibrate</button>` : ""}
                   <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">${iconHtml("delete")}</button>
                 </div>
               </div>`;
@@ -971,6 +973,19 @@ async function fetchDownloads() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ disabled: !isDisabled })
           });
+        }
+        if (action === "calibrate-score") {
+          const next = prompt("Set track score (-100 to 100):", "0");
+          if (next == null) return;
+          const response = await fetch(`/api/tracks/${trackId}/score`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ score: Number(next) })
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            alert(payload.error || "Unable to calibrate score");
+          }
         }
         fetchPlaylists();
       });
