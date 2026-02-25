@@ -14,7 +14,7 @@ Erwin is a self-hosted stream music controller:
 - Track download queue (audio caching on disk)
 - Pool + Queue playback model
 - Timestamp-based playback sync (server authority)
-- Twitch voting (auto vote option near track end) and chat integration
+- Twitch voting (auto vote option near track end), chat integration, and customizable chat commands
 - Multi-user accounts:
   - One admin account creates new accounts and manage existing accounts
   - Every authenticated user can do all other actions
@@ -67,6 +67,7 @@ The main UI:
 - Downloads
 - Settings
 - Vote UI and chat feed
+- Dedicated custom commands tab for Twitch bot automation
 - User management (admin only)
 
 ### `/player/stream`
@@ -109,6 +110,93 @@ Returns `{ "status": "ok" }`
 
 ---
 
+### Playlist-track disable semantics
+
+- Disable state is scoped to a playlist-track pair (`playlist_tracks.disabled`), not a global track flag.
+- Update disable via `PUT /api/playlists/:playlistId/tracks/:trackId/disable` with body `{ "disabled": true|false }`.
+- Playlist play seeding (`POST /api/playlists/:id/play`) excludes rows where `playlist_tracks.disabled = 1`.
+- Deprecated global disable endpoints (`PUT /api/library/tracks/:id/disable`, `PUT /api/tracks/:id/disable`) are removed.
+- Legacy `tracks.disabled` is ignored by runtime behavior and should be dropped later in a controlled DB migration.
+
+
+### Import domain boundaries
+
+- Playlist structure I/O is handled by:
+  - `GET /api/playlists/:id/export` (exports playlist-owned fields only: playlist metadata + `track_id`, `position`, `disabled`)
+  - `POST /api/playlists/import-json` (attaches existing library tracks only by `track_id`; does not create/mutate library tracks)
+- Library/source ingest is handled by:
+  - `POST /api/library/tracks` (single URL ingest)
+  - `POST /api/library/tracks/ingest` (bulk URL ingest; optional `playlistId`)
+  - `POST /api/playlists/:id/import-sources` (explicit playlist source-ingest alias)
+- Deprecated endpoint:
+  - `POST /api/playlists/:id/import` returns `410 Gone`
+- Structured results for import/ingest flows include:
+  - `added`, `skipped`, `missingTrackIds`, `errors`
+
+### Library import/export JSON schema and dry-run
+
+- `GET /api/library/export` now includes a top-level `schema` object describing the strict export payload shape and allowed ranges.
+- `POST /api/library/import-json` validates each row against a strict schema:
+  - allowed fields per row: `id`, `title`, `volume_adjust_db`, `intro_sec`, `outro_sec`, `tags`
+  - required: `id` plus at least one updatable field
+  - ranges: `volume_adjust_db` `[-24, 24]`, `intro_sec` `[0, 86400]`, `outro_sec` `[0, 86400]`
+  - `tags`: comma-separated string (`<=2048`) or array (`<=100` items, each `1..64` chars)
+- Import response returns per-row outcomes with `status`:
+  - `updated`: row valid and track exists (and would be applied)
+  - `invalid`: row failed schema validation (`reason` provided)
+  - `missing`: row valid but `id` not found
+- Dry-run support:
+  - query flag: `POST /api/library/import-json?dryRun=1`
+  - payload flag: `{ "dryRun": true, "library": { "tracks": [...] } }`
+  - dry-run validates and reports outcomes without mutating DB.
+
+Minimal round-trip example for bulk rename/tag updates:
+
+1) Export current library:
+
+```bash
+curl -sS -b cookie.txt http://localhost:3000/api/library/export > library-export.json
+```
+
+2) Build a minimal import file with selected updates:
+
+```json
+{
+  "dryRun": true,
+  "library": {
+    "tracks": [
+      {
+        "id": "track_123",
+        "title": "New Display Title",
+        "tags": ["chill", "instrumental"]
+      },
+      {
+        "id": "track_456",
+        "tags": "retro, synthwave"
+      }
+    ]
+  }
+}
+```
+
+3) Preview changes (no write):
+
+```bash
+curl -sS -b cookie.txt -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/api/library/import-json?dryRun=1' \
+  --data @library-import-preview.json
+```
+
+4) Apply changes (remove dry-run flag):
+
+```bash
+curl -sS -b cookie.txt -H 'Content-Type: application/json' \
+  -X POST 'http://localhost:3000/api/library/import-json' \
+  --data @library-import-apply.json
+```
+
+---
+
 ## Timestamp sync model (how playback stays in sync)
 
 The server stores:
@@ -130,10 +218,37 @@ Erwin can connect to Twitch IRC and:
 - Broadcast chat messages into the dashboard
 - Handle vote commands
 - Provide a “now playing” command
+- Execute custom commands managed from the dashboard
 
-Common commands:
+Built-in commands:
 - `!vote <number>`
 - `!song`
+- `!skip` (moderator only)
+- `!pause` (moderator only)
+- `!resume` (moderator only)
+
+Custom commands:
+- Managed in the **Custom Commands** dashboard tab
+- Each command supports:
+  - a primary command (for example `dc` maps to `!dc`)
+  - multiple aliases (`discord`, `disc`, etc.)
+  - enabled/disabled state
+  - response templates with placeholders: `{user}`, `{channel}`, `{track}`, `{command}`
+
+
+### Twitch custom commands API
+
+All routes require authentication.
+
+- `GET /api/twitch/custom-commands`
+  - Returns all custom command definitions.
+- `POST /api/twitch/custom-commands`
+  - Body: `{ command, aliases, response, enabled }`
+  - `aliases` can be a comma-separated string or an array.
+- `PUT /api/twitch/custom-commands/:commandId`
+  - Partial update of command, aliases, response, or enabled state.
+- `DELETE /api/twitch/custom-commands/:commandId`
+  - Deletes a command definition.
 
 ---
 
