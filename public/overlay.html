@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Overlay Canvas</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        place-items: center;
+      }
+      #overlay-canvas {
+        width: min(100vw, calc(100vh * 16 / 9));
+        height: min(100vh, calc(100vw * 9 / 16));
+        max-width: 1920px;
+        max-height: 1080px;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="overlay-canvas" width="1920" height="1080" aria-label="Erwin stream overlay canvas"></canvas>
+    <script>
+      const canvas = document.getElementById("overlay-canvas");
+      const ctx = canvas.getContext("2d");
+      const overlayState = { activeUntil: 0 };
+      const searchParams = new URLSearchParams(window.location.search);
+
+      function drawFrame(timestamp) {
+        const now = Date.now();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (overlayState.activeUntil > now) {
+          const elapsed = timestamp / 1000;
+          const progress = 1 - (overlayState.activeUntil - now) / 8000;
+          const glow = 0.4 + Math.sin(elapsed * 4) * 0.2;
+
+          ctx.save();
+          ctx.globalAlpha = 0.75;
+          const gradient = ctx.createRadialGradient(960, 540, 80, 960, 540, 620);
+          gradient.addColorStop(0, `rgba(143, 227, 255, ${0.6 + glow})`);
+          gradient.addColorStop(1, "rgba(143, 227, 255, 0)");
+          ctx.fillStyle = gradient;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.restore();
+
+          ctx.save();
+          ctx.strokeStyle = "rgba(255,255,255,0.9)";
+          ctx.lineWidth = 10;
+          const radius = 120 + Math.sin(elapsed * 6) * 30;
+          ctx.beginPath();
+          ctx.arc(960, 540, radius, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+
+          ctx.save();
+          ctx.font = "700 72px Inter, system-ui, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillStyle = "rgba(255,255,255,0.95)";
+          ctx.fillText("ERWIN OVERLAY TEST", 960, 545);
+          ctx.font = "500 34px Inter, system-ui, sans-serif";
+          ctx.fillStyle = "rgba(255,255,255,0.85)";
+          ctx.fillText(`Progress ${(progress * 100).toFixed(0)}%`, 960, 610);
+          ctx.restore();
+        }
+        window.requestAnimationFrame(drawFrame);
+      }
+
+      async function fetchState() {
+        try {
+          const response = await fetch("/api/overlay/state", { cache: "no-store" });
+          if (!response.ok) return;
+          const payload = await response.json();
+          overlayState.activeUntil = Number(payload.activeUntil || 0);
+        } catch {
+          // Ignore transient connection failures.
+        }
+      }
+
+      if (searchParams.get("demo") === "1") {
+        overlayState.activeUntil = Date.now() + 8000;
+      }
+
+      setInterval(fetchState, 500);
+      fetchState();
+      window.requestAnimationFrame(drawFrame);
+    </script>
+  </body>
+</html>
