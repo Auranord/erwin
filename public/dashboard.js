@@ -55,6 +55,8 @@ const nowPlaying = document.getElementById("now-playing");
       const customCommandCancel = document.getElementById("custom-command-cancel");
       const customCommandsList = document.getElementById("custom-commands-list");
       const customCommandStatus = document.getElementById("custom-command-status");
+      const copyOverlayEndpointButton = document.getElementById("copy-overlay-endpoint");
+      const openOverlayTestButton = document.getElementById("open-overlay-test");
       let currentUser = null;
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
@@ -1166,6 +1168,26 @@ async function fetchDownloads() {
 
       document.getElementById("open-stream").addEventListener("click", () => {
         window.open("/player/stream", "erwin-stream", "width=1100,height=720");
+      });
+
+      copyOverlayEndpointButton?.addEventListener("click", async () => {
+        const endpoint = `${window.location.origin}/overlay/canvas`;
+        try {
+          await navigator.clipboard.writeText(endpoint);
+          window.alert("Overlay endpoint copied to clipboard.\n" + endpoint);
+        } catch {
+          window.prompt("Copy the overlay endpoint", endpoint);
+        }
+      });
+
+      openOverlayTestButton?.addEventListener("click", async () => {
+        const response = await fetch("/api/overlay/test", { method: "POST" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          window.alert(payload.error || "Unable to trigger overlay test animation.");
+          return;
+        }
+        window.open("/overlay/canvas", "erwin-overlay", "width=1280,height=720");
       });
 
       startVoteButton.addEventListener("click", async () => {

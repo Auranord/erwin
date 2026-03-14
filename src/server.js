@@ -95,6 +95,14 @@ const LIBRARY_QUEUE_ID = "__library__";
 const TRACK_SCORE_MIN = -100;
 const TRACK_SCORE_MAX = 100;
 
+const OVERLAY_CANVAS_WIDTH = 1920;
+const OVERLAY_CANVAS_HEIGHT = 1080;
+const OVERLAY_TEST_DURATION_MS = 8000;
+const overlayState = {
+  activeUntil: 0,
+  lastTriggeredAt: 0
+};
+
 const app = express();
 app.set("trust proxy", 1);
 
@@ -3765,6 +3773,26 @@ app.post("/api/votes/start", requireAuth, (req, res) => {
   });
 });
 
+app.get("/api/overlay/state", (req, res) => {
+  res.json({
+    width: OVERLAY_CANVAS_WIDTH,
+    height: OVERLAY_CANVAS_HEIGHT,
+    activeUntil: overlayState.activeUntil,
+    lastTriggeredAt: overlayState.lastTriggeredAt
+  });
+});
+
+app.post("/api/overlay/test", requireAuth, (req, res) => {
+  overlayState.lastTriggeredAt = Date.now();
+  overlayState.activeUntil = overlayState.lastTriggeredAt + OVERLAY_TEST_DURATION_MS;
+  res.json({
+    ok: true,
+    activeUntil: overlayState.activeUntil,
+    width: OVERLAY_CANVAS_WIDTH,
+    height: OVERLAY_CANVAS_HEIGHT
+  });
+});
+
 app.use("/assets", express.static(path.join(__dirname, "..", "public")));
 
 app.get("/dashboard", requireAuth, (req, res) => {
@@ -3784,6 +3812,9 @@ app.get("/player/stream", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "stream.html"));
 });
 
+app.get("/overlay/canvas", (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "overlay.html"));
+});
 
 app.get("/", (req, res) => {
   res.redirect("/dashboard");
