@@ -204,26 +204,26 @@
           const prevWeighted = analyserState.prevBandWeighted[band] || 0;
           const weightedDelta = Math.abs(weighted - prevWeighted);
           analyserState.prevBandWeighted[band] = weighted;
-          const motionBoost = Math.min(0.18, weightedDelta * 2.6);
+          const motionBoost = Math.min(0.24, weightedDelta * 3.2);
 
-          const target = Math.min(1, (weighted ** 0.5) + motionBoost);
+          const target = Math.min(1, (weighted ** 0.86) + motionBoost);
           if (target > framePeak) framePeak = target;
           const current = equalizerEnergy[band];
-          const smoothing = target > current ? 0.62 : 0.3; // more visible motion in limited width
+          const smoothing = target > current ? 0.68 : 0.52; // much faster release so bars do not stay extended
           let next = current + (target - current) * smoothing;
 
-          if (weightedDelta < 0.003) {
+          if (weightedDelta < 0.006) {
             analyserState.staleBandFrames[band] += 1;
           } else {
             analyserState.staleBandFrames[band] = 0;
           }
 
           // Shrink long-stale bands so dead ranges don't occupy permanent width.
-          if (analyserState.staleBandFrames[band] > 90) {
-            next *= 0.965;
+          if (analyserState.staleBandFrames[band] > 45) {
+            next *= 0.9;
           }
 
-          equalizerEnergy[band] = Math.max(0.005, Math.min(1, next));
+          equalizerEnergy[band] = Math.max(0, Math.min(1, next));
         }
 
         const avgWeighted = frameAverage / EQUALIZER_BANDS;
@@ -276,9 +276,9 @@
           const y = i * (barHeight + barGap);
           const h = Math.max(4, barHeight);
           const boosted = Math.max(0, Math.min(1, energy));
-          const contrast = boosted ** 0.72;
+          const contrast = boosted ** 1.12;
           const w = contrast * (SIDE_EQUALIZER_WIDTH - 6);
-          if (w > 1.5) {
+          if (w > 1) {
             ctx.fillRect(x + 2, y, w, h);
           }
         }
