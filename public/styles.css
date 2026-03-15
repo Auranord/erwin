@@ -842,6 +842,26 @@ select:focus-visible,
   border: 1px solid rgba(200, 164, 90, 0.45);
 }
 
+
+
+.status-pill-twitch {
+  background: linear-gradient(180deg, rgba(84, 42, 145, 0.95), rgba(48, 22, 89, 0.95));
+  border-color: rgba(194, 153, 255, 0.45);
+}
+
+.status-pill-twitch.live {
+  border-color: rgba(63, 128, 88, 0.6);
+}
+
+.status-pill-twitch.offline {
+  border-color: rgba(173, 125, 52, 0.55);
+}
+
+body[data-theme="darkwood"] .status-pill-twitch {
+  background: linear-gradient(180deg, rgba(88, 55, 130, 0.95), rgba(50, 34, 76, 0.95));
+  color: #efe5ff;
+}
+
 .status-pill span {
   width: 8px;
   height: 8px;
