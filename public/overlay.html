@@ -54,7 +54,8 @@
         gain: null,
         source: null,
         frequencyData: null,
-        currentTrackId: null
+        currentTrackId: null,
+        currentTrackStartedAtMs: 0
       };
 
       analyserState.audio.preload = "auto";
@@ -101,6 +102,7 @@
           analyserState.audio.pause();
           analyserState.audio.removeAttribute("src");
           analyserState.currentTrackId = null;
+          analyserState.currentTrackStartedAtMs = 0;
           return;
         }
         if (!ensureAnalyser()) return;
@@ -108,8 +110,15 @@
           try { await analyserState.context.resume(); } catch {}
         }
 
-        if (analyserState.currentTrackId !== trackId) {
+        const needsReload = (
+          analyserState.currentTrackId !== trackId ||
+          analyserState.currentTrackStartedAtMs !== startedAtMs ||
+          analyserState.audio.error ||
+          !analyserState.audio.src
+        );
+        if (needsReload) {
           analyserState.currentTrackId = trackId;
+          analyserState.currentTrackStartedAtMs = startedAtMs;
           for (let i = 0; i < EQUALIZER_BANDS; i += 1) equalizerEnergy[i] = 0.08;
           analyserState.audio.src = `/api/overlay/audio/${trackId}?v=${startedAtMs}`;
           analyserState.audio.load();
@@ -131,6 +140,9 @@
             await analyserState.audio.play();
           } catch {
             // Ignore autoplay restrictions/transient play errors.
+          }
+          if (analyserState.context?.state !== "running") {
+            try { await analyserState.context?.resume(); } catch {}
           }
         }
       }
