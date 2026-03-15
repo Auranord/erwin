@@ -59,6 +59,8 @@
 
       analyserState.audio.preload = "auto";
       analyserState.audio.volume = 0;
+      analyserState.audio.muted = true;
+      analyserState.audio.playsInline = true;
       analyserState.audio.crossOrigin = "anonymous";
 
       function computePlaybackSeconds(nowMs) {
@@ -109,7 +111,7 @@
         if (analyserState.currentTrackId !== trackId) {
           analyserState.currentTrackId = trackId;
           for (let i = 0; i < EQUALIZER_BANDS; i += 1) equalizerEnergy[i] = 0.08;
-          analyserState.audio.src = `/api/audio/${trackId}?v=${startedAtMs}`;
+          analyserState.audio.src = `/api/overlay/audio/${trackId}?v=${startedAtMs}`;
           analyserState.audio.load();
         }
 

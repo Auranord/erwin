@@ -2864,10 +2864,10 @@ app.post("/api/queue/skip", requireAuth, (req, res) => {
   res.json({ playState, queue, skipped });
 });
 
-app.get("/api/audio/:trackId", requireAuth, (req, res) => {
+function streamTrackAudioById(trackId, req, res) {
   const track = db
     .prepare("SELECT audio_path FROM tracks WHERE id = ?")
-    .get(req.params.trackId);
+    .get(trackId);
   if (!track?.audio_path) {
     return res.status(404).json({ error: "Audio not available" });
   }
@@ -2902,6 +2902,18 @@ app.get("/api/audio/:trackId", requireAuth, (req, res) => {
     .catch(() => {
       res.status(404).json({ error: "Audio not available" });
     });
+}
+
+app.get("/api/audio/:trackId", requireAuth, (req, res) => {
+  return streamTrackAudioById(req.params.trackId, req, res);
+});
+
+app.get("/api/overlay/audio/:trackId", (req, res) => {
+  const playState = getPlayState();
+  if (!playState?.current_track_id || playState.current_track_id !== req.params.trackId) {
+    return res.status(404).json({ error: "Audio not available" });
+  }
+  return streamTrackAudioById(req.params.trackId, req, res);
 });
 
 app.post("/api/queue/enqueue", requireAuth, (req, res) => {
