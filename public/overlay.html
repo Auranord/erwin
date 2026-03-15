@@ -45,12 +45,21 @@
       const searchParams = new URLSearchParams(window.location.search);
 
       const SIDE_EQUALIZER_WIDTH = 360;
-      const EQUALIZER_ROWS = 56;
-      const equalizerEnergy = {
-        left: Array.from({ length: EQUALIZER_ROWS }, () => 0.12),
-        right: Array.from({ length: EQUALIZER_ROWS }, () => 0.12)
+      const EQUALIZER_BANDS = 16;
+      const equalizerEnergy = Array.from({ length: EQUALIZER_BANDS }, () => 0.08);
+      const analyserState = {
+        audio: new Audio(),
+        context: null,
+        analyser: null,
+        gain: null,
+        source: null,
+        frequencyData: null,
+        currentTrackId: null
       };
 
+      analyserState.audio.preload = "auto";
+      analyserState.audio.volume = 0;
+      analyserState.audio.crossOrigin = "anonymous";
 
       function computePlaybackSeconds(nowMs) {
         const playback = overlayState.playback || {};
@@ -65,59 +74,121 @@
         return Math.min(durationSec, elapsedSec);
       }
 
-      function getTrackPhaseSeed(trackId) {
-        if (!trackId) return 0.27;
-        let hash = 0;
-        for (let i = 0; i < trackId.length; i += 1) {
-          hash = ((hash << 5) - hash + trackId.charCodeAt(i)) | 0;
-        }
-        return Math.abs(hash % 1000) / 1000;
+      function ensureAnalyser() {
+        if (analyserState.analyser) return true;
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return false;
+        analyserState.context = new AudioCtx();
+        analyserState.analyser = analyserState.context.createAnalyser();
+        analyserState.analyser.fftSize = 2048;
+        analyserState.analyser.smoothingTimeConstant = 0.78;
+        analyserState.frequencyData = new Uint8Array(analyserState.analyser.frequencyBinCount);
+        analyserState.gain = analyserState.context.createGain();
+        analyserState.gain.gain.value = 0;
+        analyserState.source = analyserState.context.createMediaElementSource(analyserState.audio);
+        analyserState.source.connect(analyserState.analyser);
+        analyserState.analyser.connect(analyserState.gain);
+        analyserState.gain.connect(analyserState.context.destination);
+        return true;
       }
 
-      function drawHypeEqualizerSide({ side = "left" }) {
-        const nowMs = Date.now();
-        const playbackSec = computePlaybackSeconds(nowMs);
-        const durationSec = Number(overlayState.playback.durationSec || 0);
-        const paused = Boolean(overlayState.playback.paused);
-        const trackSeed = getTrackPhaseSeed(overlayState.playback.trackId);
-        const x = side === "left" ? 0 : canvas.width - SIDE_EQUALIZER_WIDTH;
-        const rowHeight = canvas.height / EQUALIZER_ROWS;
-        const wallSkew = side === "left" ? -0.12 : 0.12;
+      async function syncAnalyserTrack() {
+        const trackId = overlayState.playback.trackId;
+        const startedAtMs = Number(overlayState.playback.startedAtMs || 0);
+        if (!trackId || !startedAtMs) {
+          analyserState.audio.pause();
+          analyserState.audio.removeAttribute("src");
+          analyserState.currentTrackId = null;
+          return;
+        }
+        if (!ensureAnalyser()) return;
+        if (analyserState.context?.state === "suspended") {
+          try { await analyserState.context.resume(); } catch {}
+        }
+
+        if (analyserState.currentTrackId !== trackId) {
+          analyserState.currentTrackId = trackId;
+          for (let i = 0; i < EQUALIZER_BANDS; i += 1) equalizerEnergy[i] = 0.08;
+          analyserState.audio.src = `/api/audio/${trackId}?v=${startedAtMs}`;
+          analyserState.audio.load();
+        }
+
+        const targetSec = computePlaybackSeconds(Date.now());
+        if (Number.isFinite(analyserState.audio.currentTime) && Math.abs(analyserState.audio.currentTime - targetSec) > 0.45) {
+          try {
+            analyserState.audio.currentTime = Math.max(0, targetSec);
+          } catch {
+            // Ignore seek errors while not ready.
+          }
+        }
+
+        if (overlayState.playback.paused) {
+          analyserState.audio.pause();
+        } else {
+          try {
+            await analyserState.audio.play();
+          } catch {
+            // Ignore autoplay restrictions/transient play errors.
+          }
+        }
+      }
+
+      function updateEqualizerBandsFromAudio() {
+        if (!analyserState.analyser || !analyserState.frequencyData || overlayState.playback.paused) {
+          for (let i = 0; i < EQUALIZER_BANDS; i += 1) {
+            equalizerEnergy[i] += (0.04 - equalizerEnergy[i]) * 0.06;
+          }
+          return;
+        }
+
+        analyserState.analyser.getByteFrequencyData(analyserState.frequencyData);
+        const nyquistBins = analyserState.frequencyData.length;
+        const minBin = 1;
+        for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
+          const start = Math.floor((band / EQUALIZER_BANDS) * nyquistBins);
+          const end = Math.max(start + 1, Math.floor(((band + 1) / EQUALIZER_BANDS) * nyquistBins));
+          let sum = 0;
+          let count = 0;
+          for (let i = Math.max(minBin, start); i < end; i += 1) {
+            sum += analyserState.frequencyData[i];
+            count += 1;
+          }
+          const average = count > 0 ? sum / count : 0;
+          const normalized = Math.max(0, Math.min(1, average / 255));
+          const eased = normalized ** 0.85;
+          equalizerEnergy[band] += (eased - equalizerEnergy[band]) * 0.22;
+        }
+      }
+
+      function drawHypeEqualizerSide() {
+        const playbackSec = computePlaybackSeconds(Date.now());
+        const x = 0;
+        const barGap = 8;
+        const totalGap = barGap * (EQUALIZER_BANDS - 1);
+        const barHeight = (canvas.height - totalGap) / EQUALIZER_BANDS;
 
         ctx.save();
         ctx.beginPath();
         ctx.rect(x, 0, SIDE_EQUALIZER_WIDTH, canvas.height);
         ctx.clip();
-        ctx.transform(1, wallSkew, 0, 1, 0, 0);
+        ctx.transform(1, -0.12, 0, 1, 0, 0);
         ctx.globalCompositeOperation = "screen";
-        ctx.globalAlpha = 0.4;
+        ctx.globalAlpha = 0.48;
 
-        const drift = (playbackSec * 18) % 360;
+        const drift = (playbackSec * 14) % 360;
         const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        gradient.addColorStop(0, `hsla(${(drift + 10) % 360}, 95%, 62%, 0.9)`);
-        gradient.addColorStop(0.34, `hsla(${(drift + 130) % 360}, 95%, 60%, 0.9)`);
-        gradient.addColorStop(0.67, `hsla(${(drift + 240) % 360}, 95%, 58%, 0.9)`);
-        gradient.addColorStop(1, `hsla(${(drift + 320) % 360}, 95%, 62%, 0.9)`);
+        gradient.addColorStop(0, `hsla(${(drift + 0) % 360}, 95%, 62%, 0.88)`);
+        gradient.addColorStop(0.34, `hsla(${(drift + 120) % 360}, 95%, 60%, 0.88)`);
+        gradient.addColorStop(0.67, `hsla(${(drift + 240) % 360}, 95%, 58%, 0.88)`);
+        gradient.addColorStop(1, `hsla(${(drift + 320) % 360}, 95%, 62%, 0.88)`);
         ctx.fillStyle = gradient;
 
-        const progress = durationSec > 0 ? playbackSec / durationSec : playbackSec * 0.02;
-        const smoothing = paused ? 0.06 : 0.16;
-        const sideEnergy = equalizerEnergy[side];
-        for (let i = 0; i < EQUALIZER_ROWS; i += 1) {
-          const t = i / Math.max(1, EQUALIZER_ROWS - 1);
-          const frequency = 0.7 + t * 3.1 + trackSeed * 1.2;
-          const harmonicA = Math.sin((playbackSec * 2.3 + progress * 9.5) * frequency + t * 6.2);
-          const harmonicB = Math.sin((playbackSec * 3.7 + progress * 14.1) * (frequency * 0.62) + trackSeed * 13);
-          const targetEnergy = Math.max(0.05, Math.min(1, 0.24 + harmonicA * 0.33 + harmonicB * 0.27));
-          const smoothEnergy = sideEnergy[i] + (targetEnergy - sideEnergy[i]) * smoothing;
-          sideEnergy[i] = smoothEnergy;
-
-          const y = i * rowHeight + 1;
-          const h = Math.max(2, rowHeight - 2.5);
-          const w = Math.max(8, smoothEnergy * SIDE_EQUALIZER_WIDTH * 0.96);
-          const startX = side === "left" ? x + 2 : x + SIDE_EQUALIZER_WIDTH - 2;
-          const drawX = side === "left" ? startX : startX - w;
-          ctx.fillRect(drawX, y, w, h);
+        for (let i = 0; i < EQUALIZER_BANDS; i += 1) {
+          const energy = equalizerEnergy[i];
+          const y = i * (barHeight + barGap);
+          const h = Math.max(4, barHeight);
+          const w = Math.max(12, energy * (SIDE_EQUALIZER_WIDTH - 16));
+          ctx.fillRect(x + 4, y, w, h);
         }
 
         ctx.restore();
@@ -137,8 +208,8 @@
       }
 
       function drawHypeRave() {
-        drawHypeEqualizerSide({ side: "left" });
-        drawHypeEqualizerSide({ side: "right" });
+        updateEqualizerBandsFromAudio();
+        drawHypeEqualizerSide();
       }
 
       function drawFrame(timestamp) {
@@ -167,6 +238,7 @@
           overlayState.playback.startedAtMs = Number(payload.playback?.startedAtMs || 0);
           overlayState.playback.paused = Boolean(payload.playback?.paused);
           overlayState.playback.pausedAtMs = Number(payload.playback?.pausedAtMs || 0);
+          await syncAnalyserTrack();
         } catch {
           // Ignore transient connection failures.
         }
