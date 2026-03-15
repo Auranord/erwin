@@ -208,6 +208,11 @@ const nowPlaying = document.getElementById("now-playing");
         overlayEndpointInput.value = overlayEndpoint;
       }
 
+      const overlayTabLinks = Array.from(document.querySelectorAll('.tab-link[data-tab="overlay"]'));
+      if (overlayTabLinks.length > 1) {
+        overlayTabLinks.slice(0, -1).forEach((tab) => tab.remove());
+      }
+
       document.querySelectorAll(".tab-link").forEach((link) => {
         link.addEventListener("click", (event) => {
           event.preventDefault();
