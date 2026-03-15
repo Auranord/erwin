@@ -55,7 +55,8 @@
         source: null,
         frequencyData: null,
         currentTrackId: null,
-        currentTrackStartedAtMs: 0
+        currentTrackStartedAtMs: 0,
+        silentFrames: 0
       };
 
       analyserState.audio.preload = "auto";
@@ -163,6 +164,7 @@
         const logMin = Math.log(minBin);
         const logMax = Math.log(maxBin);
 
+        let globalEnergy = 0;
         for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
           const startRatio = band / EQUALIZER_BANDS;
           const endRatio = (band + 1) / EQUALIZER_BANDS;
@@ -183,9 +185,30 @@
           const mixed = (peak * 0.62) + (avg * 0.38);
           const normalized = Math.max(0, Math.min(1, mixed / 255));
           const target = normalized ** 0.72;
+          globalEnergy += target;
           const current = equalizerEnergy[band];
           const smoothing = target > current ? 0.42 : 0.22; // faster grow, slower fall
           equalizerEnergy[band] = current + (target - current) * smoothing;
+        }
+
+        const avgEnergy = globalEnergy / EQUALIZER_BANDS;
+        if (avgEnergy < 0.018) {
+          analyserState.silentFrames += 1;
+        } else {
+          analyserState.silentFrames = 0;
+        }
+
+        // Browser sources can block analyser playback in some environments.
+        // Fallback keeps bars visibly animated from playback phase if analyser stays silent.
+        if (analyserState.silentFrames > 20) {
+          const playbackSec = computePlaybackSeconds(Date.now());
+          for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
+            const phase = playbackSec * (2.0 + band * 0.085) + band * 0.7;
+            const pulse = (Math.sin(phase) + Math.sin(phase * 0.57 + 1.7) + 2) / 4;
+            const target = 0.12 + pulse * 0.58;
+            const current = equalizerEnergy[band];
+            equalizerEnergy[band] = current + (target - current) * 0.28;
+          }
         }
       }
 
