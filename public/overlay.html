@@ -31,8 +31,86 @@
     <script>
       const canvas = document.getElementById("overlay-canvas");
       const ctx = canvas.getContext("2d");
-      const overlayState = { activeUntil: 0, hypeUntil: 0 };
+      const overlayState = {
+        activeUntil: 0,
+        hypeUntil: 0,
+        playback: {
+          trackId: null,
+          durationSec: 0,
+          startedAtMs: 0,
+          paused: true,
+          pausedAtMs: 0
+        }
+      };
       const searchParams = new URLSearchParams(window.location.search);
+
+      const SIDE_EQUALIZER_WIDTH = 360;
+
+      function computePlaybackSeconds(nowMs) {
+        const playback = overlayState.playback || {};
+        const startedAtMs = Number(playback.startedAtMs || 0);
+        if (!startedAtMs) return 0;
+        const paused = Boolean(playback.paused);
+        const pausedAtMs = Number(playback.pausedAtMs || 0);
+        const durationSec = Number(playback.durationSec || 0);
+        const referenceMs = paused && pausedAtMs ? pausedAtMs : nowMs;
+        const elapsedSec = Math.max(0, (referenceMs - startedAtMs) / 1000);
+        if (!durationSec) return elapsedSec;
+        return Math.min(durationSec, elapsedSec);
+      }
+
+      function getTrackPhaseSeed(trackId) {
+        if (!trackId) return 0.27;
+        let hash = 0;
+        for (let i = 0; i < trackId.length; i += 1) {
+          hash = ((hash << 5) - hash + trackId.charCodeAt(i)) | 0;
+        }
+        return Math.abs(hash % 1000) / 1000;
+      }
+
+      function drawHypeEqualizerSide({ timestamp, side = "left" }) {
+        const nowMs = Date.now();
+        const elapsedSec = timestamp / 1000;
+        const playbackSec = computePlaybackSeconds(nowMs);
+        const trackSeed = getTrackPhaseSeed(overlayState.playback.trackId);
+        const wallDepth = 70;
+        const x = side === "left" ? 0 : canvas.width - SIDE_EQUALIZER_WIDTH;
+        const bars = 32;
+        const barWidth = SIDE_EQUALIZER_WIDTH / bars;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, 0, SIDE_EQUALIZER_WIDTH, canvas.height);
+        ctx.clip();
+        ctx.translate(side === "left" ? wallDepth : -wallDepth, 0);
+        ctx.transform(1, 0, side === "left" ? -0.12 : 0.12, 1, 0, 0);
+        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = 0.45;
+
+        const drift = (elapsedSec * 12 + playbackSec * 4) % 360;
+        const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        gradient.addColorStop(0, `hsla(${(drift + 10) % 360}, 95%, 62%, 0.9)`);
+        gradient.addColorStop(0.34, `hsla(${(drift + 130) % 360}, 95%, 60%, 0.9)`);
+        gradient.addColorStop(0.67, `hsla(${(drift + 240) % 360}, 95%, 58%, 0.9)`);
+        gradient.addColorStop(1, `hsla(${(drift + 320) % 360}, 95%, 62%, 0.9)`);
+        ctx.fillStyle = gradient;
+
+        for (let i = 0; i < bars; i += 1) {
+          const t = i / Math.max(1, bars - 1);
+          const band = (playbackSec * 2.5) + (t * 9.2) + (trackSeed * Math.PI * 2);
+          const ripple = Math.sin(band) * 0.5 + Math.sin(band * 1.9 + elapsedSec * 2.2) * 0.3;
+          const pulse = (Math.sin(elapsedSec * 5.4 + i * 0.45 + trackSeed * 11) + 1) * 0.5;
+          const activity = Math.max(0.08, Math.min(1, 0.22 + pulse * 0.45 + ripple * 0.33));
+          const barHeight = canvas.height * activity;
+          const bottomInset = 8;
+          const xPos = x + i * barWidth;
+          const width = Math.max(2, barWidth - 3.5);
+          const yPos = canvas.height - barHeight - bottomInset;
+          ctx.fillRect(xPos, yPos, width, barHeight);
+        }
+
+        ctx.restore();
+      }
 
       function drawTestPulse(timestamp) {
         const elapsed = timestamp / 1000;
@@ -103,6 +181,9 @@
         ctx.fillStyle = "rgba(255,255,255,0.82)";
         ctx.fillText("HYPE", 960, 120);
         ctx.restore();
+
+        drawHypeEqualizerSide({ timestamp, side: "left" });
+        drawHypeEqualizerSide({ timestamp, side: "right" });
       }
 
       function drawFrame(timestamp) {
@@ -126,6 +207,11 @@
           const payload = await response.json();
           overlayState.activeUntil = Number(payload.activeUntil || 0);
           overlayState.hypeUntil = Number(payload.hypeUntil || 0);
+          overlayState.playback.trackId = payload.playback?.trackId || null;
+          overlayState.playback.durationSec = Number(payload.playback?.durationSec || 0);
+          overlayState.playback.startedAtMs = Number(payload.playback?.startedAtMs || 0);
+          overlayState.playback.paused = Boolean(payload.playback?.paused);
+          overlayState.playback.pausedAtMs = Number(payload.playback?.pausedAtMs || 0);
         } catch {
           // Ignore transient connection failures.
         }
