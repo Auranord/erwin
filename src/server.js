@@ -95,6 +95,30 @@ const LIBRARY_QUEUE_ID = "__library__";
 const TRACK_SCORE_MIN = -100;
 const TRACK_SCORE_MAX = 100;
 
+const OVERLAY_CANVAS_WIDTH = 1920;
+const OVERLAY_CANVAS_HEIGHT = 1080;
+const OVERLAY_TEST_DURATION_MS = 8000;
+
+const HYPE_DEFAULTS = {
+  emotes: ["PogChamp", "Kappa", "HYPERS"],
+  thresholdPercent: 20,
+  durationSeconds: 12,
+  extensionRatio: 0.35,
+  userCooldownSeconds: 8
+};
+
+const overlayState = {
+  activeUntil: 0,
+  lastTriggeredAt: 0,
+  hypeUntil: 0,
+  hypeLastTriggeredAt: 0
+};
+
+const hypeRuntime = {
+  participants: new Set(),
+  userLastCountedAt: new Map()
+};
+
 const app = express();
 app.set("trust proxy", 1);
 
@@ -1189,6 +1213,99 @@ function setSettingValue(key, value) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, String(value));
 }
 
+function normalizeEmoteList(value) {
+  if (!value) return [];
+  return String(value)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function getHypeSettings() {
+  const emotes = normalizeEmoteList(getSettingString("overlay_hype_emotes", HYPE_DEFAULTS.emotes.join(",")));
+  return {
+    emotes: emotes.length ? emotes : [...HYPE_DEFAULTS.emotes],
+    thresholdPercent: clampNumber(
+      Number(getSettingValue("overlay_hype_threshold_percent", HYPE_DEFAULTS.thresholdPercent)),
+      1,
+      100,
+      HYPE_DEFAULTS.thresholdPercent
+    ),
+    durationSeconds: clampNumber(
+      Number(getSettingValue("overlay_hype_duration_seconds", HYPE_DEFAULTS.durationSeconds)),
+      3,
+      120,
+      HYPE_DEFAULTS.durationSeconds
+    ),
+    extensionRatio: clampNumber(
+      Number(getSettingValue("overlay_hype_extension_ratio", HYPE_DEFAULTS.extensionRatio)),
+      0.05,
+      1,
+      HYPE_DEFAULTS.extensionRatio
+    ),
+    userCooldownSeconds: clampNumber(
+      Number(getSettingValue("overlay_hype_user_cooldown_seconds", HYPE_DEFAULTS.userCooldownSeconds)),
+      0,
+      60,
+      HYPE_DEFAULTS.userCooldownSeconds
+    )
+  };
+}
+
+function messageContainsHypeEmote(message, emotes) {
+  const normalized = String(message || "").toLowerCase();
+  if (!normalized) return false;
+  return emotes.some((emote) => normalized.includes(String(emote).toLowerCase()));
+}
+
+function triggerHype(durationMs) {
+  const now = Date.now();
+  overlayState.hypeLastTriggeredAt = now;
+  overlayState.hypeUntil = Math.max(overlayState.hypeUntil, now) + durationMs;
+}
+
+function handleHypeChatMessage({ user, message }) {
+  const settings = getHypeSettings();
+  if (!messageContainsHypeEmote(message, settings.emotes)) return;
+
+  const now = Date.now();
+  const active = overlayState.hypeUntil > now;
+  if (!active) {
+    hypeRuntime.participants.clear();
+  }
+
+  const userKey = String(user || "").trim().toLowerCase();
+  if (!userKey) return;
+
+  const cooldownMs = settings.userCooldownSeconds * 1000;
+  const lastCounted = hypeRuntime.userLastCountedAt.get(userKey) || 0;
+  if (cooldownMs > 0 && now - lastCounted < cooldownMs) {
+    return;
+  }
+  if (hypeRuntime.participants.has(userKey)) {
+    return;
+  }
+
+  hypeRuntime.userLastCountedAt.set(userKey, now);
+  hypeRuntime.participants.add(userKey);
+
+  if (active) {
+    const extensionMs = Math.max(1000, Math.round(settings.durationSeconds * settings.extensionRatio * 1000));
+    triggerHype(extensionMs);
+    return;
+  }
+
+  const liveViewers = Number(twitchChannelStatusCache.viewerCount || 0);
+  const requiredParticipants = Math.max(
+    1,
+    Math.ceil((Math.max(1, liveViewers) * settings.thresholdPercent) / 100)
+  );
+  if (hypeRuntime.participants.size >= requiredParticipants) {
+    hypeRuntime.participants.clear();
+    triggerHype(Math.round(settings.durationSeconds * 1000));
+  }
+}
+
 
 function formatTemplate(template, values) {
   return template.replace(/\{(\w+)\}/g, (match, key) => {
@@ -1874,6 +1991,88 @@ let twitchRefreshToken = TWITCH_REFRESH_TOKEN;
 let twitchTokenRefreshTimer = null;
 let twitchRefreshInFlight = null;
 
+const TWITCH_CHANNEL_STATUS_TTL_MS = 10_000;
+const twitchChannelStatusCache = {
+  fetchedAt: 0,
+  channel: TWITCH_CHANNEL || "",
+  live: false,
+  viewerCount: 0,
+  gameName: "",
+  title: "",
+  error: ""
+};
+
+function getTwitchHelixAccessToken() {
+  const channelToken = getSettingString("twitch_channel_auth_access_token", "");
+  const raw = channelToken || twitchOauthToken || "";
+  return String(raw).replace(/^oauth:/, "").trim();
+}
+
+async function fetchTwitchChannelStatus({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && now - twitchChannelStatusCache.fetchedAt < TWITCH_CHANNEL_STATUS_TTL_MS) {
+    return twitchChannelStatusCache;
+  }
+  const channelLogin = String(TWITCH_CHANNEL || getSettingString("twitch_channel_auth_login", "")).trim();
+  if (!channelLogin) {
+    twitchChannelStatusCache.fetchedAt = now;
+    twitchChannelStatusCache.channel = "";
+    twitchChannelStatusCache.live = false;
+    twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.error = "channel_not_linked";
+    return twitchChannelStatusCache;
+  }
+  const token = getTwitchHelixAccessToken();
+  if (!TWITCH_CLIENT_ID || !token) {
+    twitchChannelStatusCache.fetchedAt = now;
+    twitchChannelStatusCache.channel = channelLogin;
+    twitchChannelStatusCache.live = false;
+    twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.error = "missing_twitch_api_credentials";
+    return twitchChannelStatusCache;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.twitch.tv/helix/streams?user_login=${encodeURIComponent(channelLogin)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Client-Id": TWITCH_CLIENT_ID
+        }
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      twitchChannelStatusCache.fetchedAt = now;
+      twitchChannelStatusCache.channel = channelLogin;
+      twitchChannelStatusCache.live = false;
+      twitchChannelStatusCache.viewerCount = 0;
+      twitchChannelStatusCache.error = `helix_stream_error_${response.status}`;
+      log("warn", "twitch channel status request failed", { status: response.status, body: text.slice(0, 300) });
+      return twitchChannelStatusCache;
+    }
+    const payload = await response.json();
+    const stream = Array.isArray(payload?.data) ? payload.data[0] : null;
+    twitchChannelStatusCache.fetchedAt = now;
+    twitchChannelStatusCache.channel = channelLogin;
+    twitchChannelStatusCache.live = Boolean(stream);
+    twitchChannelStatusCache.viewerCount = Number(stream?.viewer_count || 0);
+    twitchChannelStatusCache.gameName = String(stream?.game_name || "");
+    twitchChannelStatusCache.title = String(stream?.title || "");
+    twitchChannelStatusCache.error = "";
+    return twitchChannelStatusCache;
+  } catch (error) {
+    twitchChannelStatusCache.fetchedAt = now;
+    twitchChannelStatusCache.channel = channelLogin;
+    twitchChannelStatusCache.live = false;
+    twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.error = "network_error";
+    log("warn", "twitch channel status network error", { error: String(error?.message || error) });
+    return twitchChannelStatusCache;
+  }
+}
+
 function normalizeOauthToken(token) {
   if (!token) return "";
   return token.startsWith("oauth:") ? token : `oauth:${token}`;
@@ -2108,6 +2307,7 @@ function connectTwitchBot() {
         return;
       }
       if (!isCommand) {
+        handleHypeChatMessage({ user, message });
         return;
       }
       const [command, ...restArgs] = lower.slice(TWITCH_COMMAND_PREFIX.length).split(" ");
@@ -2559,6 +2759,18 @@ app.get("/api/channel-auth/status", requireAuth, requireAdmin, (req, res) => {
   res.json({ connected, login, displayName, updatedAt });
 });
 
+app.get("/api/twitch/channel-status", requireAuth, async (req, res) => {
+  const status = await fetchTwitchChannelStatus();
+  res.json({
+    channel: status.channel,
+    live: status.live,
+    viewerCount: status.viewerCount,
+    gameName: status.gameName,
+    title: status.title,
+    fetchedAt: status.fetchedAt,
+    error: status.error || null
+  });
+});
 
 app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "User creation is disabled in Twitch auth mode" });
@@ -3765,6 +3977,47 @@ app.post("/api/votes/start", requireAuth, (req, res) => {
   });
 });
 
+app.get("/api/overlay/state", async (req, res) => {
+  const status = await fetchTwitchChannelStatus();
+  const hypeSettings = getHypeSettings();
+  res.json({
+    width: OVERLAY_CANVAS_WIDTH,
+    height: OVERLAY_CANVAS_HEIGHT,
+    activeUntil: overlayState.activeUntil,
+    lastTriggeredAt: overlayState.lastTriggeredAt,
+    hypeUntil: overlayState.hypeUntil,
+    hypeLastTriggeredAt: overlayState.hypeLastTriggeredAt,
+    hypeEmotes: hypeSettings.emotes,
+    twitch: {
+      channel: status.channel,
+      live: status.live,
+      viewerCount: status.viewerCount
+    }
+  });
+});
+
+app.post("/api/overlay/test", requireAuth, (req, res) => {
+  overlayState.lastTriggeredAt = Date.now();
+  overlayState.activeUntil = overlayState.lastTriggeredAt + OVERLAY_TEST_DURATION_MS;
+  res.json({
+    ok: true,
+    activeUntil: overlayState.activeUntil,
+    width: OVERLAY_CANVAS_WIDTH,
+    height: OVERLAY_CANVAS_HEIGHT
+  });
+});
+
+app.post("/api/overlay/hype/test", requireAuth, (req, res) => {
+  const settings = getHypeSettings();
+  hypeRuntime.participants.clear();
+  triggerHype(Math.round(settings.durationSeconds * 1000));
+  res.json({
+    ok: true,
+    hypeUntil: overlayState.hypeUntil,
+    durationSeconds: settings.durationSeconds
+  });
+});
+
 app.use("/assets", express.static(path.join(__dirname, "..", "public")));
 
 app.get("/dashboard", requireAuth, (req, res) => {
@@ -3784,6 +4037,9 @@ app.get("/player/stream", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "stream.html"));
 });
 
+app.get("/overlay/canvas", (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "overlay.html"));
+});
 
 app.get("/", (req, res) => {
   res.redirect("/dashboard");
