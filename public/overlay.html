@@ -83,8 +83,8 @@
         if (!AudioCtx) return false;
         analyserState.context = new AudioCtx();
         analyserState.analyser = analyserState.context.createAnalyser();
-        analyserState.analyser.fftSize = 2048;
-        analyserState.analyser.smoothingTimeConstant = 0.78;
+        analyserState.analyser.fftSize = 1024;
+        analyserState.analyser.smoothingTimeConstant = 0.35;
         analyserState.frequencyData = new Uint8Array(analyserState.analyser.frequencyBinCount);
         analyserState.gain = analyserState.context.createGain();
         analyserState.gain.gain.value = 0;
@@ -148,29 +148,44 @@
       }
 
       function updateEqualizerBandsFromAudio() {
-        if (!analyserState.analyser || !analyserState.frequencyData || overlayState.playback.paused) {
-          for (let i = 0; i < EQUALIZER_BANDS; i += 1) {
-            equalizerEnergy[i] += (0.04 - equalizerEnergy[i]) * 0.06;
-          }
+        if (!analyserState.analyser || !analyserState.frequencyData) {
+          return;
+        }
+        if (overlayState.playback.paused || analyserState.audio.paused) {
+          // Freeze bars during pause to avoid jitter.
           return;
         }
 
         analyserState.analyser.getByteFrequencyData(analyserState.frequencyData);
-        const nyquistBins = analyserState.frequencyData.length;
-        const minBin = 1;
+        const totalBins = analyserState.frequencyData.length;
+        const minBin = 2;
+        const maxBin = Math.max(minBin + 1, Math.floor(totalBins * 0.92));
+        const logMin = Math.log(minBin);
+        const logMax = Math.log(maxBin);
+
         for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
-          const start = Math.floor((band / EQUALIZER_BANDS) * nyquistBins);
-          const end = Math.max(start + 1, Math.floor(((band + 1) / EQUALIZER_BANDS) * nyquistBins));
+          const startRatio = band / EQUALIZER_BANDS;
+          const endRatio = (band + 1) / EQUALIZER_BANDS;
+          const start = Math.max(minBin, Math.floor(Math.exp(logMin + (logMax - logMin) * startRatio)));
+          const end = Math.min(maxBin, Math.max(start + 1, Math.floor(Math.exp(logMin + (logMax - logMin) * endRatio))));
+
+          let peak = 0;
           let sum = 0;
           let count = 0;
-          for (let i = Math.max(minBin, start); i < end; i += 1) {
-            sum += analyserState.frequencyData[i];
+          for (let i = start; i < end; i += 1) {
+            const value = analyserState.frequencyData[i];
+            if (value > peak) peak = value;
+            sum += value;
             count += 1;
           }
-          const average = count > 0 ? sum / count : 0;
-          const normalized = Math.max(0, Math.min(1, average / 255));
-          const eased = normalized ** 0.85;
-          equalizerEnergy[band] += (eased - equalizerEnergy[band]) * 0.22;
+
+          const avg = count > 0 ? sum / count : 0;
+          const mixed = (peak * 0.62) + (avg * 0.38);
+          const normalized = Math.max(0, Math.min(1, mixed / 255));
+          const target = normalized ** 0.72;
+          const current = equalizerEnergy[band];
+          const smoothing = target > current ? 0.42 : 0.22; // faster grow, slower fall
+          equalizerEnergy[band] = current + (target - current) * smoothing;
         }
       }
 
