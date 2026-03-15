@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Erwin Overlay Canvas</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        place-items: center;
+      }
+      #overlay-canvas {
+        width: min(100vw, calc(100vh * 16 / 9));
+        height: min(100vh, calc(100vw * 9 / 16));
+        max-width: 1920px;
+        max-height: 1080px;
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="overlay-canvas" width="1920" height="1080" aria-label="Erwin stream overlay canvas"></canvas>
+    <script>
+      const canvas = document.getElementById("overlay-canvas");
+      const ctx = canvas.getContext("2d");
+      const overlayState = { activeUntil: 0, hypeUntil: 0 };
+      const searchParams = new URLSearchParams(window.location.search);
+
+      function drawTestPulse(timestamp) {
+        const elapsed = timestamp / 1000;
+        const glow = 0.35 + Math.sin(elapsed * 4) * 0.18;
+        ctx.save();
+        ctx.globalAlpha = 0.5;
+        const gradient = ctx.createRadialGradient(960, 540, 80, 960, 540, 620);
+        gradient.addColorStop(0, `rgba(143, 227, 255, ${0.5 + glow})`);
+        gradient.addColorStop(1, "rgba(143, 227, 255, 0)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      }
+
+      function drawHypeRave(timestamp) {
+        const elapsed = timestamp / 1000;
+        const colors = [
+          [255, 56, 156],
+          [80, 255, 222],
+          [124, 105, 255],
+          [255, 210, 78]
+        ];
+
+        for (let i = 0; i < 18; i += 1) {
+          const hue = colors[i % colors.length];
+          const sweep = (elapsed * 0.52 + i / 18) * Math.PI * 2;
+          const x = 960 + Math.cos(sweep) * 1020;
+          const y = 540 + Math.sin(sweep * 1.4) * 660;
+          const x2 = 960 + Math.cos(sweep + 0.7) * 260;
+          const y2 = 540 + Math.sin(sweep + 0.7) * 170;
+
+          ctx.save();
+          ctx.globalCompositeOperation = "screen";
+          ctx.globalAlpha = 0.18 + ((Math.sin(elapsed * 7 + i) + 1) * 0.07);
+          const beam = ctx.createLinearGradient(x, y, x2, y2);
+          beam.addColorStop(0, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 0)`);
+          beam.addColorStop(1, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 1)`);
+          ctx.strokeStyle = beam;
+          ctx.lineWidth = 150;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        const ring = ctx.createRadialGradient(960, 540, 360, 960, 540, 760);
+        ring.addColorStop(0, "rgba(255,255,255,0)");
+        ring.addColorStop(1, "rgba(125, 189, 255, 0.2)");
+        ctx.fillStyle = ring;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+
+        // Keep the center mostly clear for gameplay visibility.
+        ctx.save();
+        const mask = ctx.createRadialGradient(960, 540, 140, 960, 540, 430);
+        mask.addColorStop(0, "rgba(0,0,0,0.0)");
+        mask.addColorStop(1, "rgba(0,0,0,0.28)");
+        ctx.fillStyle = mask;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 58px Inter, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(255,255,255,0.82)";
+        ctx.fillText("HYPE", 960, 120);
+        ctx.restore();
+      }
+
+      function drawFrame(timestamp) {
+        const now = Date.now();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (overlayState.activeUntil > now) {
+          drawTestPulse(timestamp);
+        }
+        if (overlayState.hypeUntil > now) {
+          drawHypeRave(timestamp);
+        }
+
+        window.requestAnimationFrame(drawFrame);
+      }
+
+      async function fetchState() {
+        try {
+          const response = await fetch("/api/overlay/state", { cache: "no-store" });
+          if (!response.ok) return;
+          const payload = await response.json();
+          overlayState.activeUntil = Number(payload.activeUntil || 0);
+          overlayState.hypeUntil = Number(payload.hypeUntil || 0);
+        } catch {
+          // Ignore transient connection failures.
+        }
+      }
+
+      if (searchParams.get("demo") === "1") {
+        const now = Date.now();
+        overlayState.activeUntil = now + 8000;
+        overlayState.hypeUntil = now + 10000;
+      }
+
+      setInterval(fetchState, 500);
+      fetchState();
+      window.requestAnimationFrame(drawFrame);
+    </script>
+  </body>
+</html>
