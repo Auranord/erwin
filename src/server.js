@@ -3983,6 +3983,8 @@ app.post("/api/votes/start", requireAuth, (req, res) => {
 app.get("/api/overlay/state", async (req, res) => {
   const status = await fetchTwitchChannelStatus();
   const hypeSettings = getHypeSettings();
+  const playState = getPlayState();
+  const currentTrack = getCurrentTrack(playState);
   res.json({
     width: OVERLAY_CANVAS_WIDTH,
     height: OVERLAY_CANVAS_HEIGHT,
@@ -3996,6 +3998,13 @@ app.get("/api/overlay/state", async (req, res) => {
       channel: status.channel,
       live: status.live,
       viewerCount: status.viewerCount
+    },
+    playback: {
+      trackId: currentTrack?.id || null,
+      durationSec: Number(currentTrack?.duration_sec || 0),
+      startedAtMs: Number(playState?.started_at_ms || 0),
+      paused: Boolean(playState?.paused),
+      pausedAtMs: Number(playState?.paused_at_ms || 0)
     }
   });
 });
