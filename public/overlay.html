@@ -56,7 +56,7 @@
         frequencyData: null,
         currentTrackId: null,
         currentTrackStartedAtMs: 0,
-        silentFrames: 0
+        flatlineFrames: 0
       };
 
       analyserState.audio.preload = "auto";
@@ -104,6 +104,7 @@
           analyserState.audio.removeAttribute("src");
           analyserState.currentTrackId = null;
           analyserState.currentTrackStartedAtMs = 0;
+          analyserState.flatlineFrames = 0;
           return;
         }
         if (!ensureAnalyser()) return;
@@ -120,6 +121,7 @@
         if (needsReload) {
           analyserState.currentTrackId = trackId;
           analyserState.currentTrackStartedAtMs = startedAtMs;
+          analyserState.flatlineFrames = 0;
           for (let i = 0; i < EQUALIZER_BANDS; i += 1) equalizerEnergy[i] = 0.08;
           analyserState.audio.src = `/api/overlay/audio/${trackId}?v=${startedAtMs}`;
           analyserState.audio.load();
@@ -164,7 +166,7 @@
         const logMin = Math.log(minBin);
         const logMax = Math.log(maxBin);
 
-        let globalEnergy = 0;
+        let framePeak = 0;
         for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
           const startRatio = band / EQUALIZER_BANDS;
           const endRatio = (band + 1) / EQUALIZER_BANDS;
@@ -185,22 +187,20 @@
           const mixed = (peak * 0.62) + (avg * 0.38);
           const normalized = Math.max(0, Math.min(1, mixed / 255));
           const target = normalized ** 0.72;
-          globalEnergy += target;
+          if (target > framePeak) framePeak = target;
           const current = equalizerEnergy[band];
           const smoothing = target > current ? 0.42 : 0.22; // faster grow, slower fall
           equalizerEnergy[band] = current + (target - current) * smoothing;
         }
 
-        const avgEnergy = globalEnergy / EQUALIZER_BANDS;
-        if (avgEnergy < 0.018) {
-          analyserState.silentFrames += 1;
+        if (framePeak <= 0.01) {
+          analyserState.flatlineFrames += 1;
         } else {
-          analyserState.silentFrames = 0;
+          analyserState.flatlineFrames = 0;
         }
 
-        // Browser sources can block analyser playback in some environments.
-        // Fallback keeps bars visibly animated from playback phase if analyser stays silent.
-        if (analyserState.silentFrames > 20) {
+        // Fallback only if analyser is effectively flatlined for a long time.
+        if (analyserState.flatlineFrames > 120) {
           const playbackSec = computePlaybackSeconds(Date.now());
           for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
             const phase = playbackSec * (2.0 + band * 0.085) + band * 0.7;
