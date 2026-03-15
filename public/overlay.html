@@ -56,7 +56,9 @@
         frequencyData: null,
         currentTrackId: null,
         currentTrackStartedAtMs: 0,
-        flatlineFrames: 0
+        flatlineFrames: 0,
+        prevBandWeighted: Array.from({ length: EQUALIZER_BANDS }, () => 0),
+        staleBandFrames: Array.from({ length: EQUALIZER_BANDS }, () => 0)
       };
 
       analyserState.audio.preload = "auto";
@@ -106,6 +108,8 @@
           analyserState.currentTrackId = null;
           analyserState.currentTrackStartedAtMs = 0;
           analyserState.flatlineFrames = 0;
+          analyserState.prevBandWeighted.fill(0);
+          analyserState.staleBandFrames.fill(0);
           return;
         }
         if (!ensureAnalyser()) return;
@@ -123,6 +127,8 @@
           analyserState.currentTrackId = trackId;
           analyserState.currentTrackStartedAtMs = startedAtMs;
           analyserState.flatlineFrames = 0;
+          analyserState.prevBandWeighted.fill(0);
+          analyserState.staleBandFrames.fill(0);
           for (let i = 0; i < EQUALIZER_BANDS; i += 1) equalizerEnergy[i] = 0.08;
           analyserState.audio.src = `/api/overlay/audio/${trackId}?v=${startedAtMs}`;
           analyserState.audio.load();
@@ -195,11 +201,29 @@
           const weighted = Math.max(0, Math.min(1, base * logWeight));
           frameAverage += weighted;
 
-          const target = weighted ** 0.56;
+          const prevWeighted = analyserState.prevBandWeighted[band] || 0;
+          const weightedDelta = Math.abs(weighted - prevWeighted);
+          analyserState.prevBandWeighted[band] = weighted;
+          const motionBoost = Math.min(0.18, weightedDelta * 2.6);
+
+          const target = Math.min(1, (weighted ** 0.5) + motionBoost);
           if (target > framePeak) framePeak = target;
           const current = equalizerEnergy[band];
-          const smoothing = target > current ? 0.56 : 0.26; // snappier attack + clear release
-          equalizerEnergy[band] = current + (target - current) * smoothing;
+          const smoothing = target > current ? 0.62 : 0.3; // more visible motion in limited width
+          let next = current + (target - current) * smoothing;
+
+          if (weightedDelta < 0.003) {
+            analyserState.staleBandFrames[band] += 1;
+          } else {
+            analyserState.staleBandFrames[band] = 0;
+          }
+
+          // Shrink long-stale bands so dead ranges don't occupy permanent width.
+          if (analyserState.staleBandFrames[band] > 90) {
+            next *= 0.965;
+          }
+
+          equalizerEnergy[band] = Math.max(0.005, Math.min(1, next));
         }
 
         const avgWeighted = frameAverage / EQUALIZER_BANDS;
@@ -218,6 +242,7 @@
             const pulse = (Math.sin(phase) + Math.sin(phase * 0.57 + 1.7) + 2) / 4;
             const target = 0.12 + pulse * 0.58;
             const current = equalizerEnergy[band];
+            analyserState.staleBandFrames[band] = 0;
             equalizerEnergy[band] = current + (target - current) * 0.28;
           }
         }
@@ -251,9 +276,11 @@
           const y = i * (barHeight + barGap);
           const h = Math.max(4, barHeight);
           const boosted = Math.max(0, Math.min(1, energy));
-          const contrast = boosted ** 0.78;
-          const w = Math.max(8, contrast * (SIDE_EQUALIZER_WIDTH - 10));
-          ctx.fillRect(x + 4, y, w, h);
+          const contrast = boosted ** 0.72;
+          const w = contrast * (SIDE_EQUALIZER_WIDTH - 6);
+          if (w > 1.5) {
+            ctx.fillRect(x + 2, y, w, h);
+          }
         }
 
         ctx.restore();
