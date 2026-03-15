@@ -45,6 +45,12 @@
       const searchParams = new URLSearchParams(window.location.search);
 
       const SIDE_EQUALIZER_WIDTH = 360;
+      const EQUALIZER_ROWS = 56;
+      const equalizerEnergy = {
+        left: Array.from({ length: EQUALIZER_ROWS }, () => 0.12),
+        right: Array.from({ length: EQUALIZER_ROWS }, () => 0.12)
+      };
+
 
       function computePlaybackSeconds(nowMs) {
         const playback = overlayState.playback || {};
@@ -68,15 +74,14 @@
         return Math.abs(hash % 1000) / 1000;
       }
 
-      function drawHypeEqualizerSide({ timestamp, side = "left" }) {
+      function drawHypeEqualizerSide({ side = "left" }) {
         const nowMs = Date.now();
-        const elapsedSec = timestamp / 1000;
         const playbackSec = computePlaybackSeconds(nowMs);
         const durationSec = Number(overlayState.playback.durationSec || 0);
+        const paused = Boolean(overlayState.playback.paused);
         const trackSeed = getTrackPhaseSeed(overlayState.playback.trackId);
         const x = side === "left" ? 0 : canvas.width - SIDE_EQUALIZER_WIDTH;
-        const rows = 56;
-        const rowHeight = canvas.height / rows;
+        const rowHeight = canvas.height / EQUALIZER_ROWS;
         const wallSkew = side === "left" ? -0.12 : 0.12;
 
         ctx.save();
@@ -87,7 +92,7 @@
         ctx.globalCompositeOperation = "screen";
         ctx.globalAlpha = 0.4;
 
-        const drift = (elapsedSec * 8 + playbackSec * 9) % 360;
+        const drift = (playbackSec * 18) % 360;
         const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
         gradient.addColorStop(0, `hsla(${(drift + 10) % 360}, 95%, 62%, 0.9)`);
         gradient.addColorStop(0.34, `hsla(${(drift + 130) % 360}, 95%, 60%, 0.9)`);
@@ -96,20 +101,21 @@
         ctx.fillStyle = gradient;
 
         const progress = durationSec > 0 ? playbackSec / durationSec : playbackSec * 0.02;
-        for (let i = 0; i < rows; i += 1) {
-          const t = i / Math.max(1, rows - 1);
-          const frequency = 0.8 + t * 5.5 + trackSeed * 2;
-          const harmonicA = Math.sin((playbackSec * 4.4 + progress * 25) * frequency + t * 9.5);
-          const harmonicB = Math.sin((playbackSec * 7.6 + progress * 37) * (frequency * 0.58) + trackSeed * 20);
-          const harmonicC = Math.sin((elapsedSec * 3.2) + t * 14 + trackSeed * 10);
-          const energy = Math.max(0, Math.min(1, 0.16 + harmonicA * 0.34 + harmonicB * 0.28 + harmonicC * 0.18));
+        const smoothing = paused ? 0.06 : 0.16;
+        const sideEnergy = equalizerEnergy[side];
+        for (let i = 0; i < EQUALIZER_ROWS; i += 1) {
+          const t = i / Math.max(1, EQUALIZER_ROWS - 1);
+          const frequency = 0.7 + t * 3.1 + trackSeed * 1.2;
+          const harmonicA = Math.sin((playbackSec * 2.3 + progress * 9.5) * frequency + t * 6.2);
+          const harmonicB = Math.sin((playbackSec * 3.7 + progress * 14.1) * (frequency * 0.62) + trackSeed * 13);
+          const targetEnergy = Math.max(0.05, Math.min(1, 0.24 + harmonicA * 0.33 + harmonicB * 0.27));
+          const smoothEnergy = sideEnergy[i] + (targetEnergy - sideEnergy[i]) * smoothing;
+          sideEnergy[i] = smoothEnergy;
 
           const y = i * rowHeight + 1;
           const h = Math.max(2, rowHeight - 2.5);
-          const w = Math.max(8, energy * SIDE_EQUALIZER_WIDTH * 0.96);
-          const startX = side === "left"
-            ? x + 2
-            : x + SIDE_EQUALIZER_WIDTH - 2;
+          const w = Math.max(8, smoothEnergy * SIDE_EQUALIZER_WIDTH * 0.96);
+          const startX = side === "left" ? x + 2 : x + SIDE_EQUALIZER_WIDTH - 2;
           const drawX = side === "left" ? startX : startX - w;
           ctx.fillRect(drawX, y, w, h);
         }
@@ -130,9 +136,9 @@
         ctx.restore();
       }
 
-      function drawHypeRave(timestamp) {
-        drawHypeEqualizerSide({ timestamp, side: "left" });
-        drawHypeEqualizerSide({ timestamp, side: "right" });
+      function drawHypeRave() {
+        drawHypeEqualizerSide({ side: "left" });
+        drawHypeEqualizerSide({ side: "right" });
       }
 
       function drawFrame(timestamp) {
@@ -143,7 +149,7 @@
           drawTestPulse(timestamp);
         }
         if (overlayState.hypeUntil > now) {
-          drawHypeRave(timestamp);
+          drawHypeRave();
         }
 
         window.requestAnimationFrame(drawFrame);
