@@ -56,22 +56,22 @@
           [255, 210, 78]
         ];
 
-        for (let i = 0; i < 14; i += 1) {
+        for (let i = 0; i < 18; i += 1) {
           const hue = colors[i % colors.length];
-          const sweep = (elapsed * 0.42 + i / 14) * Math.PI * 2;
-          const x = 960 + Math.cos(sweep) * 980;
-          const y = 540 + Math.sin(sweep * 1.6) * 620;
-          const x2 = 960 + Math.cos(sweep + 0.65) * 320;
-          const y2 = 540 + Math.sin(sweep + 0.65) * 200;
+          const sweep = (elapsed * 0.52 + i / 18) * Math.PI * 2;
+          const x = 960 + Math.cos(sweep) * 1020;
+          const y = 540 + Math.sin(sweep * 1.4) * 660;
+          const x2 = 960 + Math.cos(sweep + 0.7) * 260;
+          const y2 = 540 + Math.sin(sweep + 0.7) * 170;
 
           ctx.save();
           ctx.globalCompositeOperation = "screen";
-          ctx.globalAlpha = 0.08 + ((Math.sin(elapsed * 5 + i) + 1) * 0.04);
+          ctx.globalAlpha = 0.18 + ((Math.sin(elapsed * 7 + i) + 1) * 0.07);
           const beam = ctx.createLinearGradient(x, y, x2, y2);
           beam.addColorStop(0, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 0)`);
-          beam.addColorStop(1, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 0.9)`);
+          beam.addColorStop(1, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 1)`);
           ctx.strokeStyle = beam;
-          ctx.lineWidth = 190;
+          ctx.lineWidth = 150;
           ctx.beginPath();
           ctx.moveTo(x, y);
           ctx.lineTo(x2, y2);
@@ -79,13 +79,29 @@
           ctx.restore();
         }
 
+        ctx.save();
+        ctx.globalCompositeOperation = "screen";
+        const ring = ctx.createRadialGradient(960, 540, 360, 960, 540, 760);
+        ring.addColorStop(0, "rgba(255,255,255,0)");
+        ring.addColorStop(1, "rgba(125, 189, 255, 0.2)");
+        ctx.fillStyle = ring;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+
         // Keep the center mostly clear for gameplay visibility.
         ctx.save();
-        const mask = ctx.createRadialGradient(960, 540, 120, 960, 540, 420);
+        const mask = ctx.createRadialGradient(960, 540, 140, 960, 540, 430);
         mask.addColorStop(0, "rgba(0,0,0,0.0)");
-        mask.addColorStop(1, "rgba(0,0,0,0.35)");
+        mask.addColorStop(1, "rgba(0,0,0,0.28)");
         ctx.fillStyle = mask;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+
+        ctx.save();
+        ctx.font = "700 58px Inter, system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(255,255,255,0.82)";
+        ctx.fillText("HYPE", 960, 120);
         ctx.restore();
       }
 

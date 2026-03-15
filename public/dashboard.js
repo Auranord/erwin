@@ -187,7 +187,6 @@ const nowPlaying = document.getElementById("now-playing");
         resume: "Playback resumed."
       };
 
-      let toastTimerId = 0;
       function showToast(message, type = "info") {
         if (!toastRegion) return;
         const toast = document.createElement("div");
@@ -195,11 +194,11 @@ const nowPlaying = document.getElementById("now-playing");
         toast.textContent = message;
         toastRegion.appendChild(toast);
         requestAnimationFrame(() => toast.classList.add("visible"));
-        if (toastTimerId) window.clearTimeout(toastTimerId);
-        toastTimerId = window.setTimeout(() => {
+        const closeToast = () => {
           toast.classList.remove("visible");
           window.setTimeout(() => toast.remove(), 180);
-        }, 2400);
+        };
+        window.setTimeout(closeToast, 2400);
       }
 
       const overlayEndpoint = `${window.location.origin}/overlay/canvas`;
