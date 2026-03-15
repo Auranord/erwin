@@ -57,6 +57,8 @@ const nowPlaying = document.getElementById("now-playing");
       const customCommandStatus = document.getElementById("custom-command-status");
       const copyOverlayEndpointButton = document.getElementById("copy-overlay-endpoint");
       const openOverlayTestButton = document.getElementById("open-overlay-test");
+      const overlayEndpointInput = document.getElementById("overlay-endpoint");
+      const toastRegion = document.getElementById("toast-region");
       let currentUser = null;
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
@@ -167,6 +169,26 @@ const nowPlaying = document.getElementById("now-playing");
         pause: "Playback paused.",
         resume: "Playback resumed."
       };
+
+      let toastTimerId = 0;
+      function showToast(message, type = "info") {
+        if (!toastRegion) return;
+        const toast = document.createElement("div");
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        toastRegion.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add("visible"));
+        if (toastTimerId) window.clearTimeout(toastTimerId);
+        toastTimerId = window.setTimeout(() => {
+          toast.classList.remove("visible");
+          window.setTimeout(() => toast.remove(), 180);
+        }, 2400);
+      }
+
+      const overlayEndpoint = `${window.location.origin}/overlay/canvas`;
+      if (overlayEndpointInput) {
+        overlayEndpointInput.value = overlayEndpoint;
+      }
 
       document.querySelectorAll(".tab-link").forEach((link) => {
         link.addEventListener("click", (event) => {
@@ -1171,12 +1193,13 @@ async function fetchDownloads() {
       });
 
       copyOverlayEndpointButton?.addEventListener("click", async () => {
-        const endpoint = `${window.location.origin}/overlay/canvas`;
         try {
-          await navigator.clipboard.writeText(endpoint);
-          window.alert("Overlay endpoint copied to clipboard.\n" + endpoint);
+          await navigator.clipboard.writeText(overlayEndpoint);
+          showToast("Overlay endpoint copied.", "success");
         } catch {
-          window.prompt("Copy the overlay endpoint", endpoint);
+          showToast("Unable to access clipboard. Copy from the field above.", "warning");
+          overlayEndpointInput?.focus();
+          overlayEndpointInput?.select();
         }
       });
 
@@ -1184,10 +1207,10 @@ async function fetchDownloads() {
         const response = await fetch("/api/overlay/test", { method: "POST" });
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
-          window.alert(payload.error || "Unable to trigger overlay test animation.");
+          showToast(payload.error || "Unable to trigger overlay test animation.", "warning");
           return;
         }
-        window.open("/overlay/canvas", "erwin-overlay", "width=1280,height=720");
+        showToast("Overlay test animation triggered.", "success");
       });
 
       startVoteButton.addEventListener("click", async () => {

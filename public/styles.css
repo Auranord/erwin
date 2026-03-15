@@ -875,6 +875,54 @@ input[type="range"]::-webkit-slider-thumb {
   box-shadow: 0 0 0 3px rgba(200, 164, 90, 0.15);
 }
 
+
+.toast-region {
+  position: fixed;
+  right: clamp(0.8rem, 2vw, 1.5rem);
+  bottom: clamp(0.8rem, 2vw, 1.5rem);
+  display: grid;
+  gap: 0.5rem;
+  z-index: 1400;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: min(22rem, calc(100vw - 2rem));
+  max-width: min(26rem, calc(100vw - 2rem));
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  border: 1px solid rgba(96, 71, 31, 0.44);
+  background:
+    radial-gradient(circle at 16% 10%, rgba(255, 242, 214, 0.16), transparent 28%),
+    linear-gradient(165deg, var(--panel), #b5966d 58%, #9d7c52);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  transform: translateY(0.35rem);
+  transition: opacity var(--trans), transform var(--trans);
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast.success {
+  border-color: rgba(63, 128, 88, 0.5);
+}
+
+.toast.warning {
+  border-color: rgba(173, 125, 52, 0.58);
+}
+
+body[data-theme="darkwood"] .toast {
+  color: var(--ink);
+  border-color: rgba(211, 169, 104, 0.4);
+  background:
+    radial-gradient(circle at 18% 12%, rgba(248, 220, 169, 0.08), transparent 30%),
+    linear-gradient(165deg, #5d4731, #443320 58%, #342517);
+}
+
 /* Page-specific: dashboard */
 body.dashboard-page #now-playing {
   border-left: 4px solid rgba(200, 164, 90, 0.85);
