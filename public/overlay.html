@@ -31,8 +31,91 @@
     <script>
       const canvas = document.getElementById("overlay-canvas");
       const ctx = canvas.getContext("2d");
-      const overlayState = { activeUntil: 0, hypeUntil: 0 };
+      const overlayState = {
+        activeUntil: 0,
+        hypeUntil: 0,
+        playback: {
+          trackId: null,
+          durationSec: 0,
+          startedAtMs: 0,
+          paused: true,
+          pausedAtMs: 0
+        }
+      };
       const searchParams = new URLSearchParams(window.location.search);
+
+      const SIDE_EQUALIZER_WIDTH = 360;
+
+      function computePlaybackSeconds(nowMs) {
+        const playback = overlayState.playback || {};
+        const startedAtMs = Number(playback.startedAtMs || 0);
+        if (!startedAtMs) return 0;
+        const paused = Boolean(playback.paused);
+        const pausedAtMs = Number(playback.pausedAtMs || 0);
+        const durationSec = Number(playback.durationSec || 0);
+        const referenceMs = paused && pausedAtMs ? pausedAtMs : nowMs;
+        const elapsedSec = Math.max(0, (referenceMs - startedAtMs) / 1000);
+        if (!durationSec) return elapsedSec;
+        return Math.min(durationSec, elapsedSec);
+      }
+
+      function getTrackPhaseSeed(trackId) {
+        if (!trackId) return 0.27;
+        let hash = 0;
+        for (let i = 0; i < trackId.length; i += 1) {
+          hash = ((hash << 5) - hash + trackId.charCodeAt(i)) | 0;
+        }
+        return Math.abs(hash % 1000) / 1000;
+      }
+
+      function drawHypeEqualizerSide({ timestamp, side = "left" }) {
+        const nowMs = Date.now();
+        const elapsedSec = timestamp / 1000;
+        const playbackSec = computePlaybackSeconds(nowMs);
+        const durationSec = Number(overlayState.playback.durationSec || 0);
+        const trackSeed = getTrackPhaseSeed(overlayState.playback.trackId);
+        const x = side === "left" ? 0 : canvas.width - SIDE_EQUALIZER_WIDTH;
+        const rows = 56;
+        const rowHeight = canvas.height / rows;
+        const wallSkew = side === "left" ? -0.12 : 0.12;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x, 0, SIDE_EQUALIZER_WIDTH, canvas.height);
+        ctx.clip();
+        ctx.transform(1, wallSkew, 0, 1, 0, 0);
+        ctx.globalCompositeOperation = "screen";
+        ctx.globalAlpha = 0.4;
+
+        const drift = (elapsedSec * 8 + playbackSec * 9) % 360;
+        const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        gradient.addColorStop(0, `hsla(${(drift + 10) % 360}, 95%, 62%, 0.9)`);
+        gradient.addColorStop(0.34, `hsla(${(drift + 130) % 360}, 95%, 60%, 0.9)`);
+        gradient.addColorStop(0.67, `hsla(${(drift + 240) % 360}, 95%, 58%, 0.9)`);
+        gradient.addColorStop(1, `hsla(${(drift + 320) % 360}, 95%, 62%, 0.9)`);
+        ctx.fillStyle = gradient;
+
+        const progress = durationSec > 0 ? playbackSec / durationSec : playbackSec * 0.02;
+        for (let i = 0; i < rows; i += 1) {
+          const t = i / Math.max(1, rows - 1);
+          const frequency = 0.8 + t * 5.5 + trackSeed * 2;
+          const harmonicA = Math.sin((playbackSec * 4.4 + progress * 25) * frequency + t * 9.5);
+          const harmonicB = Math.sin((playbackSec * 7.6 + progress * 37) * (frequency * 0.58) + trackSeed * 20);
+          const harmonicC = Math.sin((elapsedSec * 3.2) + t * 14 + trackSeed * 10);
+          const energy = Math.max(0, Math.min(1, 0.16 + harmonicA * 0.34 + harmonicB * 0.28 + harmonicC * 0.18));
+
+          const y = i * rowHeight + 1;
+          const h = Math.max(2, rowHeight - 2.5);
+          const w = Math.max(8, energy * SIDE_EQUALIZER_WIDTH * 0.96);
+          const startX = side === "left"
+            ? x + 2
+            : x + SIDE_EQUALIZER_WIDTH - 2;
+          const drawX = side === "left" ? startX : startX - w;
+          ctx.fillRect(drawX, y, w, h);
+        }
+
+        ctx.restore();
+      }
 
       function drawTestPulse(timestamp) {
         const elapsed = timestamp / 1000;
@@ -48,61 +131,8 @@
       }
 
       function drawHypeRave(timestamp) {
-        const elapsed = timestamp / 1000;
-        const colors = [
-          [255, 56, 156],
-          [80, 255, 222],
-          [124, 105, 255],
-          [255, 210, 78]
-        ];
-
-        for (let i = 0; i < 18; i += 1) {
-          const hue = colors[i % colors.length];
-          const sweep = (elapsed * 0.52 + i / 18) * Math.PI * 2;
-          const x = 960 + Math.cos(sweep) * 1020;
-          const y = 540 + Math.sin(sweep * 1.4) * 660;
-          const x2 = 960 + Math.cos(sweep + 0.7) * 260;
-          const y2 = 540 + Math.sin(sweep + 0.7) * 170;
-
-          ctx.save();
-          ctx.globalCompositeOperation = "screen";
-          ctx.globalAlpha = 0.18 + ((Math.sin(elapsed * 7 + i) + 1) * 0.07);
-          const beam = ctx.createLinearGradient(x, y, x2, y2);
-          beam.addColorStop(0, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 0)`);
-          beam.addColorStop(1, `rgba(${hue[0]}, ${hue[1]}, ${hue[2]}, 1)`);
-          ctx.strokeStyle = beam;
-          ctx.lineWidth = 150;
-          ctx.beginPath();
-          ctx.moveTo(x, y);
-          ctx.lineTo(x2, y2);
-          ctx.stroke();
-          ctx.restore();
-        }
-
-        ctx.save();
-        ctx.globalCompositeOperation = "screen";
-        const ring = ctx.createRadialGradient(960, 540, 360, 960, 540, 760);
-        ring.addColorStop(0, "rgba(255,255,255,0)");
-        ring.addColorStop(1, "rgba(125, 189, 255, 0.2)");
-        ctx.fillStyle = ring;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.restore();
-
-        // Keep the center mostly clear for gameplay visibility.
-        ctx.save();
-        const mask = ctx.createRadialGradient(960, 540, 140, 960, 540, 430);
-        mask.addColorStop(0, "rgba(0,0,0,0.0)");
-        mask.addColorStop(1, "rgba(0,0,0,0.28)");
-        ctx.fillStyle = mask;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.restore();
-
-        ctx.save();
-        ctx.font = "700 58px Inter, system-ui, sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillStyle = "rgba(255,255,255,0.82)";
-        ctx.fillText("HYPE", 960, 120);
-        ctx.restore();
+        drawHypeEqualizerSide({ timestamp, side: "left" });
+        drawHypeEqualizerSide({ timestamp, side: "right" });
       }
 
       function drawFrame(timestamp) {
@@ -126,6 +156,11 @@
           const payload = await response.json();
           overlayState.activeUntil = Number(payload.activeUntil || 0);
           overlayState.hypeUntil = Number(payload.hypeUntil || 0);
+          overlayState.playback.trackId = payload.playback?.trackId || null;
+          overlayState.playback.durationSec = Number(payload.playback?.durationSec || 0);
+          overlayState.playback.startedAtMs = Number(payload.playback?.startedAtMs || 0);
+          overlayState.playback.paused = Boolean(payload.playback?.paused);
+          overlayState.playback.pausedAtMs = Number(payload.playback?.pausedAtMs || 0);
         } catch {
           // Ignore transient connection failures.
         }
