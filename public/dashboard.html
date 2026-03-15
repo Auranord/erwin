@@ -14,6 +14,7 @@
           <p>Manage library tracks, playlists, playback, and vote rounds.</p>
         </div>
         <div class="header-actions">
+          <span id="twitch-live-status" class="status-pill status-pill-twitch">Twitch • --</span>
           <span class="status-pill"><span></span> Connected</span>
           <span id="current-user" class="status-pill">Guest • viewer</span>
           <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Toggle Dark Wood mode">🌒 Dark Wood</button>
@@ -22,6 +23,7 @@
       </div>
       <nav class="tabs" aria-label="Dashboard tabs">
         <a class="tab-link active" href="#" data-tab="player">Music Player Dashboard</a>
+        <a class="tab-link" href="#" data-tab="overlay">Overlay</a>
         <a class="tab-link" href="#" data-tab="playlists">Playlist Editor</a>
         <a class="tab-link" href="#" data-tab="track-manager">Track Manager</a>
         <a class="tab-link" href="#" data-tab="chat">Live Chat Feed</a>
@@ -36,7 +38,9 @@
           <div class="card">
             <div class="card-header">
               <h2>Music Player Dashboard</h2>
-              <button id="open-stream" class="secondary">Open Stream Player</button>
+              <div class="card-header-actions">
+                <button id="open-stream" class="secondary">Open Stream Player</button>
+              </div>
             </div>
             <div class="section-title">Now Playing</div>
             <div id="now-playing" class="list-item now-playing-display">
@@ -80,6 +84,50 @@
             <div id="vote-options" class="list">
               <div class="list-item">No active vote.</div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="overlay">
+        <div class="grid two">
+          <div class="card">
+            <h2>Overlay</h2>
+            <p class="notice">Use this endpoint in your stream software browser source (1920x1080 transparent canvas).</p>
+            <label for="overlay-endpoint">Overlay endpoint</label>
+            <input id="overlay-endpoint" type="text" readonly />
+            <div class="card-header-actions" style="margin-top: 12px;">
+              <button id="copy-overlay-endpoint" class="secondary" type="button">Copy Overlay Endpoint</button>
+              <button id="open-overlay-test" class="secondary" type="button">Overlay Test Animation</button>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Hype Overlay</h2>
+            <p class="notice">Trigger a rave/disco overlay when enough viewers post matching emotes in chat.</p>
+            <form id="overlay-hype-form" class="grid" method="post">
+              <div>
+                <label for="hype-emotes">Hype emotes (comma separated)</label>
+                <input id="hype-emotes" type="text" placeholder="PogChamp, EZ, HYPERS" />
+              </div>
+              <div>
+                <label for="hype-threshold-percent">Threshold (% of viewers)</label>
+                <input id="hype-threshold-percent" type="number" min="1" max="100" step="1" />
+              </div>
+              <div>
+                <label for="hype-duration-seconds">Hype duration (seconds)</label>
+                <input id="hype-duration-seconds" type="number" min="3" max="120" step="1" />
+              </div>
+              <div>
+                <label for="hype-extension-ratio">Extension ratio (0.05 - 1.0)</label>
+                <input id="hype-extension-ratio" type="number" min="0.05" max="1" step="0.05" />
+              </div>
+              <div>
+                <label for="hype-user-cooldown-seconds">User cooldown per hype (seconds)</label>
+                <input id="hype-user-cooldown-seconds" type="number" min="0" max="60" step="1" />
+              </div>
+              <button type="submit">Save Hype Settings</button>
+              <button id="overlay-hype-test" class="secondary" type="button">Trigger Hype Test</button>
+            </form>
+            <p id="overlay-hype-status" class="notice" aria-live="polite"></p>
           </div>
         </div>
       </section>
@@ -370,7 +418,9 @@
       </div>
     </div>
 
-    <script src="/assets/dashboard.js?v=20260224a"></script>
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+    <script src="/assets/dashboard.js?v=20260315b"></script>
 
   </body>
 </html>

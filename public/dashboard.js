@@ -55,6 +55,19 @@ const nowPlaying = document.getElementById("now-playing");
       const customCommandCancel = document.getElementById("custom-command-cancel");
       const customCommandsList = document.getElementById("custom-commands-list");
       const customCommandStatus = document.getElementById("custom-command-status");
+      const copyOverlayEndpointButton = document.getElementById("copy-overlay-endpoint");
+      const openOverlayTestButton = document.getElementById("open-overlay-test");
+      const overlayEndpointInput = document.getElementById("overlay-endpoint");
+      const toastRegion = document.getElementById("toast-region");
+      const twitchLiveStatus = document.getElementById("twitch-live-status");
+      const overlayHypeForm = document.getElementById("overlay-hype-form");
+      const overlayHypeTestButton = document.getElementById("overlay-hype-test");
+      const overlayHypeStatus = document.getElementById("overlay-hype-status");
+      const hypeEmotesInput = document.getElementById("hype-emotes");
+      const hypeThresholdPercentInput = document.getElementById("hype-threshold-percent");
+      const hypeDurationSecondsInput = document.getElementById("hype-duration-seconds");
+      const hypeExtensionRatioInput = document.getElementById("hype-extension-ratio");
+      const hypeUserCooldownSecondsInput = document.getElementById("hype-user-cooldown-seconds");
       let currentUser = null;
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
@@ -153,6 +166,14 @@ const nowPlaying = document.getElementById("now-playing");
         applyTheme(nextTheme);
         localStorage.setItem(getThemeStorageKey(), nextTheme);
       });
+      const HYPE_DEFAULTS = {
+        emotes: "PogChamp,Kappa,HYPERS",
+        thresholdPercent: 20,
+        durationSeconds: 12,
+        extensionRatio: 0.35,
+        userCooldownSeconds: 8
+      };
+
       const DEFAULT_TWITCH_MESSAGES = {
         vote_start: "Vote time! Choose the next track with {command}vote <number>.",
         vote_option: "{number}. {title}{channel}",
@@ -165,6 +186,26 @@ const nowPlaying = document.getElementById("now-playing");
         pause: "Playback paused.",
         resume: "Playback resumed."
       };
+
+      let toastTimerId = 0;
+      function showToast(message, type = "info") {
+        if (!toastRegion) return;
+        const toast = document.createElement("div");
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        toastRegion.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add("visible"));
+        if (toastTimerId) window.clearTimeout(toastTimerId);
+        toastTimerId = window.setTimeout(() => {
+          toast.classList.remove("visible");
+          window.setTimeout(() => toast.remove(), 180);
+        }, 2400);
+      }
+
+      const overlayEndpoint = `${window.location.origin}/overlay/canvas`;
+      if (overlayEndpointInput) {
+        overlayEndpointInput.value = overlayEndpoint;
+      }
 
       document.querySelectorAll(".tab-link").forEach((link) => {
         link.addEventListener("click", (event) => {
@@ -627,6 +668,38 @@ const nowPlaying = document.getElementById("now-playing");
         renderTracks();
       }
 
+      async function fetchTwitchLiveStatus() {
+        if (!twitchLiveStatus) return;
+        try {
+          const response = await fetch("/api/twitch/channel-status", { cache: "no-store" });
+          if (handleUnauthorizedResponse(response)) return;
+          if (!response.ok) {
+            twitchLiveStatus.textContent = "Twitch • unavailable";
+            twitchLiveStatus.classList.remove("live", "offline");
+            return;
+          }
+          const payload = await response.json();
+          if (!payload.channel) {
+            twitchLiveStatus.textContent = "Twitch • not linked";
+            twitchLiveStatus.classList.remove("live", "offline");
+            return;
+          }
+          if (!payload.live) {
+            twitchLiveStatus.textContent = `Twitch • ${payload.channel} • offline`;
+            twitchLiveStatus.classList.add("offline");
+            twitchLiveStatus.classList.remove("live");
+            return;
+          }
+          const viewers = Number(payload.viewerCount || 0).toLocaleString();
+          twitchLiveStatus.textContent = `Twitch • ${payload.channel} • LIVE • ${viewers} viewers`;
+          twitchLiveStatus.classList.add("live");
+          twitchLiveStatus.classList.remove("offline");
+        } catch {
+          twitchLiveStatus.textContent = "Twitch • unavailable";
+          twitchLiveStatus.classList.remove("live", "offline");
+        }
+      }
+
       async function fetchSettings() {
         const response = await fetch("/api/settings");
         if (handleUnauthorizedResponse(response)) return;
@@ -658,6 +731,13 @@ const nowPlaying = document.getElementById("now-playing");
           settings.twitch_pause_message ?? settings.twitchPauseMessage ?? DEFAULT_TWITCH_MESSAGES.pause;
         settingsTwitchResume.value =
           settings.twitch_resume_message ?? settings.twitchResumeMessage ?? DEFAULT_TWITCH_MESSAGES.resume;
+        if (hypeEmotesInput) {
+          hypeEmotesInput.value = settings.overlay_hype_emotes ?? HYPE_DEFAULTS.emotes;
+          hypeThresholdPercentInput.value = Number(settings.overlay_hype_threshold_percent ?? HYPE_DEFAULTS.thresholdPercent);
+          hypeDurationSecondsInput.value = Number(settings.overlay_hype_duration_seconds ?? HYPE_DEFAULTS.durationSeconds);
+          hypeExtensionRatioInput.value = Number(settings.overlay_hype_extension_ratio ?? HYPE_DEFAULTS.extensionRatio);
+          hypeUserCooldownSecondsInput.value = Number(settings.overlay_hype_user_cooldown_seconds ?? HYPE_DEFAULTS.userCooldownSeconds);
+        }
       }
 
       async function fetchActiveVote() {
@@ -1168,6 +1248,60 @@ async function fetchDownloads() {
         window.open("/player/stream", "erwin-stream", "width=1100,height=720");
       });
 
+      copyOverlayEndpointButton?.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(overlayEndpoint);
+          showToast("Overlay endpoint copied.", "success");
+        } catch {
+          showToast("Unable to access clipboard. Copy from the field above.", "warning");
+          overlayEndpointInput?.focus();
+          overlayEndpointInput?.select();
+        }
+      });
+
+      openOverlayTestButton?.addEventListener("click", async () => {
+        const response = await fetch("/api/overlay/test", { method: "POST" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          showToast(payload.error || "Unable to trigger overlay test animation.", "warning");
+          return;
+        }
+        showToast("Overlay test animation triggered.", "success");
+      });
+
+      overlayHypeTestButton?.addEventListener("click", async () => {
+        const response = await fetch("/api/overlay/hype/test", { method: "POST" });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          showToast(payload.error || "Unable to trigger hype test.", "warning");
+          return;
+        }
+        showToast("Hype test triggered.", "success");
+      });
+
+      overlayHypeForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (overlayHypeStatus) overlayHypeStatus.textContent = "Saving hype settings...";
+        const response = await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            overlay_hype_emotes: hypeEmotesInput?.value || "",
+            overlay_hype_threshold_percent: Number(hypeThresholdPercentInput?.value || HYPE_DEFAULTS.thresholdPercent),
+            overlay_hype_duration_seconds: Number(hypeDurationSecondsInput?.value || HYPE_DEFAULTS.durationSeconds),
+            overlay_hype_extension_ratio: Number(hypeExtensionRatioInput?.value || HYPE_DEFAULTS.extensionRatio),
+            overlay_hype_user_cooldown_seconds: Number(hypeUserCooldownSecondsInput?.value || HYPE_DEFAULTS.userCooldownSeconds)
+          })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (overlayHypeStatus) overlayHypeStatus.textContent = payload.error || "Unable to save hype settings.";
+          return;
+        }
+        if (overlayHypeStatus) overlayHypeStatus.textContent = "Hype settings saved.";
+        showToast("Hype settings saved.", "success");
+      });
+
       startVoteButton.addEventListener("click", async () => {
         await fetch("/api/votes/start", { method: "POST" });
         fetchActiveVote();
@@ -1607,6 +1741,8 @@ document.getElementById("logout").addEventListener("click", async () => {
         }
         await fetchUsers();
         await fetchChannelAuthStatus();
+        await fetchTwitchLiveStatus();
+        window.setInterval(fetchTwitchLiveStatus, 10000);
         resetCustomCommandForm();
         fetchState();
         fetchPlaylists();
