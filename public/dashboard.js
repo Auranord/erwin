@@ -63,6 +63,7 @@ const nowPlaying = document.getElementById("now-playing");
       const overlayHypeForm = document.getElementById("overlay-hype-form");
       const overlayHypeTestButton = document.getElementById("overlay-hype-test");
       const overlayHypeStatus = document.getElementById("overlay-hype-status");
+      const hypeEnabledInput = document.getElementById("hype-enabled");
       const hypeEmotesInput = document.getElementById("hype-emotes");
       const hypeThresholdPercentInput = document.getElementById("hype-threshold-percent");
       const hypeDurationSecondsInput = document.getElementById("hype-duration-seconds");
@@ -171,7 +172,8 @@ const nowPlaying = document.getElementById("now-playing");
         thresholdPercent: 20,
         durationSeconds: 12,
         extensionRatio: 0.35,
-        userCooldownSeconds: 8
+        userCooldownSeconds: 8,
+        enabled: true
       };
 
       const DEFAULT_TWITCH_MESSAGES = {
@@ -684,13 +686,13 @@ const nowPlaying = document.getElementById("now-playing");
             return;
           }
           if (!payload.live) {
-            twitchLiveStatus.textContent = `Twitch • ${payload.channel} • offline`;
+            twitchLiveStatus.textContent = "Twitch • offline";
             twitchLiveStatus.classList.add("offline");
             twitchLiveStatus.classList.remove("live");
             return;
           }
           const viewers = Number(payload.viewerCount || 0).toLocaleString();
-          twitchLiveStatus.textContent = `Twitch • ${payload.channel} • LIVE • ${viewers} viewers`;
+          twitchLiveStatus.textContent = `Twitch • LIVE • ${viewers} viewers`;
           twitchLiveStatus.classList.add("live");
           twitchLiveStatus.classList.remove("offline");
         } catch {
@@ -731,6 +733,7 @@ const nowPlaying = document.getElementById("now-playing");
         settingsTwitchResume.value =
           settings.twitch_resume_message ?? settings.twitchResumeMessage ?? DEFAULT_TWITCH_MESSAGES.resume;
         if (hypeEmotesInput) {
+          hypeEnabledInput.checked = String(settings.overlay_hype_enabled ?? (HYPE_DEFAULTS.enabled ? 1 : 0)) !== "0";
           hypeEmotesInput.value = settings.overlay_hype_emotes ?? HYPE_DEFAULTS.emotes;
           hypeThresholdPercentInput.value = Number(settings.overlay_hype_threshold_percent ?? HYPE_DEFAULTS.thresholdPercent);
           hypeDurationSecondsInput.value = Number(settings.overlay_hype_duration_seconds ?? HYPE_DEFAULTS.durationSeconds);
@@ -1285,6 +1288,7 @@ async function fetchDownloads() {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            overlay_hype_enabled: hypeEnabledInput?.checked ? 1 : 0,
             overlay_hype_emotes: hypeEmotesInput?.value || "",
             overlay_hype_threshold_percent: Number(hypeThresholdPercentInput?.value || HYPE_DEFAULTS.thresholdPercent),
             overlay_hype_duration_seconds: Number(hypeDurationSecondsInput?.value || HYPE_DEFAULTS.durationSeconds),
@@ -1298,7 +1302,7 @@ async function fetchDownloads() {
           return;
         }
         if (overlayHypeStatus) overlayHypeStatus.textContent = "Hype settings saved.";
-        showToast("Hype settings saved.", "success");
+        showToast(`Hype ${hypeEnabledInput?.checked ? "enabled" : "disabled"} and settings saved.`, "success");
       });
 
       startVoteButton.addEventListener("click", async () => {

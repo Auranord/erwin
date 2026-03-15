@@ -104,7 +104,8 @@ const HYPE_DEFAULTS = {
   thresholdPercent: 20,
   durationSeconds: 12,
   extensionRatio: 0.35,
-  userCooldownSeconds: 8
+  userCooldownSeconds: 8,
+  enabled: true
 };
 
 const overlayState = {
@@ -1224,6 +1225,7 @@ function normalizeEmoteList(value) {
 function getHypeSettings() {
   const emotes = normalizeEmoteList(getSettingString("overlay_hype_emotes", HYPE_DEFAULTS.emotes.join(",")));
   return {
+    enabled: getSettingBoolean("overlay_hype_enabled", HYPE_DEFAULTS.enabled),
     emotes: emotes.length ? emotes : [...HYPE_DEFAULTS.emotes],
     thresholdPercent: clampNumber(
       Number(getSettingValue("overlay_hype_threshold_percent", HYPE_DEFAULTS.thresholdPercent)),
@@ -1266,6 +1268,7 @@ function triggerHype(durationMs) {
 
 function handleHypeChatMessage({ user, message }) {
   const settings = getHypeSettings();
+  if (!settings.enabled) return;
   if (!messageContainsHypeEmote(message, settings.emotes)) return;
 
   const now = Date.now();
@@ -3987,6 +3990,7 @@ app.get("/api/overlay/state", async (req, res) => {
     lastTriggeredAt: overlayState.lastTriggeredAt,
     hypeUntil: overlayState.hypeUntil,
     hypeLastTriggeredAt: overlayState.hypeLastTriggeredAt,
+    hypeEnabled: hypeSettings.enabled,
     hypeEmotes: hypeSettings.emotes,
     twitch: {
       channel: status.channel,

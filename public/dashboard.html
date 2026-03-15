@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Erwin Dashboard</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260224a" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260315a" />
   </head>
   <body class="dashboard-page">
     <header>
@@ -15,7 +15,6 @@
         </div>
         <div class="header-actions">
           <span id="twitch-live-status" class="status-pill status-pill-twitch">Twitch • --</span>
-          <span class="status-pill"><span></span> Connected</span>
           <span id="current-user" class="status-pill">Guest • viewer</span>
           <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Toggle Dark Wood mode">🌒 Dark Wood</button>
           <button id="logout" class="secondary">Logout</button>
@@ -27,6 +26,7 @@
         <a class="tab-link" href="#" data-tab="playlists">Playlist Editor</a>
         <a class="tab-link" href="#" data-tab="track-manager">Track Manager</a>
         <a class="tab-link" href="#" data-tab="chat">Live Chat Feed</a>
+        <a class="tab-link" href="#" data-tab="overlay">Overlay</a>
         <a class="tab-link" href="#" data-tab="custom-commands">Custom Commands</a>
         <a class="tab-link" href="#" data-tab="settings">Settings</a>
       </nav>
@@ -104,6 +104,10 @@
             <h2>Hype Overlay</h2>
             <p class="notice">Trigger a rave/disco overlay when enough viewers post matching emotes in chat.</p>
             <form id="overlay-hype-form" class="grid" method="post">
+              <label class="card-toggle" for="hype-enabled">
+                <input id="hype-enabled" type="checkbox" />
+                Enable Hype from chat
+              </label>
               <div>
                 <label for="hype-emotes">Hype emotes (comma separated)</label>
                 <input id="hype-emotes" type="text" placeholder="PogChamp, EZ, HYPERS" />
@@ -420,7 +424,7 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/assets/dashboard.js?v=20260315c"></script>
+    <script src="/assets/dashboard.js?v=20260315d"></script>
 
   </body>
 </html>
