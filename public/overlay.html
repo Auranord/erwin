@@ -60,8 +60,8 @@
       };
 
       analyserState.audio.preload = "auto";
-      analyserState.audio.volume = 0;
-      analyserState.audio.muted = true;
+      analyserState.audio.volume = 1;
+      analyserState.audio.muted = false;
       analyserState.audio.playsInline = true;
       analyserState.audio.crossOrigin = "anonymous";
 
@@ -88,6 +88,7 @@
         analyserState.analyser.smoothingTimeConstant = 0.35;
         analyserState.frequencyData = new Uint8Array(analyserState.analyser.frequencyBinCount);
         analyserState.gain = analyserState.context.createGain();
+        // Keep analyser input full-scale; mute only at graph output.
         analyserState.gain.gain.value = 0;
         analyserState.source = analyserState.context.createMediaElementSource(analyserState.audio);
         analyserState.source.connect(analyserState.analyser);
