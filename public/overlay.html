@@ -58,7 +58,8 @@
         currentTrackStartedAtMs: 0,
         flatlineFrames: 0,
         prevBandWeighted: Array.from({ length: EQUALIZER_BANDS }, () => 0),
-        staleBandFrames: Array.from({ length: EQUALIZER_BANDS }, () => 0)
+        staleBandFrames: Array.from({ length: EQUALIZER_BANDS }, () => 0),
+        rangeComp: 1.22
       };
 
       analyserState.audio.preload = "auto";
@@ -87,7 +88,7 @@
         analyserState.context = new AudioCtx();
         analyserState.analyser = analyserState.context.createAnalyser();
         analyserState.analyser.fftSize = 1024;
-        analyserState.analyser.smoothingTimeConstant = 0.35;
+        analyserState.analyser.smoothingTimeConstant = 0.52;
         analyserState.frequencyData = new Uint8Array(analyserState.analyser.frequencyBinCount);
         analyserState.gain = analyserState.context.createGain();
         // Keep analyser input full-scale; mute only at graph output.
@@ -110,6 +111,7 @@
           analyserState.flatlineFrames = 0;
           analyserState.prevBandWeighted.fill(0);
           analyserState.staleBandFrames.fill(0);
+          analyserState.rangeComp = 1.22;
           return;
         }
         if (!ensureAnalyser()) return;
@@ -129,6 +131,7 @@
           analyserState.flatlineFrames = 0;
           analyserState.prevBandWeighted.fill(0);
           analyserState.staleBandFrames.fill(0);
+          analyserState.rangeComp = 1.22;
           for (let i = 0; i < EQUALIZER_BANDS; i += 1) equalizerEnergy[i] = 0.08;
           analyserState.audio.src = `/api/overlay/audio/${trackId}?v=${startedAtMs}`;
           analyserState.audio.load();
@@ -173,6 +176,14 @@
         const logMin = Math.log(minBin);
         const logMax = Math.log(maxBin);
 
+        let subBassSum = 0;
+        let subBassCount = 0;
+        for (let i = minBin; i < Math.min(maxBin, 14); i += 1) {
+          subBassSum += analyserState.frequencyData[i];
+          subBassCount += 1;
+        }
+        const subBass = subBassCount > 0 ? (subBassSum / subBassCount) / 255 : 0;
+
         let framePeak = 0;
         let frameAverage = 0;
         for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
@@ -198,29 +209,34 @@
           // More logarithmic emphasis: boost lows/mids while preserving highs.
           const bandPos = band / Math.max(1, EQUALIZER_BANDS - 1);
           const logWeight = 1.26 - (Math.log1p(bandPos * 8) / Math.log(9)) * 0.36;
-          const weighted = Math.max(0, Math.min(1, base * logWeight));
+          let weighted = Math.max(0, Math.min(1, base * logWeight));
+          if (band < 3) {
+            // Bass-specific lift so low bands are less static.
+            weighted = Math.min(1, weighted + subBass * (0.22 - band * 0.05));
+          }
+          weighted = Math.min(1, weighted * analyserState.rangeComp);
           frameAverage += weighted;
 
           const prevWeighted = analyserState.prevBandWeighted[band] || 0;
           const weightedDelta = Math.abs(weighted - prevWeighted);
           analyserState.prevBandWeighted[band] = weighted;
-          const motionBoost = Math.min(0.24, weightedDelta * 3.2);
+          const motionBoost = Math.min(0.28, weightedDelta * 3.8);
 
-          const target = Math.min(1, (weighted ** 0.86) + motionBoost);
+          const target = Math.min(1, (weighted ** 0.8) + motionBoost);
           if (target > framePeak) framePeak = target;
           const current = equalizerEnergy[band];
-          const smoothing = target > current ? 0.68 : 0.52; // much faster release so bars do not stay extended
+          const smoothing = target > current ? 0.56 : 0.16; // smoother shrink to reduce flicker
           let next = current + (target - current) * smoothing;
 
-          if (weightedDelta < 0.006) {
+          if (weightedDelta < 0.004) {
             analyserState.staleBandFrames[band] += 1;
           } else {
             analyserState.staleBandFrames[band] = 0;
           }
 
-          // Shrink long-stale bands so dead ranges don't occupy permanent width.
-          if (analyserState.staleBandFrames[band] > 45) {
-            next *= 0.9;
+          // Shrink long-stale non-bass ranges gradually.
+          if (band >= 3 && analyserState.staleBandFrames[band] > 110) {
+            next *= 0.985;
           }
 
           equalizerEnergy[band] = Math.max(0, Math.min(1, next));
@@ -233,6 +249,9 @@
         } else {
           analyserState.flatlineFrames = 0;
         }
+
+        const targetRangeComp = framePeak < 0.2 ? 1.9 : framePeak < 0.35 ? 1.45 : 1.18;
+        analyserState.rangeComp += (targetRangeComp - analyserState.rangeComp) * 0.08;
 
         // Fallback only if analyser is effectively flatlined for a long time.
         if (analyserState.flatlineFrames > 120) {
