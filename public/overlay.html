@@ -31,6 +31,14 @@
     <script>
       const canvas = document.getElementById("overlay-canvas");
       const ctx = canvas.getContext("2d");
+      const searchParams = new URLSearchParams(window.location.search);
+
+      const SIDE_WIDTH = 360;
+      const BAR_COUNT = 16;
+      const SEGMENT_COUNT = 6;
+      const BAR_GAP = 10;
+      const SEGMENT_GAP = 5;
+
       const overlayState = {
         activeUntil: 0,
         hypeUntil: 0,
@@ -42,31 +50,35 @@
           pausedAtMs: 0
         }
       };
-      const searchParams = new URLSearchParams(window.location.search);
 
-      const SIDE_EQUALIZER_WIDTH = 360;
-      const EQUALIZER_BANDS = 16;
-      const equalizerEnergy = Array.from({ length: EQUALIZER_BANDS }, () => 0.08);
       const analyserState = {
         audio: new Audio(),
         context: null,
         analyser: null,
-        gain: null,
         source: null,
+        gain: null,
         frequencyData: null,
         currentTrackId: null,
         currentTrackStartedAtMs: 0,
-        flatlineFrames: 0,
-        prevBandWeighted: Array.from({ length: EQUALIZER_BANDS }, () => 0),
-        staleBandFrames: Array.from({ length: EQUALIZER_BANDS }, () => 0),
-        rangeComp: 1.22
+        bandRanges: []
+      };
+
+      const signalState = {
+        rawBands: Array.from({ length: BAR_COUNT }, () => 0),
+        smoothedBands: Array.from({ length: BAR_COUNT }, () => 0.06),
+        shapedBands: Array.from({ length: BAR_COUNT }, () => 0.06),
+        prevBands: Array.from({ length: BAR_COUNT }, () => 0.06),
+        segmentFill: Array.from({ length: BAR_COUNT }, () => Array.from({ length: SEGMENT_COUNT }, () => 0)),
+        adaptiveGain: 1.2,
+        loudnessEma: 0.12,
+        pulse: 0.14
       };
 
       analyserState.audio.preload = "auto";
       analyserState.audio.volume = 1;
       analyserState.audio.muted = false;
-      analyserState.audio.playsInline = true;
       analyserState.audio.crossOrigin = "anonymous";
+      analyserState.audio.playsInline = true;
 
       function computePlaybackSeconds(nowMs) {
         const playback = overlayState.playback || {};
@@ -81,19 +93,41 @@
         return Math.min(durationSec, elapsedSec);
       }
 
+      function createMusicalBandRanges(binCount, sampleRate) {
+        const rangesHz = [
+          [35, 55], [55, 80], [80, 115], [115, 165],
+          [165, 240], [240, 340], [340, 480], [480, 680],
+          [680, 950], [950, 1300], [1300, 1800], [1800, 2500],
+          [2500, 3500], [3500, 5000], [5000, 8000], [8000, 12500]
+        ];
+        const nyquist = sampleRate / 2;
+        return rangesHz.map(([low, high]) => {
+          const safeLow = Math.max(20, Math.min(low, nyquist - 10));
+          const safeHigh = Math.max(safeLow + 20, Math.min(high, nyquist));
+          const start = Math.max(1, Math.floor((safeLow / nyquist) * (binCount - 1)));
+          const end = Math.max(start + 1, Math.floor((safeHigh / nyquist) * (binCount - 1)));
+          return { start, end };
+        });
+      }
+
       function ensureAnalyser() {
         if (analyserState.analyser) return true;
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) return false;
+
         analyserState.context = new AudioCtx();
         analyserState.analyser = analyserState.context.createAnalyser();
-        analyserState.analyser.fftSize = 1024;
-        analyserState.analyser.smoothingTimeConstant = 0.52;
+        analyserState.analyser.fftSize = 2048;
+        analyserState.analyser.smoothingTimeConstant = 0.45;
         analyserState.frequencyData = new Uint8Array(analyserState.analyser.frequencyBinCount);
-        analyserState.gain = analyserState.context.createGain();
-        // Keep analyser input full-scale; mute only at graph output.
-        analyserState.gain.gain.value = 0;
+        analyserState.bandRanges = createMusicalBandRanges(
+          analyserState.analyser.frequencyBinCount,
+          analyserState.context.sampleRate || 48000
+        );
+
         analyserState.source = analyserState.context.createMediaElementSource(analyserState.audio);
+        analyserState.gain = analyserState.context.createGain();
+        analyserState.gain.gain.value = 0;
         analyserState.source.connect(analyserState.analyser);
         analyserState.analyser.connect(analyserState.gain);
         analyserState.gain.connect(analyserState.context.destination);
@@ -108,12 +142,9 @@
           analyserState.audio.removeAttribute("src");
           analyserState.currentTrackId = null;
           analyserState.currentTrackStartedAtMs = 0;
-          analyserState.flatlineFrames = 0;
-          analyserState.prevBandWeighted.fill(0);
-          analyserState.staleBandFrames.fill(0);
-          analyserState.rangeComp = 1.22;
           return;
         }
+
         if (!ensureAnalyser()) return;
         if (analyserState.context?.state === "suspended") {
           try { await analyserState.context.resume(); } catch {}
@@ -125,182 +156,169 @@
           analyserState.audio.error ||
           !analyserState.audio.src
         );
+
         if (needsReload) {
           analyserState.currentTrackId = trackId;
           analyserState.currentTrackStartedAtMs = startedAtMs;
-          analyserState.flatlineFrames = 0;
-          analyserState.prevBandWeighted.fill(0);
-          analyserState.staleBandFrames.fill(0);
-          analyserState.rangeComp = 1.22;
-          for (let i = 0; i < EQUALIZER_BANDS; i += 1) equalizerEnergy[i] = 0.08;
           analyserState.audio.src = `/api/overlay/audio/${trackId}?v=${startedAtMs}`;
           analyserState.audio.load();
         }
 
         const targetSec = computePlaybackSeconds(Date.now());
         if (Number.isFinite(analyserState.audio.currentTime) && Math.abs(analyserState.audio.currentTime - targetSec) > 0.45) {
-          try {
-            analyserState.audio.currentTime = Math.max(0, targetSec);
-          } catch {
-            // Ignore seek errors while not ready.
-          }
+          try { analyserState.audio.currentTime = Math.max(0, targetSec); } catch {}
         }
 
         if (overlayState.playback.paused) {
           analyserState.audio.pause();
-        } else {
-          try {
-            await analyserState.audio.play();
-          } catch {
-            // Ignore autoplay restrictions/transient play errors.
-          }
-          if (analyserState.context?.state !== "running") {
-            try { await analyserState.context?.resume(); } catch {}
-          }
+          return;
+        }
+
+        try {
+          await analyserState.audio.play();
+        } catch {
+          // Autoplay restrictions are handled by soft visual fallback.
+        }
+        if (analyserState.context?.state !== "running") {
+          try { await analyserState.context?.resume(); } catch {}
         }
       }
 
-      function updateEqualizerBandsFromAudio() {
-        if (!analyserState.analyser || !analyserState.frequencyData) {
-          return;
-        }
-        if (overlayState.playback.paused || analyserState.audio.paused) {
-          // Freeze bars during pause to avoid jitter.
+      function updateBandsFromAudio() {
+        const paused = overlayState.playback.paused || analyserState.audio.paused;
+        const playbackSec = computePlaybackSeconds(Date.now());
+
+        if (!analyserState.analyser || !analyserState.frequencyData || paused) {
+          const shimmer = 0.06 + (Math.sin(playbackSec * 2.7) + 1) * 0.025;
+          signalState.smoothedBands = signalState.smoothedBands.map((value, index) => {
+            const target = shimmer + Math.sin(playbackSec * (1.8 + index * 0.07)) * 0.02;
+            return value + (target - value) * 0.08;
+          });
           return;
         }
 
         analyserState.analyser.getByteFrequencyData(analyserState.frequencyData);
-        const totalBins = analyserState.frequencyData.length;
-        const minBin = 2;
-        const maxBin = Math.max(minBin + 1, Math.floor(totalBins * 0.92));
-        const logMin = Math.log(minBin);
-        const logMax = Math.log(maxBin);
-
-        let subBassSum = 0;
-        let subBassCount = 0;
-        for (let i = minBin; i < Math.min(maxBin, 14); i += 1) {
-          subBassSum += analyserState.frequencyData[i];
-          subBassCount += 1;
-        }
-        const subBass = subBassCount > 0 ? (subBassSum / subBassCount) / 255 : 0;
 
         let framePeak = 0;
-        let frameAverage = 0;
-        for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
-          const startRatio = band / EQUALIZER_BANDS;
-          const endRatio = (band + 1) / EQUALIZER_BANDS;
-          const start = Math.max(minBin, Math.floor(Math.exp(logMin + (logMax - logMin) * startRatio)));
-          const end = Math.min(maxBin, Math.max(start + 1, Math.floor(Math.exp(logMin + (logMax - logMin) * endRatio))));
+        let frameMean = 0;
 
-          let peak = 0;
+        for (let band = 0; band < BAR_COUNT; band += 1) {
+          const range = analyserState.bandRanges[band];
           let sum = 0;
+          let peak = 0;
           let count = 0;
-          for (let i = start; i < end; i += 1) {
+          for (let i = range.start; i < range.end; i += 1) {
             const value = analyserState.frequencyData[i];
-            if (value > peak) peak = value;
             sum += value;
+            peak = Math.max(peak, value);
             count += 1;
           }
 
-          const avg = count > 0 ? sum / count : 0;
-          const mixed = (peak * 0.72) + (avg * 0.28);
-          const base = Math.max(0, Math.min(1, mixed / 255));
+          const avg = count ? sum / count : 0;
+          const normalizedAvg = avg / 255;
+          const normalizedPeak = peak / 255;
 
-          // More logarithmic emphasis: boost lows/mids while preserving highs.
-          const bandPos = band / Math.max(1, EQUALIZER_BANDS - 1);
-          const logWeight = 1.26 - (Math.log1p(bandPos * 8) / Math.log(9)) * 0.36;
-          let weighted = Math.max(0, Math.min(1, base * logWeight));
-          if (band < 3) {
-            // Bass-specific lift so low bands are less static.
-            weighted = Math.min(1, weighted + subBass * (0.22 - band * 0.05));
-          }
-          weighted = Math.min(1, weighted * analyserState.rangeComp);
-          frameAverage += weighted;
+          // Art-directed blend: punch + body + slight cross-band glue.
+          const glueLeft = band > 0 ? signalState.rawBands[band - 1] * 0.1 : 0;
+          const blend = (normalizedPeak * 0.62) + (normalizedAvg * 0.32) + glueLeft;
 
-          const prevWeighted = analyserState.prevBandWeighted[band] || 0;
-          const weightedDelta = Math.abs(weighted - prevWeighted);
-          analyserState.prevBandWeighted[band] = weighted;
-          const motionBoost = Math.min(0.28, weightedDelta * 3.8);
-
-          const target = Math.min(1, (weighted ** 0.8) + motionBoost);
-          if (target > framePeak) framePeak = target;
-          const current = equalizerEnergy[band];
-          const smoothing = target > current ? 0.56 : 0.16; // smoother shrink to reduce flicker
-          let next = current + (target - current) * smoothing;
-
-          if (weightedDelta < 0.004) {
-            analyserState.staleBandFrames[band] += 1;
-          } else {
-            analyserState.staleBandFrames[band] = 0;
-          }
-
-          // Shrink long-stale non-bass ranges gradually.
-          if (band >= 3 && analyserState.staleBandFrames[band] > 110) {
-            next *= 0.985;
-          }
-
-          equalizerEnergy[band] = Math.max(0, Math.min(1, next));
+          signalState.rawBands[band] = Math.max(0, Math.min(1, blend));
+          frameMean += signalState.rawBands[band];
+          framePeak = Math.max(framePeak, signalState.rawBands[band]);
         }
 
-        const avgWeighted = frameAverage / EQUALIZER_BANDS;
-        const adaptiveFloor = Math.max(0.008, avgWeighted * 0.22);
-        if (framePeak <= adaptiveFloor) {
-          analyserState.flatlineFrames += 1;
-        } else {
-          analyserState.flatlineFrames = 0;
+        frameMean /= BAR_COUNT;
+        signalState.loudnessEma += (frameMean - signalState.loudnessEma) * 0.08;
+
+        // Adaptive scaling so quieter songs stay lively but loud songs do not pin.
+        const desiredGain = framePeak < 0.18 ? 2.0 : framePeak < 0.32 ? 1.55 : 1.18;
+        signalState.adaptiveGain += (desiredGain - signalState.adaptiveGain) * 0.07;
+
+        // Transient pulse for musical hits.
+        const onset = Math.max(0, framePeak - (signalState.pulse * 0.9));
+        signalState.pulse += (onset * 1.2 - signalState.pulse) * 0.2;
+
+        for (let band = 0; band < BAR_COUNT; band += 1) {
+          const own = signalState.rawBands[band] * signalState.adaptiveGain;
+          const left = band > 0 ? signalState.rawBands[band - 1] * 0.14 : 0;
+          const right = band < BAR_COUNT - 1 ? signalState.rawBands[band + 1] * 0.14 : 0;
+          const bassWeight = band < 3 ? 0.12 : 0;
+          const pulseWeight = signalState.pulse * (band < 10 ? 0.18 : 0.1);
+
+          const shaped = Math.min(1, Math.max(0, own + left + right + bassWeight + pulseWeight));
+          signalState.shapedBands[band] = shaped;
+
+          const current = signalState.smoothedBands[band];
+          const target = shaped ** 0.74;
+          const attack = 0.66;
+          const release = 0.18;
+          const alpha = target > current ? attack : release;
+          const next = current + (target - current) * alpha;
+          signalState.smoothedBands[band] = Math.max(0, Math.min(1, next));
         }
+      }
 
-        const targetRangeComp = framePeak < 0.2 ? 1.9 : framePeak < 0.35 ? 1.45 : 1.18;
-        analyserState.rangeComp += (targetRangeComp - analyserState.rangeComp) * 0.08;
+      function updateSegmentStates() {
+        const thresholds = [0.08, 0.2, 0.33, 0.48, 0.66, 0.84];
+        const softness = [0.16, 0.14, 0.13, 0.11, 0.1, 0.09];
 
-        // Fallback only if analyser is effectively flatlined for a long time.
-        if (analyserState.flatlineFrames > 120) {
-          const playbackSec = computePlaybackSeconds(Date.now());
-          for (let band = 0; band < EQUALIZER_BANDS; band += 1) {
-            const phase = playbackSec * (2.0 + band * 0.085) + band * 0.7;
-            const pulse = (Math.sin(phase) + Math.sin(phase * 0.57 + 1.7) + 2) / 4;
-            const target = 0.12 + pulse * 0.58;
-            const current = equalizerEnergy[band];
-            analyserState.staleBandFrames[band] = 0;
-            equalizerEnergy[band] = current + (target - current) * 0.28;
+        for (let bar = 0; bar < BAR_COUNT; bar += 1) {
+          const barLevel = signalState.smoothedBands[bar];
+          for (let seg = 0; seg < SEGMENT_COUNT; seg += 1) {
+            const t = thresholds[seg];
+            const w = softness[seg];
+            const normalized = (barLevel - t + w) / (w * 2);
+            const target = Math.max(0, Math.min(1, normalized));
+            const current = signalState.segmentFill[bar][seg];
+            const alpha = target > current ? 0.58 : 0.16;
+            signalState.segmentFill[bar][seg] = current + (target - current) * alpha;
           }
         }
       }
 
-      function drawHypeEqualizerSide() {
+      function drawEqualizerSide({ side }) {
         const playbackSec = computePlaybackSeconds(Date.now());
-        const x = 0;
-        const barGap = 8;
-        const totalGap = barGap * (EQUALIZER_BANDS - 1);
-        const barHeight = (canvas.height - totalGap) / EQUALIZER_BANDS;
+        const sideX = side === "left" ? 0 : canvas.width - SIDE_WIDTH;
+        const barWidth = (SIDE_WIDTH - BAR_GAP * (BAR_COUNT - 1) - 14) / BAR_COUNT;
+        const segmentHeight = (canvas.height - SEGMENT_GAP * (SEGMENT_COUNT - 1) - 16) / SEGMENT_COUNT;
 
         ctx.save();
         ctx.beginPath();
-        ctx.rect(x, 0, SIDE_EQUALIZER_WIDTH, canvas.height);
+        ctx.rect(sideX, 0, SIDE_WIDTH, canvas.height);
         ctx.clip();
-        ctx.transform(1, -0.12, 0, 1, 0, 0);
+        ctx.transform(1, side === "left" ? -0.1 : 0.1, 0, 1, 0, 0);
         ctx.globalCompositeOperation = "screen";
-        ctx.globalAlpha = 0.48;
+        ctx.globalAlpha = 0.5;
 
-        const drift = (playbackSec * 14) % 360;
+        const hueShift = (playbackSec * 12) % 360;
         const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        gradient.addColorStop(0, `hsla(${(drift + 0) % 360}, 95%, 62%, 0.88)`);
-        gradient.addColorStop(0.34, `hsla(${(drift + 120) % 360}, 95%, 60%, 0.88)`);
-        gradient.addColorStop(0.67, `hsla(${(drift + 240) % 360}, 95%, 58%, 0.88)`);
-        gradient.addColorStop(1, `hsla(${(drift + 320) % 360}, 95%, 62%, 0.88)`);
-        ctx.fillStyle = gradient;
+        gradient.addColorStop(0, `hsla(${(hueShift + 10) % 360}, 95%, 64%, 0.9)`);
+        gradient.addColorStop(0.33, `hsla(${(hueShift + 130) % 360}, 95%, 60%, 0.9)`);
+        gradient.addColorStop(0.66, `hsla(${(hueShift + 240) % 360}, 95%, 58%, 0.9)`);
+        gradient.addColorStop(1, `hsla(${(hueShift + 320) % 360}, 95%, 63%, 0.9)`);
 
-        for (let i = 0; i < EQUALIZER_BANDS; i += 1) {
-          const energy = equalizerEnergy[i];
-          const y = i * (barHeight + barGap);
-          const h = Math.max(4, barHeight);
-          const boosted = Math.max(0, Math.min(1, energy));
-          const contrast = boosted ** 1.12;
-          const w = contrast * (SIDE_EQUALIZER_WIDTH - 6);
-          if (w > 1) {
-            ctx.fillRect(x + 2, y, w, h);
+        const bars = side === "left"
+          ? [...Array(BAR_COUNT).keys()]
+          : [...Array(BAR_COUNT).keys()].reverse();
+
+        bars.forEach((barIndex, drawIndex) => {
+          const x = sideX + 7 + drawIndex * (barWidth + BAR_GAP);
+          for (let seg = 0; seg < SEGMENT_COUNT; seg += 1) {
+            const fill = signalState.segmentFill[barIndex][SEGMENT_COUNT - 1 - seg];
+            const y = canvas.height - 8 - (seg + 1) * segmentHeight - seg * SEGMENT_GAP;
+            if (fill < 0.02) continue;
+
+            ctx.fillStyle = gradient;
+            ctx.globalAlpha = 0.18 + fill * 0.34;
+            ctx.fillRect(x, y + (1 - fill) * (segmentHeight * 0.42), barWidth, segmentHeight * fill);
+
+            if (seg === SEGMENT_COUNT - 1 && fill > 0.45) {
+              ctx.globalAlpha = 0.2 + fill * 0.25;
+              ctx.fillStyle = "rgba(255,255,255,0.9)";
+              ctx.fillRect(x, y, barWidth, 2.5);
+            }
           }
-        }
+        });
 
         ctx.restore();
       }
@@ -309,7 +327,7 @@
         const elapsed = timestamp / 1000;
         const glow = 0.35 + Math.sin(elapsed * 4) * 0.18;
         ctx.save();
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = 0.45;
         const gradient = ctx.createRadialGradient(960, 540, 80, 960, 540, 620);
         gradient.addColorStop(0, `rgba(143, 227, 255, ${0.5 + glow})`);
         gradient.addColorStop(1, "rgba(143, 227, 255, 0)");
@@ -319,8 +337,10 @@
       }
 
       function drawHypeRave() {
-        updateEqualizerBandsFromAudio();
-        drawHypeEqualizerSide();
+        updateBandsFromAudio();
+        updateSegmentStates();
+        drawEqualizerSide({ side: "left" });
+        drawEqualizerSide({ side: "right" });
       }
 
       function drawFrame(timestamp) {
@@ -365,5 +385,6 @@
       fetchState();
       window.requestAnimationFrame(drawFrame);
     </script>
+
   </body>
 </html>
