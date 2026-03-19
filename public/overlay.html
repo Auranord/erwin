@@ -259,18 +259,17 @@
       }
 
       function updateSegmentStates() {
-        const thresholds = [0.08, 0.2, 0.33, 0.48, 0.66, 0.84];
-        const softness = [0.16, 0.14, 0.13, 0.11, 0.1, 0.09];
+        const thresholds = [0.08, 0.18, 0.3, 0.45, 0.62, 0.8];
 
         for (let bar = 0; bar < BAR_COUNT; bar += 1) {
           const barLevel = signalState.smoothedBands[bar];
           for (let seg = 0; seg < SEGMENT_COUNT; seg += 1) {
-            const t = thresholds[seg];
-            const w = softness[seg];
-            const normalized = (barLevel - t + w) / (w * 2);
-            const target = Math.max(0, Math.min(1, normalized));
             const current = signalState.segmentFill[bar][seg];
-            const alpha = target > current ? 0.58 : 0.16;
+            const onThreshold = thresholds[seg];
+            const offThreshold = Math.max(0, onThreshold - 0.08);
+            const shouldBeOn = current > 0.5 ? barLevel >= offThreshold : barLevel >= onThreshold;
+            const target = shouldBeOn ? 1 : 0;
+            const alpha = target > current ? 0.76 : 0.24;
             signalState.segmentFill[bar][seg] = current + (target - current) * alpha;
           }
         }
@@ -279,8 +278,8 @@
       function drawEqualizerSide({ side }) {
         const playbackSec = computePlaybackSeconds(Date.now());
         const sideX = side === "left" ? 0 : canvas.width - SIDE_WIDTH;
-        const barWidth = (SIDE_WIDTH - BAR_GAP * (BAR_COUNT - 1) - 14) / BAR_COUNT;
-        const segmentHeight = (canvas.height - SEGMENT_GAP * (SEGMENT_COUNT - 1) - 16) / SEGMENT_COUNT;
+        const rowHeight = (canvas.height - BAR_GAP * (BAR_COUNT - 1) - 20) / BAR_COUNT;
+        const segmentWidth = (SIDE_WIDTH - SEGMENT_GAP * (SEGMENT_COUNT - 1) - 16) / SEGMENT_COUNT;
 
         ctx.save();
         ctx.beginPath();
@@ -288,37 +287,46 @@
         ctx.clip();
         ctx.transform(1, side === "left" ? -0.1 : 0.1, 0, 1, 0, 0);
         ctx.globalCompositeOperation = "screen";
-        ctx.globalAlpha = 0.5;
 
         const hueShift = (playbackSec * 12) % 360;
         const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        gradient.addColorStop(0, `hsla(${(hueShift + 10) % 360}, 95%, 64%, 0.9)`);
-        gradient.addColorStop(0.33, `hsla(${(hueShift + 130) % 360}, 95%, 60%, 0.9)`);
-        gradient.addColorStop(0.66, `hsla(${(hueShift + 240) % 360}, 95%, 58%, 0.9)`);
-        gradient.addColorStop(1, `hsla(${(hueShift + 320) % 360}, 95%, 63%, 0.9)`);
+        gradient.addColorStop(0, `hsla(${(hueShift + 0) % 360}, 96%, 66%, 1)`);
+        gradient.addColorStop(0.33, `hsla(${(hueShift + 120) % 360}, 96%, 62%, 1)`);
+        gradient.addColorStop(0.66, `hsla(${(hueShift + 230) % 360}, 96%, 60%, 1)`);
+        gradient.addColorStop(1, `hsla(${(hueShift + 320) % 360}, 96%, 64%, 1)`);
 
-        const bars = side === "left"
-          ? [...Array(BAR_COUNT).keys()]
-          : [...Array(BAR_COUNT).keys()].reverse();
+        for (let bar = 0; bar < BAR_COUNT; bar += 1) {
+          const displayBar = BAR_COUNT - 1 - bar;
+          const y = 10 + bar * (rowHeight + BAR_GAP);
+          let topLitSegment = -1;
 
-        bars.forEach((barIndex, drawIndex) => {
-          const x = sideX + 7 + drawIndex * (barWidth + BAR_GAP);
           for (let seg = 0; seg < SEGMENT_COUNT; seg += 1) {
-            const fill = signalState.segmentFill[barIndex][SEGMENT_COUNT - 1 - seg];
-            const y = canvas.height - 8 - (seg + 1) * segmentHeight - seg * SEGMENT_GAP;
-            if (fill < 0.02) continue;
+            const fill = signalState.segmentFill[displayBar][seg];
+            const stepped = fill > 0.6 ? 1 : fill > 0.3 ? 0.45 : 0;
+            const segIndex = side === "left" ? seg : (SEGMENT_COUNT - 1 - seg);
+            const x = sideX + 8 + segIndex * (segmentWidth + SEGMENT_GAP);
 
-            ctx.fillStyle = gradient;
-            ctx.globalAlpha = 0.18 + fill * 0.34;
-            ctx.fillRect(x, y + (1 - fill) * (segmentHeight * 0.42), barWidth, segmentHeight * fill);
+            // Faint background shell keeps shape readable on stream.
+            ctx.globalAlpha = 0.16;
+            ctx.fillStyle = "rgba(255,255,255,0.18)";
+            ctx.fillRect(x, y, segmentWidth, rowHeight);
 
-            if (seg === SEGMENT_COUNT - 1 && fill > 0.45) {
-              ctx.globalAlpha = 0.2 + fill * 0.25;
-              ctx.fillStyle = "rgba(255,255,255,0.9)";
-              ctx.fillRect(x, y, barWidth, 2.5);
+            if (stepped > 0) {
+              topLitSegment = Math.max(topLitSegment, seg);
+              ctx.globalAlpha = 0.55 + stepped * 0.4;
+              ctx.fillStyle = gradient;
+              ctx.fillRect(x, y, segmentWidth, rowHeight);
             }
           }
-        });
+
+          if (topLitSegment >= 0) {
+            const segIndex = side === "left" ? topLitSegment : (SEGMENT_COUNT - 1 - topLitSegment);
+            const x = sideX + 8 + segIndex * (segmentWidth + SEGMENT_GAP);
+            ctx.globalAlpha = 0.42;
+            ctx.fillStyle = "rgba(255,255,255,0.95)";
+            ctx.fillRect(x, y, segmentWidth, 2.2);
+          }
+        }
 
         ctx.restore();
       }
