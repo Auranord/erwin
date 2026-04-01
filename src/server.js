@@ -134,25 +134,6 @@ const hypeRuntime = {
   userLastCountedAt: new Map()
 };
 
-const app = express();
-app.set("trust proxy", 1);
-
-const instagramIntegration = createInstagramIntegration({
-  log,
-  publicBaseUrl: PUBLIC_BASE_URL,
-  staticDir: PUBLIC_DIR
-});
-
-function ensureDbDirectory(dbUrl) {
-  if (!dbUrl || dbUrl === ":memory:") return;
-  if (/^[a-zA-Z]+:\/\//.test(dbUrl) || dbUrl.startsWith("file:")) return;
-  const dbDir = path.dirname(path.resolve(dbUrl));
-  fs.mkdirSync(dbDir, { recursive: true });
-}
-
-ensureDbDirectory(DB_URL);
-const db = new Database(DB_URL);
-
 const LOG_LEVELS = {
   error: 0,
   warn: 1,
@@ -180,6 +161,25 @@ function log(level, message, meta = {}) {
     console.log(line);
   }
 }
+
+const app = express();
+app.set("trust proxy", 1);
+
+const instagramIntegration = createInstagramIntegration({
+  log,
+  publicBaseUrl: PUBLIC_BASE_URL,
+  staticDir: PUBLIC_DIR
+});
+
+function ensureDbDirectory(dbUrl) {
+  if (!dbUrl || dbUrl === ":memory:") return;
+  if (/^[a-zA-Z]+:\/\//.test(dbUrl) || dbUrl.startsWith("file:")) return;
+  const dbDir = path.dirname(path.resolve(dbUrl));
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+ensureDbDirectory(DB_URL);
+const db = new Database(DB_URL);
 
 
 app.use(cookieParser());
