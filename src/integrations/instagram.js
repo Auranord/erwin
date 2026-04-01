@@ -6,9 +6,7 @@ const META_GRAPH_BASE = "https://graph.facebook.com/v21.0";
 const DEFAULT_TEMPLATE = "🔴 LIVE NOW\n{title}\n🎮 {game}\n{url}";
 const REQUIRED_ENV = [
   "META_APP_ID",
-  "META_APP_SECRET",
-  "INSTAGRAM_BUSINESS_ACCOUNT_ID",
-  "META_LONG_LIVED_ACCESS_TOKEN"
+  "META_APP_SECRET"
 ];
 
 function envTrim(name, fallback = "") {
@@ -112,8 +110,6 @@ export function createInstagramIntegration({ log, publicBaseUrl, staticDir }) {
   const settings = {
     appId: envTrim("META_APP_ID"),
     appSecret: envTrim("META_APP_SECRET"),
-    businessAccountId: envTrim("INSTAGRAM_BUSINESS_ACCOUNT_ID"),
-    accessToken: envTrim("META_LONG_LIVED_ACCESS_TOKEN"),
     notifyTemplate: envTrim("NOTIFY_TEMPLATE_INSTAGRAM", DEFAULT_TEMPLATE)
   };
 
@@ -129,7 +125,7 @@ export function createInstagramIntegration({ log, publicBaseUrl, staticDir }) {
       setupSteps: [
         "1) In Meta app, enable Instagram Graph API with instagram_content_publish permission.",
         "2) Connect an Instagram Business account to a Facebook Page and app.",
-        "3) Configure META_APP_ID, META_APP_SECRET, INSTAGRAM_BUSINESS_ACCOUNT_ID, META_LONG_LIVED_ACCESS_TOKEN.",
+        "3) Configure META_APP_ID and META_APP_SECRET, then connect Instagram from the dashboard OAuth box.",
         "4) Ensure PUBLIC_BASE_URL is HTTPS and publicly reachable by Meta crawlers."
       ]
     });
@@ -152,12 +148,12 @@ export function createInstagramIntegration({ log, publicBaseUrl, staticDir }) {
     return { mediaUrl, outPath, filename };
   }
 
-  async function waitForContainerReady(containerId) {
+  async function waitForContainerReady(containerId, accessToken) {
     const maxAttempts = 10;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const result = await graphRequest({
         endpoint: `/${containerId}`,
-        accessToken: settings.accessToken,
+        accessToken,
         method: "GET",
         params: {
           fields: "id,status_code,status,status_message"
@@ -176,18 +172,25 @@ export function createInstagramIntegration({ log, publicBaseUrl, staticDir }) {
     throw new Error("Meta container did not become ready before timeout");
   }
 
-  async function publishStory(payload) {
+  async function publishStory(payload, overrides = {}) {
     if (!enabled) return { skipped: true, reason: "integration_disabled" };
+    const businessAccountId = String(overrides.businessAccountId || "").trim();
+    const accessToken = String(overrides.accessToken || "").trim();
+    if (!businessAccountId || !accessToken) {
+      return { skipped: true, reason: "missing_credentials" };
+    }
     const media = await generateStoryAsset(payload);
 
     const isVideo = Boolean(payload?.videoUrl);
+    const template = String(overrides.template || settings.notifyTemplate || DEFAULT_TEMPLATE).trim() || DEFAULT_TEMPLATE;
+    const caption = fillTemplate(template, payload);
     const createResult = await graphRequest({
-      endpoint: `/${settings.businessAccountId}/media`,
-      accessToken: settings.accessToken,
+      endpoint: `/${businessAccountId}/media`,
+      accessToken,
       params: {
         media_type: "STORIES",
         ...(isVideo ? { video_url: payload.videoUrl } : { image_url: media.mediaUrl }),
-        caption: fillTemplate(settings.notifyTemplate, payload)
+        caption
       }
     });
 
@@ -196,11 +199,11 @@ export function createInstagramIntegration({ log, publicBaseUrl, staticDir }) {
       throw new Error("Meta media container response did not include id");
     }
 
-    await waitForContainerReady(containerId);
+    await waitForContainerReady(containerId, accessToken);
 
     const publishResult = await graphRequest({
-      endpoint: `/${settings.businessAccountId}/media_publish`,
-      accessToken: settings.accessToken,
+      endpoint: `/${businessAccountId}/media_publish`,
+      accessToken,
       params: {
         creation_id: containerId
       }

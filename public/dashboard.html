@@ -302,11 +302,16 @@
       <section class="tab-panel" data-tab-panel="settings">
         <div class="grid two">
           <div class="card" id="users-card">
-            <p id="channel-auth-status" class="notice">Channel auth: not connected</p>
             <h2>Admin Panel</h2>
-            <button id="connect-channel" class="twitch-action-button hidden" type="button">Connect Channel</button>
             <p id="users-status" class="notice">Checking permissions...</p>
             <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
+            <div id="oauth-logins-box" class="oauth-logins-box hidden">
+              <div class="section-title form-section-title">Account OAuth Logins</div>
+              <p id="channel-auth-status" class="notice">Twitch channel OAuth: not connected</p>
+              <button id="connect-channel" class="twitch-action-button" type="button">Connect Twitch Channel</button>
+              <p id="meta-auth-status" class="notice" style="margin-top: 12px;">Instagram/Meta OAuth: not connected</p>
+              <button id="connect-meta-instagram" class="secondary" type="button">Connect Instagram (Meta)</button>
+            </div>
           </div>
 
           <div class="card">
@@ -401,14 +406,7 @@
                   Enable Instagram notifications
                 </label>
               </div>
-              <div>
-                <label for="notifications-instagram-account-id">Instagram business account ID</label>
-                <input id="notifications-instagram-account-id" type="password" autocomplete="off" />
-              </div>
-              <div>
-                <label for="notifications-instagram-token">Instagram long-lived access token</label>
-                <input id="notifications-instagram-token" type="password" autocomplete="off" />
-              </div>
+              <p class="notice form-section-title">Instagram credentials are managed in Account OAuth Logins.</p>
               <div>
                 <label for="notifications-instagram-template">Instagram template</label>
                 <textarea id="notifications-instagram-template" rows="3" placeholder="🔴 LIVE NOW&#10;{title}&#10;🎮 {game}&#10;{url}"></textarea>

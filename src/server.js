@@ -80,6 +80,9 @@ const TWITCH_REFRESH_TOKEN = envTrim("TWITCH_REFRESH_TOKEN", "");
 const TWITCH_CLIENT_ID = envTrim("TWITCH_CLIENT_ID", "");
 const TWITCH_CLIENT_SECRET = envTrim("TWITCH_CLIENT_SECRET", "");
 const TWITCH_REDIRECT_URI = envTrim("TWITCH_REDIRECT_URI", "");
+const META_APP_ID = envTrim("META_APP_ID", "");
+const META_APP_SECRET = envTrim("META_APP_SECRET", "");
+const META_REDIRECT_URI = envTrim("META_REDIRECT_URI", "");
 const TWITCH_CHANNEL = envTrim("TWITCH_CHANNEL", "");
 const TWITCH_COMMAND_PREFIX = envTrim("TWITCH_COMMAND_PREFIX", "!");
 const DISCORD_STREAM_LIVE_WEBHOOK_URL = envTrim(
@@ -2178,8 +2181,16 @@ function dispatchStreamLiveNotification(payload) {
       });
     });
 
+  if (!notificationSettings.instagram.enabled) {
+    return;
+  }
+
   instagramIntegration
-    .publishStory(payload)
+    .publishStory(payload, {
+      businessAccountId: notificationSettings.instagram.accountId,
+      accessToken: notificationSettings.instagram.token,
+      template: notificationSettings.instagram.template || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate
+    })
     .then((result) => {
       if (result?.skipped) {
         log("info", "instagram story publish skipped", { reason: result.reason });
@@ -2708,6 +2719,14 @@ const CALLBACK_ERROR_MESSAGES = {
   twitch_login_failed: "Twitch login failed. Please try again."
 };
 
+const META_CALLBACK_ERROR_MESSAGES = {
+  invalid_oauth_state: "Your Meta login session expired or was invalid. Please try again.",
+  missing_oauth_code: "Meta did not return an authorization code. Please try again.",
+  token_exchange_failed: "Unable to complete Meta token exchange. Please try again.",
+  instagram_account_missing: "No Instagram business account was found in the connected Meta account.",
+  meta_login_failed: "Meta login failed. Please try again."
+};
+
 function getUserRole({ login, twitchId, isModerator = false, isVip = false }) {
   const normalizedLogin = String(login || "").trim().toLowerCase();
   const normalizedId = String(twitchId || "").trim().toLowerCase();
@@ -2741,6 +2760,33 @@ function redirectLoginError(res, reason, context = {}) {
     protocol: context.protocol || null
   });
   return res.redirect(`/login?error=${encodeURIComponent(safeReason)}`);
+}
+
+function resolveMetaRedirectUri(req) {
+  if (META_REDIRECT_URI) return META_REDIRECT_URI;
+  if (PUBLIC_BASE_URL) {
+    return `${PUBLIC_BASE_URL.replace(/\/$/, "")}/auth/meta/callback`;
+  }
+  return `${req.protocol}://${req.get("host")}/auth/meta/callback`;
+}
+
+function redirectDashboardOAuthError(res, reason, context = {}) {
+  const safeReason = META_CALLBACK_ERROR_MESSAGES[reason] ? reason : "meta_login_failed";
+  log("error", "meta callback failed", {
+    reason: safeReason,
+    rawError: context.rawError || null
+  });
+  return res.redirect(`/dashboard?oauth_error=${encodeURIComponent(safeReason)}`);
+}
+
+async function fetchMetaJson(url) {
+  const response = await fetch(url);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.error) {
+    const message = payload?.error?.message || `Meta API request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return payload;
 }
 
 async function fetchTwitchToken({ code, redirectUri }) {
@@ -2866,6 +2912,29 @@ app.get("/auth/twitch", (req, res) => {
 
 app.get("/auth/twitch/channel", requireAuth, requireAdmin, (req, res) => {
   beginTwitchAuth(req, res, "channel");
+});
+
+app.get("/auth/meta/instagram", requireAuth, requireAdmin, (req, res) => {
+  if (!META_APP_ID || !META_APP_SECRET) {
+    return redirectDashboardOAuthError(res, "meta_login_failed", {
+      rawError: "META_APP_ID/META_APP_SECRET missing"
+    });
+  }
+  const redirectUri = resolveMetaRedirectUri(req);
+  const state = nanoid();
+  req.session.metaOauthState = state;
+  req.session.metaOauthRedirectUri = redirectUri;
+  req.session.save(() => {
+    const authUrl = new URL("https://www.facebook.com/v21.0/dialog/oauth");
+    authUrl.searchParams.set("client_id", META_APP_ID);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set(
+      "scope",
+      "instagram_basic,instagram_content_publish,pages_show_list,business_management"
+    );
+    res.redirect(authUrl.toString());
+  });
 });
 
 app.get("/auth/twitch/callback", async (req, res) => {
@@ -3017,6 +3086,67 @@ app.get("/auth/twitch/callback", async (req, res) => {
   }
 });
 
+app.get("/auth/meta/callback", requireAuth, requireAdmin, async (req, res) => {
+  const redirectUri = req.session?.metaOauthRedirectUri || resolveMetaRedirectUri(req);
+  const { state, code } = req.query || {};
+  if (!req.session?.metaOauthState || state !== req.session.metaOauthState) {
+    return redirectDashboardOAuthError(res, "invalid_oauth_state");
+  }
+  if (!code) {
+    return redirectDashboardOAuthError(res, "missing_oauth_code");
+  }
+
+  try {
+    const shortTokenUrl = new URL("https://graph.facebook.com/v21.0/oauth/access_token");
+    shortTokenUrl.searchParams.set("client_id", META_APP_ID);
+    shortTokenUrl.searchParams.set("client_secret", META_APP_SECRET);
+    shortTokenUrl.searchParams.set("redirect_uri", redirectUri);
+    shortTokenUrl.searchParams.set("code", String(code));
+    const shortTokenPayload = await fetchMetaJson(shortTokenUrl.toString());
+    const shortToken = String(shortTokenPayload?.access_token || "").trim();
+    if (!shortToken) throw new Error("missing short-lived access token");
+
+    const longTokenUrl = new URL("https://graph.facebook.com/v21.0/oauth/access_token");
+    longTokenUrl.searchParams.set("grant_type", "fb_exchange_token");
+    longTokenUrl.searchParams.set("client_id", META_APP_ID);
+    longTokenUrl.searchParams.set("client_secret", META_APP_SECRET);
+    longTokenUrl.searchParams.set("fb_exchange_token", shortToken);
+    const longTokenPayload = await fetchMetaJson(longTokenUrl.toString());
+    const longLivedToken = String(longTokenPayload?.access_token || "").trim();
+    if (!longLivedToken) throw new Error("missing long-lived access token");
+
+    const pagesUrl = new URL("https://graph.facebook.com/v21.0/me/accounts");
+    pagesUrl.searchParams.set("fields", "id,name,instagram_business_account{id,username,name}");
+    pagesUrl.searchParams.set("access_token", longLivedToken);
+    const pagesPayload = await fetchMetaJson(pagesUrl.toString());
+    const pageWithInstagram = (pagesPayload?.data || []).find((page) => page?.instagram_business_account?.id);
+    const instagramAccount = pageWithInstagram?.instagram_business_account;
+    if (!instagramAccount?.id) {
+      return redirectDashboardOAuthError(res, "instagram_account_missing");
+    }
+
+    const tx = db.transaction(() => {
+      setSettingValue("notif_instagram_account_id", instagramAccount.id);
+      setSettingValue("notif_instagram_token", longLivedToken);
+      setSettingValue("meta_instagram_auth_connected", "1");
+      setSettingValue("meta_instagram_auth_account_id", instagramAccount.id);
+      setSettingValue("meta_instagram_auth_username", instagramAccount.username || "");
+      setSettingValue("meta_instagram_auth_name", instagramAccount.name || "");
+      setSettingValue("meta_instagram_auth_updated_at", new Date().toISOString());
+    });
+    tx();
+    req.session.metaOauthState = null;
+    req.session.metaOauthRedirectUri = null;
+    req.session.save(() => {
+      res.redirect("/dashboard?oauth=meta_connected");
+    });
+  } catch (error) {
+    return redirectDashboardOAuthError(res, "token_exchange_failed", {
+      rawError: String(error?.message || error)
+    });
+  }
+});
+
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
     log("info", "logout", { userId: req.session?.user?.id || null });
@@ -3049,6 +3179,24 @@ app.get("/api/channel-auth/status", requireAuth, requireAdmin, (req, res) => {
   const displayName = getSettingString("twitch_channel_auth_display_name", "");
   const updatedAt = getSettingString("twitch_channel_auth_updated_at", "");
   res.json({ connected, login, displayName, updatedAt });
+});
+
+app.get("/api/meta-auth/status", requireAuth, requireAdmin, (req, res) => {
+  const connected =
+    getSettingBoolean("meta_instagram_auth_connected", false) &&
+    Boolean(getSettingString("notif_instagram_account_id", "")) &&
+    Boolean(getSettingString("notif_instagram_token", ""));
+  const accountId = getSettingString("meta_instagram_auth_account_id", "");
+  const username = getSettingString("meta_instagram_auth_username", "");
+  const name = getSettingString("meta_instagram_auth_name", "");
+  const updatedAt = getSettingString("meta_instagram_auth_updated_at", "");
+  res.json({
+    connected,
+    accountIdMasked: maskSecret(accountId, { visibleStart: 4, visibleEnd: 2 }),
+    username,
+    name,
+    updatedAt
+  });
 });
 
 app.get("/api/twitch/channel-status", requireAuth, async (req, res) => {
@@ -4212,18 +4360,13 @@ app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) 
 
   let instagramResult = { skipped: true, reason: "disabled" };
   if (notificationSettings.instagram.enabled) {
-    const hasSecrets =
-      Boolean(notificationSettings.instagram.accountId) &&
-      Boolean(notificationSettings.instagram.token);
-    if (!hasSecrets) {
-      instagramResult = { skipped: true, reason: "missing_credentials" };
-    } else if (!instagramIntegration.enabled) {
-      instagramResult = { skipped: true, reason: "integration_disabled_env_config" };
-    } else {
-      instagramResult = await instagramIntegration
-        .publishStory(payload)
-        .catch((error) => ({ error: String(error?.message || error) }));
-    }
+    instagramResult = await instagramIntegration
+      .publishStory(payload, {
+        businessAccountId: notificationSettings.instagram.accountId,
+        accessToken: notificationSettings.instagram.token,
+        template: notificationSettings.instagram.template || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate
+      })
+      .catch((error) => ({ error: String(error?.message || error) }));
   }
 
   const responseBody = {
