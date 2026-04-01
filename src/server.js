@@ -82,7 +82,10 @@ const TWITCH_CLIENT_SECRET = envTrim("TWITCH_CLIENT_SECRET", "");
 const TWITCH_REDIRECT_URI = envTrim("TWITCH_REDIRECT_URI", "");
 const TWITCH_CHANNEL = envTrim("TWITCH_CHANNEL", "");
 const TWITCH_COMMAND_PREFIX = envTrim("TWITCH_COMMAND_PREFIX", "!");
-const DISCORD_WEBHOOK_URL = envTrim("DISCORD_WEBHOOK_URL", "");
+const DISCORD_STREAM_LIVE_WEBHOOK_URL = envTrim(
+  "DISCORD_STREAM_LIVE_WEBHOOK_URL",
+  envTrim("DISCORD_WEBHOOK_URL", "")
+);
 const DISCORD_MENTION_ROLE_ID = envTrim("DISCORD_MENTION_ROLE_ID", "");
 const NOTIFY_TEMPLATE_DISCORD = envTrim(
   "NOTIFY_TEMPLATE_DISCORD",
@@ -2201,16 +2204,8 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendDiscordStreamStartNotification(payload, options = {}) {
-  const webhookUrl = String(options.webhookUrl || DISCORD_WEBHOOK_URL || "").trim();
-  const template = String(options.template || NOTIFY_TEMPLATE_DISCORD || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.discordTemplate;
-  const mentionRoleId = String(options.mentionRoleId || DISCORD_MENTION_ROLE_ID || "").trim();
-  const enabled = options.enabled === undefined ? true : Boolean(options.enabled);
-
-  if (!enabled) {
-    return { skipped: true, reason: "disabled" };
-  }
-  if (!webhookUrl) {
+async function sendDiscordStreamStartNotification(payload) {
+  if (!DISCORD_STREAM_LIVE_WEBHOOK_URL) {
     return { skipped: true, reason: "webhook_not_configured" };
   }
 
@@ -2247,7 +2242,7 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const response = await fetch(webhookUrl, {
+      const response = await fetch(DISCORD_STREAM_LIVE_WEBHOOK_URL, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(requestBody)
