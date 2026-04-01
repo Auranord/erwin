@@ -2215,8 +2215,17 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function sendDiscordStreamStartNotification(payload) {
-  if (!DISCORD_STREAM_LIVE_WEBHOOK_URL) {
+async function sendDiscordStreamStartNotification(payload, options = {}) {
+  const webhookUrl = String(options.webhookUrl || "").trim() || DISCORD_STREAM_LIVE_WEBHOOK_URL;
+  const mentionRoleId = String(options.mentionRoleId || "").trim() || DISCORD_MENTION_ROLE_ID;
+  const template = String(options.template || "").trim() || NOTIFY_TEMPLATE_DISCORD;
+  const enabled = options.enabled !== undefined ? Boolean(options.enabled) : true;
+
+  if (!enabled) {
+    return { skipped: true, reason: "disabled" };
+  }
+
+  if (!webhookUrl) {
     return { skipped: true, reason: "webhook_not_configured" };
   }
 
@@ -2253,7 +2262,7 @@ async function sendDiscordStreamStartNotification(payload) {
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const response = await fetch(DISCORD_STREAM_LIVE_WEBHOOK_URL, {
+      const response = await fetch(webhookUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(requestBody)
