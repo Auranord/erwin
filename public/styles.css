@@ -830,6 +830,43 @@ select:focus-visible,
   margin-top: 0.5rem;
 }
 
+.template-help {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.55rem;
+}
+
+.template-help-item {
+  margin: 0;
+  border: 1px solid rgba(200, 164, 90, 0.35);
+  border-radius: 0.65rem;
+  background: rgba(18, 29, 48, 0.55);
+}
+
+.template-help-item summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.template-help-item summary::-webkit-details-marker {
+  display: none;
+}
+
+.template-help-item[open] summary {
+  border-bottom: 1px solid rgba(200, 164, 90, 0.25);
+}
+
+.template-help-item p {
+  margin: 0;
+  padding: 0.5rem 0.6rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--muted-ink);
+  line-height: 1.35;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
