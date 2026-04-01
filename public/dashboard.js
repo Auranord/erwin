@@ -225,10 +225,19 @@ const nowPlaying = document.getElementById("now-playing");
       const dashboardParams = new URLSearchParams(window.location.search);
       const oauthStatus = dashboardParams.get("oauth");
       const oauthError = dashboardParams.get("oauth_error");
+      const OAUTH_ERROR_MESSAGES = {
+        meta_config_missing: "Meta OAuth is not configured on this server (missing META_APP_ID/META_APP_SECRET).",
+        invalid_oauth_state: "Your Meta OAuth session expired. Please try connecting again.",
+        missing_oauth_code: "Meta did not return an authorization code.",
+        token_exchange_failed: "Meta token exchange failed.",
+        instagram_account_missing: "No Instagram business account is linked to the connected Meta account.",
+        meta_login_failed: "Meta login failed."
+      };
       if (oauthStatus === "meta_connected" && notificationsStatus) {
         notificationsStatus.textContent = "Instagram/Meta OAuth connected successfully.";
       } else if (oauthError && notificationsStatus) {
-        notificationsStatus.textContent = `OAuth connection failed (${oauthError}).`;
+        notificationsStatus.textContent =
+          OAUTH_ERROR_MESSAGES[oauthError] || `OAuth connection failed (${oauthError}).`;
       }
 
       const overlayTabLinks = Array.from(document.querySelectorAll('.tab-link[data-tab="overlay"]'));
@@ -554,9 +563,18 @@ const nowPlaying = document.getElementById("now-playing");
         const response = await fetch("/api/meta-auth/status");
         if (!response.ok) {
           metaAuthStatus.textContent = "Instagram/Meta OAuth: unavailable";
+          if (connectMetaInstagramButton) connectMetaInstagramButton.disabled = true;
           return;
         }
         const status = await response.json();
+        if (connectMetaInstagramButton) {
+          connectMetaInstagramButton.disabled = status.available === false;
+        }
+        if (status.available === false) {
+          metaAuthStatus.textContent =
+            "Instagram/Meta OAuth: unavailable (server is missing META_APP_ID/META_APP_SECRET)";
+          return;
+        }
         if (!status.connected) {
           metaAuthStatus.textContent = "Instagram/Meta OAuth: not connected";
           return;

@@ -83,6 +83,7 @@ const TWITCH_REDIRECT_URI = envTrim("TWITCH_REDIRECT_URI", "");
 const META_APP_ID = envTrim("META_APP_ID", "");
 const META_APP_SECRET = envTrim("META_APP_SECRET", "");
 const META_REDIRECT_URI = envTrim("META_REDIRECT_URI", "");
+const META_OAUTH_CONFIGURED = Boolean(META_APP_ID && META_APP_SECRET);
 const TWITCH_CHANNEL = envTrim("TWITCH_CHANNEL", "");
 const TWITCH_COMMAND_PREFIX = envTrim("TWITCH_COMMAND_PREFIX", "!");
 const DISCORD_STREAM_LIVE_WEBHOOK_URL = envTrim(
@@ -2729,6 +2730,7 @@ const CALLBACK_ERROR_MESSAGES = {
 };
 
 const META_CALLBACK_ERROR_MESSAGES = {
+  meta_config_missing: "Meta OAuth is not configured on this server.",
   invalid_oauth_state: "Your Meta login session expired or was invalid. Please try again.",
   missing_oauth_code: "Meta did not return an authorization code. Please try again.",
   token_exchange_failed: "Unable to complete Meta token exchange. Please try again.",
@@ -2924,8 +2926,8 @@ app.get("/auth/twitch/channel", requireAuth, requireAdmin, (req, res) => {
 });
 
 app.get("/auth/meta/instagram", requireAuth, requireAdmin, (req, res) => {
-  if (!META_APP_ID || !META_APP_SECRET) {
-    return redirectDashboardOAuthError(res, "meta_login_failed", {
+  if (!META_OAUTH_CONFIGURED) {
+    return redirectDashboardOAuthError(res, "meta_config_missing", {
       rawError: "META_APP_ID/META_APP_SECRET missing"
     });
   }
@@ -3200,6 +3202,7 @@ app.get("/api/meta-auth/status", requireAuth, requireAdmin, (req, res) => {
   const name = getSettingString("meta_instagram_auth_name", "");
   const updatedAt = getSettingString("meta_instagram_auth_updated_at", "");
   res.json({
+    available: META_OAUTH_CONFIGURED,
     connected,
     accountIdMasked: maskSecret(accountId, { visibleStart: 4, visibleEnd: 2 }),
     username,
