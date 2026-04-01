@@ -82,7 +82,10 @@ const TWITCH_CLIENT_SECRET = envTrim("TWITCH_CLIENT_SECRET", "");
 const TWITCH_REDIRECT_URI = envTrim("TWITCH_REDIRECT_URI", "");
 const TWITCH_CHANNEL = envTrim("TWITCH_CHANNEL", "");
 const TWITCH_COMMAND_PREFIX = envTrim("TWITCH_COMMAND_PREFIX", "!");
-const DISCORD_WEBHOOK_URL = envTrim("DISCORD_WEBHOOK_URL", "");
+const DISCORD_STREAM_LIVE_WEBHOOK_URL = envTrim(
+  "DISCORD_STREAM_LIVE_WEBHOOK_URL",
+  envTrim("DISCORD_WEBHOOK_URL", "")
+);
 const DISCORD_MENTION_ROLE_ID = envTrim("DISCORD_MENTION_ROLE_ID", "");
 const NOTIFY_TEMPLATE_DISCORD = envTrim(
   "NOTIFY_TEMPLATE_DISCORD",
@@ -2155,7 +2158,7 @@ function delay(ms) {
 }
 
 async function sendDiscordStreamStartNotification(payload) {
-  if (!DISCORD_WEBHOOK_URL) {
+  if (!DISCORD_STREAM_LIVE_WEBHOOK_URL) {
     return { skipped: true, reason: "webhook_not_configured" };
   }
 
@@ -2192,7 +2195,7 @@ async function sendDiscordStreamStartNotification(payload) {
   let lastError = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const response = await fetch(DISCORD_WEBHOOK_URL, {
+      const response = await fetch(DISCORD_STREAM_LIVE_WEBHOOK_URL, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(requestBody)
