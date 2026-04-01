@@ -1192,6 +1192,12 @@ const TWITCH_MESSAGE_DEFAULTS = {
   pause: "Playback paused.",
   resume: "Playback resumed."
 };
+const NOTIFICATION_SETTINGS_DEFAULTS = {
+  discordEnabled: false,
+  discordTemplate: "🔴 {channel} is live!\n{title}\n{game}\n{url}",
+  instagramEnabled: false,
+  instagramTemplate: "🔴 LIVE NOW\n{title}\n🎮 {game}\n{url}"
+};
 
 function clampNumber(value, min, max, fallback) {
   if (!Number.isFinite(value)) return fallback;
@@ -1229,6 +1235,40 @@ function getSettingString(key, fallback) {
 
 function setSettingValue(key, value) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, String(value));
+}
+
+function maskSecret(value, { visibleStart = 3, visibleEnd = 2 } = {}) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  if (raw.length <= visibleStart + visibleEnd) {
+    return `${raw.slice(0, 1)}***`;
+  }
+  return `${raw.slice(0, visibleStart)}***${raw.slice(-visibleEnd)}`;
+}
+
+function getNotificationSettings({ includeSecrets = false } = {}) {
+  const discordWebhook = getSettingString("notif_discord_webhook", "");
+  const instagramAccountId = getSettingString("notif_instagram_account_id", "");
+  const instagramToken = getSettingString("notif_instagram_token", "");
+  const settings = {
+    discord: {
+      enabled: getSettingBoolean("notif_discord_enabled", NOTIFICATION_SETTINGS_DEFAULTS.discordEnabled),
+      template: getSettingString("notif_discord_template", NOTIFICATION_SETTINGS_DEFAULTS.discordTemplate),
+      webhookMasked: maskSecret(discordWebhook, { visibleStart: 15, visibleEnd: 6 })
+    },
+    instagram: {
+      enabled: getSettingBoolean("notif_instagram_enabled", NOTIFICATION_SETTINGS_DEFAULTS.instagramEnabled),
+      template: getSettingString("notif_instagram_template", NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate),
+      accountIdMasked: maskSecret(instagramAccountId, { visibleStart: 4, visibleEnd: 2 }),
+      tokenMasked: maskSecret(instagramToken, { visibleStart: 5, visibleEnd: 4 })
+    }
+  };
+  if (includeSecrets) {
+    settings.discord.webhook = discordWebhook;
+    settings.instagram.accountId = instagramAccountId;
+    settings.instagram.token = instagramToken;
+  }
+  return settings;
 }
 
 function normalizeEmoteList(value) {
@@ -2113,7 +2153,14 @@ function dispatchStreamLiveNotification(payload) {
     timestamp: payload.timestamp
   });
 
-  sendDiscordStreamStartNotification(payload)
+  const notificationSettings = getNotificationSettings({ includeSecrets: true });
+
+  sendDiscordStreamStartNotification(payload, {
+    webhookUrl: notificationSettings.discord.webhook || DISCORD_WEBHOOK_URL,
+    mentionRoleId: DISCORD_MENTION_ROLE_ID,
+    template: notificationSettings.discord.template || NOTIFY_TEMPLATE_DISCORD,
+    enabled: notificationSettings.discord.enabled
+  })
     .then((result) => {
       if (result?.skipped) {
         log("info", "discord stream notification skipped", { reason: result.reason });
@@ -2169,8 +2216,8 @@ async function sendDiscordStreamStartNotification(payload) {
     url: payload.url || "",
     startedAt: payload.startedAt || payload.timestamp || ""
   };
-  const formattedContent = formatTemplate(NOTIFY_TEMPLATE_DISCORD, templateValues).trim();
-  const mentionPrefix = DISCORD_MENTION_ROLE_ID ? `<@&${DISCORD_MENTION_ROLE_ID}>` : "";
+  const formattedContent = formatTemplate(template, templateValues).trim();
+  const mentionPrefix = mentionRoleId ? `<@&${mentionRoleId}>` : "";
   const content = [mentionPrefix, formattedContent].filter(Boolean).join("\n");
 
   const requestBody = {
@@ -4094,6 +4141,106 @@ app.get("/api/settings", requireAuth, (req, res) => {
     return acc;
   }, {});
   res.json(settings);
+});
+
+app.get("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+  res.json(getNotificationSettings({ includeSecrets: false }));
+});
+
+app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+  const payload = req.body || {};
+  const discord = payload.discord || {};
+  const instagram = payload.instagram || {};
+
+  const nextDiscordEnabled = discord.enabled ? 1 : 0;
+  const nextInstagramEnabled = instagram.enabled ? 1 : 0;
+  const nextDiscordTemplate =
+    String(discord.template || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.discordTemplate;
+  const nextInstagramTemplate =
+    String(instagram.template || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate;
+
+  const current = getNotificationSettings({ includeSecrets: true });
+  const nextDiscordWebhook = String(discord.webhook || "").trim() || current.discord.webhook || "";
+  const nextInstagramAccountId = String(instagram.accountId || "").trim() || current.instagram.accountId || "";
+  const nextInstagramToken = String(instagram.token || "").trim() || current.instagram.token || "";
+
+  const tx = db.transaction(() => {
+    setSettingValue("notif_discord_enabled", nextDiscordEnabled);
+    setSettingValue("notif_discord_template", nextDiscordTemplate);
+    setSettingValue("notif_discord_webhook", nextDiscordWebhook);
+    setSettingValue("notif_instagram_enabled", nextInstagramEnabled);
+    setSettingValue("notif_instagram_template", nextInstagramTemplate);
+    setSettingValue("notif_instagram_account_id", nextInstagramAccountId);
+    setSettingValue("notif_instagram_token", nextInstagramToken);
+  });
+  tx();
+
+  broadcast("SETTINGS_UPDATE", {
+    keys: [
+      "notif_discord_enabled",
+      "notif_discord_template",
+      "notif_discord_webhook",
+      "notif_instagram_enabled",
+      "notif_instagram_template",
+      "notif_instagram_account_id",
+      "notif_instagram_token"
+    ]
+  });
+  res.json({ ok: true, settings: getNotificationSettings({ includeSecrets: false }) });
+});
+
+app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) => {
+  const notificationSettings = getNotificationSettings({ includeSecrets: true });
+  const now = new Date().toISOString();
+  const payload = {
+    channelLogin: TWITCH_CHANNEL || "test_channel",
+    channelDisplayName: TWITCH_CHANNEL || "Test Channel",
+    title: "Test Stream Notification",
+    game: "Just Testing",
+    viewerCount: 42,
+    url: `https://twitch.tv/${TWITCH_CHANNEL || "test_channel"}`,
+    timestamp: now,
+    startedAt: now
+  };
+
+  const discordResult = await sendDiscordStreamStartNotification(payload, {
+    webhookUrl: notificationSettings.discord.webhook || DISCORD_WEBHOOK_URL,
+    mentionRoleId: DISCORD_MENTION_ROLE_ID,
+    template: notificationSettings.discord.template || NOTIFY_TEMPLATE_DISCORD,
+    enabled: notificationSettings.discord.enabled
+  }).catch((error) => ({ error: String(error?.message || error) }));
+
+  let instagramResult = { skipped: true, reason: "disabled" };
+  if (notificationSettings.instagram.enabled) {
+    const hasSecrets =
+      Boolean(notificationSettings.instagram.accountId) &&
+      Boolean(notificationSettings.instagram.token);
+    if (!hasSecrets) {
+      instagramResult = { skipped: true, reason: "missing_credentials" };
+    } else if (!instagramIntegration.enabled) {
+      instagramResult = { skipped: true, reason: "integration_disabled_env_config" };
+    } else {
+      instagramResult = await instagramIntegration
+        .publishStory(payload)
+        .catch((error) => ({ error: String(error?.message || error) }));
+    }
+  }
+
+  const responseBody = {
+    ok: !discordResult?.error && !instagramResult?.error,
+    discord: {
+      sent: Boolean(discordResult?.ok),
+      reason: discordResult?.reason || null,
+      error: discordResult?.error || null
+    },
+    instagram: {
+      sent: Boolean(instagramResult && instagramResult.skipped === false),
+      reason: instagramResult?.reason || null,
+      error: instagramResult?.error || null
+    }
+  };
+  const status = responseBody.ok ? 200 : 502;
+  res.status(status).json(responseBody);
 });
 
 app.get("/api/twitch/custom-commands", requireAuth, (req, res) => {

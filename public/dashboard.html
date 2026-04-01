@@ -376,6 +376,47 @@
               <button type="submit">Save Settings</button>
             </form>
             <p id="settings-status" class="notice" aria-live="polite"></p>
+            <div class="section-title form-section-title">Notifications</div>
+            <p class="notice form-section-title">
+              Configure Discord and Instagram notifications for stream alerts.
+            </p>
+            <form id="notifications-form" class="grid" method="post">
+              <div>
+                <label class="card-toggle" for="notifications-discord-enabled">
+                  <input id="notifications-discord-enabled" type="checkbox" />
+                  Enable Discord notifications
+                </label>
+              </div>
+              <div>
+                <label for="notifications-discord-webhook">Discord webhook URL</label>
+                <input id="notifications-discord-webhook" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/..." />
+              </div>
+              <div>
+                <label for="notifications-discord-template">Discord template</label>
+                <textarea id="notifications-discord-template" rows="3" placeholder="🔴 {channel} is live!&#10;{title}&#10;{game}&#10;{url}"></textarea>
+              </div>
+              <div>
+                <label class="card-toggle" for="notifications-instagram-enabled">
+                  <input id="notifications-instagram-enabled" type="checkbox" />
+                  Enable Instagram notifications
+                </label>
+              </div>
+              <div>
+                <label for="notifications-instagram-account-id">Instagram business account ID</label>
+                <input id="notifications-instagram-account-id" type="password" autocomplete="off" />
+              </div>
+              <div>
+                <label for="notifications-instagram-token">Instagram long-lived access token</label>
+                <input id="notifications-instagram-token" type="password" autocomplete="off" />
+              </div>
+              <div>
+                <label for="notifications-instagram-template">Instagram template</label>
+                <textarea id="notifications-instagram-template" rows="3" placeholder="🔴 LIVE NOW&#10;{title}&#10;🎮 {game}&#10;{url}"></textarea>
+              </div>
+              <button type="submit">Save Notification Settings</button>
+              <button id="notifications-test-button" class="secondary" type="button">Send Test Notification</button>
+            </form>
+            <p id="notifications-status" class="notice" aria-live="polite"></p>
           </div>
         </div>
       </section>
