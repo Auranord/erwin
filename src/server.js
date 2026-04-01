@@ -82,6 +82,12 @@ const TWITCH_CLIENT_SECRET = envTrim("TWITCH_CLIENT_SECRET", "");
 const TWITCH_REDIRECT_URI = envTrim("TWITCH_REDIRECT_URI", "");
 const TWITCH_CHANNEL = envTrim("TWITCH_CHANNEL", "");
 const TWITCH_COMMAND_PREFIX = envTrim("TWITCH_COMMAND_PREFIX", "!");
+const DISCORD_WEBHOOK_URL = envTrim("DISCORD_WEBHOOK_URL", "");
+const DISCORD_MENTION_ROLE_ID = envTrim("DISCORD_MENTION_ROLE_ID", "");
+const NOTIFY_TEMPLATE_DISCORD = envTrim(
+  "NOTIFY_TEMPLATE_DISCORD",
+  "🔴 {channel} is live!\n{title}\n{game}\n{url}"
+);
 const TWITCH_ADMINS = parseCsvSet(envTrim("TWITCH_ADMINS", ""));
 const TWITCH_CHANNEL_MEMBERS = parseCsvSet(envTrim("TWITCH_CHANNEL_MEMBERS", ""));
 const TWITCH_CHANNEL_MEMBERS_ROLE = envTrim("TWITCH_CHANNEL_MEMBERS_ROLE", "channel_member");
@@ -2104,6 +2110,24 @@ function dispatchStreamLiveNotification(payload) {
     timestamp: payload.timestamp
   });
 
+  sendDiscordStreamStartNotification(payload)
+    .then((result) => {
+      if (result?.skipped) {
+        log("info", "discord stream notification skipped", { reason: result.reason });
+        return;
+      }
+      log("info", "discord stream notification sent", {
+        channelLogin: payload.channelLogin,
+        status: result?.status || null
+      });
+    })
+    .catch((error) => {
+      log("error", "discord stream notification failed", {
+        error: String(error?.message || error),
+        channelLogin: payload.channelLogin
+      });
+    });
+
   instagramIntegration
     .publishStory(payload)
     .then((result) => {
@@ -2124,6 +2148,81 @@ function dispatchStreamLiveNotification(payload) {
         status: error?.status || null
       });
     });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendDiscordStreamStartNotification(payload) {
+  if (!DISCORD_WEBHOOK_URL) {
+    return { skipped: true, reason: "webhook_not_configured" };
+  }
+
+  const templateValues = {
+    channel: payload.channelDisplayName || payload.channelLogin || "",
+    title: payload.title || "",
+    game: payload.game || "",
+    url: payload.url || "",
+    startedAt: payload.startedAt || payload.timestamp || ""
+  };
+  const formattedContent = formatTemplate(NOTIFY_TEMPLATE_DISCORD, templateValues).trim();
+  const mentionPrefix = DISCORD_MENTION_ROLE_ID ? `<@&${DISCORD_MENTION_ROLE_ID}>` : "";
+  const content = [mentionPrefix, formattedContent].filter(Boolean).join("\n");
+
+  const requestBody = {
+    username: "Erwin",
+    avatar_url: "https://static-cdn.jtvnw.net/jtv_user_pictures/xarth/404_user_70x70.png",
+    content,
+    embeds: [
+      {
+        title: payload.title || "Stream is live",
+        url: payload.url || "https://twitch.tv",
+        description: payload.game ? `Category: ${payload.game}` : "Category: Unknown",
+        timestamp: payload.startedAt || payload.timestamp || new Date().toISOString(),
+        fields: [
+          { name: "Channel", value: payload.channelDisplayName || payload.channelLogin || "Unknown", inline: true },
+          { name: "Viewers", value: String(Math.max(0, Number(payload.viewerCount || 0))), inline: true }
+        ]
+      }
+    ]
+  };
+
+  const maxAttempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(DISCORD_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody)
+      });
+      const bodyText = await response.text();
+      if (response.ok) {
+        return { ok: true, status: response.status };
+      }
+
+      const snippet = bodyText.slice(0, 300);
+      lastError = new Error(`discord webhook responded with status ${response.status}`);
+      log("warn", "discord webhook request failed", {
+        attempt,
+        status: response.status,
+        body: snippet
+      });
+    } catch (error) {
+      lastError = error;
+      log("warn", "discord webhook network error", {
+        attempt,
+        error: String(error?.message || error)
+      });
+    }
+
+    if (attempt < maxAttempts) {
+      await delay(attempt * 500);
+    }
+  }
+
+  throw lastError || new Error("discord webhook request failed");
 }
 
 function maybeDispatchStreamLiveNotification(status) {
@@ -2175,6 +2274,7 @@ function maybeDispatchStreamLiveNotification(status) {
     game,
     viewerCount: Number(status?.viewerCount || 0),
     url: channelLogin ? `https://twitch.tv/${channelLogin}` : "https://twitch.tv",
+    startedAt: startedAt || "",
     timestamp: new Date(now).toISOString()
   };
   try {
