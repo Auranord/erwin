@@ -1995,15 +1995,19 @@ let twitchTokenRefreshTimer = null;
 let twitchRefreshInFlight = null;
 
 const TWITCH_CHANNEL_STATUS_TTL_MS = 10_000;
+const STREAM_NOTIFICATION_WATCH_INTERVAL_MS = 30_000;
+const STREAM_NOTIFICATION_COOLDOWN_MS = 3 * 60 * 1000;
 const twitchChannelStatusCache = {
   fetchedAt: 0,
   channel: TWITCH_CHANNEL || "",
   live: false,
   viewerCount: 0,
+  startedAt: "",
   gameName: "",
   title: "",
   error: ""
 };
+let previousLive = null;
 
 function getTwitchHelixAccessToken() {
   const channelToken = getSettingString("twitch_channel_auth_access_token", "");
@@ -2022,6 +2026,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = "";
     twitchChannelStatusCache.live = false;
     twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.startedAt = "";
     twitchChannelStatusCache.error = "channel_not_linked";
     return twitchChannelStatusCache;
   }
@@ -2031,6 +2036,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = channelLogin;
     twitchChannelStatusCache.live = false;
     twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.startedAt = "";
     twitchChannelStatusCache.error = "missing_twitch_api_credentials";
     return twitchChannelStatusCache;
   }
@@ -2051,6 +2057,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
       twitchChannelStatusCache.channel = channelLogin;
       twitchChannelStatusCache.live = false;
       twitchChannelStatusCache.viewerCount = 0;
+      twitchChannelStatusCache.startedAt = "";
       twitchChannelStatusCache.error = `helix_stream_error_${response.status}`;
       log("warn", "twitch channel status request failed", { status: response.status, body: text.slice(0, 300) });
       return twitchChannelStatusCache;
@@ -2061,6 +2068,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = channelLogin;
     twitchChannelStatusCache.live = Boolean(stream);
     twitchChannelStatusCache.viewerCount = Number(stream?.viewer_count || 0);
+    twitchChannelStatusCache.startedAt = String(stream?.started_at || "");
     twitchChannelStatusCache.gameName = String(stream?.game_name || "");
     twitchChannelStatusCache.title = String(stream?.title || "");
     twitchChannelStatusCache.error = "";
@@ -2070,9 +2078,111 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = channelLogin;
     twitchChannelStatusCache.live = false;
     twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.startedAt = "";
     twitchChannelStatusCache.error = "network_error";
     log("warn", "twitch channel status network error", { error: String(error?.message || error) });
     return twitchChannelStatusCache;
+  }
+}
+
+function dispatchStreamLiveNotification(payload) {
+  log("info", "stream live notification dispatch", {
+    channelLogin: payload.channelLogin,
+    channelDisplayName: payload.channelDisplayName,
+    title: payload.title,
+    game: payload.game,
+    viewerCount: payload.viewerCount,
+    url: payload.url,
+    timestamp: payload.timestamp
+  });
+}
+
+function maybeDispatchStreamLiveNotification(status) {
+  const currentLive = Boolean(status?.live);
+  if (previousLive === null) {
+    previousLive = currentLive;
+    return;
+  }
+  const isRisingEdge = previousLive === false && currentLive === true;
+  if (!isRisingEdge) {
+    previousLive = currentLive;
+    return;
+  }
+  const now = Date.now();
+  const startedAt = String(status?.startedAt || "");
+  const title = String(status?.title || "").trim();
+  const game = String(status?.gameName || "").trim();
+  const lastStartedAt = getSettingString("notif_last_stream_started_at", "");
+  const lastTitle = getSettingString("notif_last_stream_title", "");
+  const lastGame = getSettingString("notif_last_stream_game", "");
+  const lastTriggeredRaw = Number(getSettingValue("notif_last_triggered_at", 0));
+  const lastTriggeredAt = Number.isFinite(lastTriggeredRaw) ? lastTriggeredRaw : 0;
+  const inCooldown = now - lastTriggeredAt < STREAM_NOTIFICATION_COOLDOWN_MS;
+  const sameStreamFingerprint =
+    startedAt !== "" &&
+    startedAt === lastStartedAt &&
+    title === lastTitle &&
+    game === lastGame;
+  if (inCooldown || sameStreamFingerprint) {
+    log("info", "stream transition notification suppressed", {
+      reason: inCooldown ? "cooldown" : "duplicate_stream",
+      cooldownMsRemaining: inCooldown ? STREAM_NOTIFICATION_COOLDOWN_MS - (now - lastTriggeredAt) : 0,
+      startedAt,
+      title,
+      game
+    });
+    previousLive = currentLive;
+    return;
+  }
+
+  const channelLogin = String(status?.channel || TWITCH_CHANNEL || getSettingString("twitch_channel_auth_login", "")).trim();
+  const channelDisplayName = String(
+    getSettingString("twitch_channel_auth_display_name", channelLogin || status?.channel || "")
+  ).trim();
+  const payload = {
+    channelLogin,
+    channelDisplayName: channelDisplayName || channelLogin,
+    title,
+    game,
+    viewerCount: Number(status?.viewerCount || 0),
+    url: channelLogin ? `https://twitch.tv/${channelLogin}` : "https://twitch.tv",
+    timestamp: new Date(now).toISOString()
+  };
+  try {
+    dispatchStreamLiveNotification(payload);
+    setSettingValue("notif_last_stream_started_at", startedAt);
+    setSettingValue("notif_last_stream_title", title);
+    setSettingValue("notif_last_stream_game", game);
+    setSettingValue("notif_last_triggered_at", String(now));
+  } catch (error) {
+    log("error", "stream live notification dispatch failed", {
+      error: String(error?.message || error),
+      channelLogin,
+      startedAt,
+      title,
+      game
+    });
+  }
+  previousLive = currentLive;
+}
+
+async function runStreamNotificationWatcher() {
+  try {
+    const status = await fetchTwitchChannelStatus({ force: true });
+    log("info", "stream transition", {
+      previousLive,
+      currentLive: Boolean(status?.live),
+      channel: status?.channel || "",
+      viewerCount: Number(status?.viewerCount || 0),
+      startedAt: status?.startedAt || "",
+      title: status?.title || "",
+      game: status?.gameName || ""
+    });
+    maybeDispatchStreamLiveNotification(status);
+  } catch (error) {
+    log("warn", "stream transition watcher failed", {
+      error: String(error?.message || error)
+    });
   }
 }
 
@@ -4235,6 +4345,12 @@ const stateBroadcastInterval = setInterval(() => {
   broadcastStateUpdate();
 }, 10000);
 
+const streamNotificationWatchInterval = setInterval(() => {
+  runStreamNotificationWatcher();
+}, STREAM_NOTIFICATION_WATCH_INTERVAL_MS);
+streamNotificationWatchInterval.unref?.();
+runStreamNotificationWatcher();
+
 async function startTwitchBot() {
   if (!twitchOauthToken && twitchRefreshToken && TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET) {
     await refreshTwitchAccessToken("startup");
@@ -4350,6 +4466,7 @@ function shutdown(signal) {
   clearInterval(voteInterval);
   clearInterval(retentionInterval);
   clearInterval(stateBroadcastInterval);
+  clearInterval(streamNotificationWatchInterval);
   if (twitchTokenRefreshTimer) {
     clearTimeout(twitchTokenRefreshTimer);
     twitchTokenRefreshTimer = null;
