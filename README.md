@@ -43,6 +43,12 @@ OAuth callback errors are redirected to `/login?error=<code>`.
 - `LOG_LEVEL`
 - `PORT`
 
+### Meta / Instagram OAuth variables
+
+- `META_APP_ID`
+- `META_APP_SECRET`
+- `META_REDIRECT_URI` (optional callback override for `/auth/meta/callback`)
+
 ### yt-dlp / download variables
 
 - `ERWIN_YTDL_COOKIE_FILE`

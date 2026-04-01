@@ -1134,3 +1134,9 @@ body.listen-page #listen-track {
 .stream-score-actions .player-actions {
   justify-content: flex-end;
 }
+
+.oauth-logins-box {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}

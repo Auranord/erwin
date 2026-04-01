@@ -45,8 +45,6 @@ const nowPlaying = document.getElementById("now-playing");
       const notificationsDiscordWebhook = document.getElementById("notifications-discord-webhook");
       const notificationsDiscordTemplate = document.getElementById("notifications-discord-template");
       const notificationsInstagramEnabled = document.getElementById("notifications-instagram-enabled");
-      const notificationsInstagramAccountId = document.getElementById("notifications-instagram-account-id");
-      const notificationsInstagramToken = document.getElementById("notifications-instagram-token");
       const notificationsInstagramTemplate = document.getElementById("notifications-instagram-template");
       const themeToggle = document.getElementById("theme-toggle");
       const usersStatus = document.getElementById("users-status");
@@ -55,6 +53,9 @@ const nowPlaying = document.getElementById("now-playing");
       const libraryManagementCard = document.getElementById("library-management-card");
       const connectChannelButton = document.getElementById("connect-channel");
       const channelAuthStatus = document.getElementById("channel-auth-status");
+      const metaAuthStatus = document.getElementById("meta-auth-status");
+      const connectMetaInstagramButton = document.getElementById("connect-meta-instagram");
+      const oauthLoginsBox = document.getElementById("oauth-logins-box");
       const currentUserBadge = document.getElementById("current-user");
       const customCommandForm = document.getElementById("custom-command-form");
       const customCommandName = document.getElementById("custom-command-name");
@@ -220,6 +221,14 @@ const nowPlaying = document.getElementById("now-playing");
       const overlayEndpoint = `${window.location.origin}/overlay/canvas`;
       if (overlayEndpointInput) {
         overlayEndpointInput.value = overlayEndpoint;
+      }
+      const dashboardParams = new URLSearchParams(window.location.search);
+      const oauthStatus = dashboardParams.get("oauth");
+      const oauthError = dashboardParams.get("oauth_error");
+      if (oauthStatus === "meta_connected" && notificationsStatus) {
+        notificationsStatus.textContent = "Instagram/Meta OAuth connected successfully.";
+      } else if (oauthError && notificationsStatus) {
+        notificationsStatus.textContent = `OAuth connection failed (${oauthError}).`;
       }
 
       const overlayTabLinks = Array.from(document.querySelectorAll('.tab-link[data-tab="overlay"]'));
@@ -470,6 +479,7 @@ const nowPlaying = document.getElementById("now-playing");
           notificationsStatus?.classList.add("hidden");
         } else {
           usersCard.classList.remove("hidden");
+          oauthLoginsBox?.classList.remove("hidden");
           if (libraryManagementCard) libraryManagementCard.classList.remove("hidden");
           notificationsForm?.classList.remove("hidden");
           notificationsStatus?.classList.remove("hidden");
@@ -482,11 +492,13 @@ const nowPlaying = document.getElementById("now-playing");
           usersStatus.textContent = "Not permitted.";
           usersList.classList.add("hidden");
           connectChannelButton.classList.add("hidden");
+          connectMetaInstagramButton?.classList.add("hidden");
           return;
         }
         usersStatus.textContent = "";
         usersList.classList.remove("hidden");
         connectChannelButton.classList.remove("hidden");
+        connectMetaInstagramButton?.classList.remove("hidden");
         const response = await fetch("/api/users");
         if (!response.ok) {
           usersStatus.textContent = "Failed to load users.";
@@ -495,6 +507,7 @@ const nowPlaying = document.getElementById("now-playing");
         const users = await response.json();
         renderUsers(users);
         fetchChannelAuthStatus();
+        fetchMetaAuthStatus();
       }
 
       usersList.addEventListener("click", async (event) => {
@@ -533,7 +546,23 @@ const nowPlaying = document.getElementById("now-playing");
           return;
         }
         const label = status.displayName || status.login || "connected";
-        channelAuthStatus.textContent = `Channel auth: connected as ${label}`;
+        channelAuthStatus.textContent = `Twitch channel OAuth: connected as ${label}`;
+      }
+
+      async function fetchMetaAuthStatus() {
+        if (!currentUser?.isAdmin || !metaAuthStatus) return;
+        const response = await fetch("/api/meta-auth/status");
+        if (!response.ok) {
+          metaAuthStatus.textContent = "Instagram/Meta OAuth: unavailable";
+          return;
+        }
+        const status = await response.json();
+        if (!status.connected) {
+          metaAuthStatus.textContent = "Instagram/Meta OAuth: not connected";
+          return;
+        }
+        const label = status.username || status.name || status.accountIdMasked || "connected";
+        metaAuthStatus.textContent = `Instagram/Meta OAuth: connected as ${label}`;
       }
 
       async function fetchState() {
@@ -782,10 +811,6 @@ const nowPlaying = document.getElementById("now-playing");
         notificationsDiscordWebhook.placeholder = settings.discord?.webhookMasked || "";
         notificationsDiscordTemplate.value = settings.discord?.template || DEFAULT_NOTIFICATION_MESSAGES.discord;
         notificationsInstagramEnabled.checked = Boolean(settings.instagram?.enabled);
-        notificationsInstagramAccountId.value = "";
-        notificationsInstagramAccountId.placeholder = settings.instagram?.accountIdMasked || "";
-        notificationsInstagramToken.value = "";
-        notificationsInstagramToken.placeholder = settings.instagram?.tokenMasked || "";
         notificationsInstagramTemplate.value = settings.instagram?.template || DEFAULT_NOTIFICATION_MESSAGES.instagram;
       }
 
@@ -1673,8 +1698,6 @@ document.getElementById("logout").addEventListener("click", async () => {
             },
             instagram: {
               enabled: notificationsInstagramEnabled?.checked,
-              accountId: notificationsInstagramAccountId?.value || "",
-              token: notificationsInstagramToken?.value || "",
               template: notificationsInstagramTemplate?.value || DEFAULT_NOTIFICATION_MESSAGES.instagram
             }
           })
@@ -1686,8 +1709,6 @@ document.getElementById("logout").addEventListener("click", async () => {
         }
         if (notificationsStatus) notificationsStatus.textContent = "Notification settings saved.";
         notificationsDiscordWebhook.value = "";
-        notificationsInstagramAccountId.value = "";
-        notificationsInstagramToken.value = "";
         await fetchNotificationSettings();
       });
 
@@ -1778,6 +1799,10 @@ document.getElementById("logout").addEventListener("click", async () => {
 
       connectChannelButton.addEventListener("click", () => {
         window.location.href = "/auth/twitch/channel";
+      });
+
+      connectMetaInstagramButton?.addEventListener("click", () => {
+        window.location.href = "/auth/meta/instagram";
       });
 
       const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
