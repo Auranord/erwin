@@ -38,6 +38,16 @@ const nowPlaying = document.getElementById("now-playing");
       const settingsTwitchSkip = document.getElementById("settings-twitch-skip");
       const settingsTwitchPause = document.getElementById("settings-twitch-pause");
       const settingsTwitchResume = document.getElementById("settings-twitch-resume");
+      const notificationsForm = document.getElementById("notifications-form");
+      const notificationsStatus = document.getElementById("notifications-status");
+      const notificationsTestButton = document.getElementById("notifications-test-button");
+      const notificationsDiscordEnabled = document.getElementById("notifications-discord-enabled");
+      const notificationsDiscordWebhook = document.getElementById("notifications-discord-webhook");
+      const notificationsDiscordTemplate = document.getElementById("notifications-discord-template");
+      const notificationsInstagramEnabled = document.getElementById("notifications-instagram-enabled");
+      const notificationsInstagramAccountId = document.getElementById("notifications-instagram-account-id");
+      const notificationsInstagramToken = document.getElementById("notifications-instagram-token");
+      const notificationsInstagramTemplate = document.getElementById("notifications-instagram-template");
       const themeToggle = document.getElementById("theme-toggle");
       const usersStatus = document.getElementById("users-status");
       const usersList = document.getElementById("users-list");
@@ -187,6 +197,10 @@ const nowPlaying = document.getElementById("now-playing");
         skip: "Skipped to the next track.",
         pause: "Playback paused.",
         resume: "Playback resumed."
+      };
+      const DEFAULT_NOTIFICATION_MESSAGES = {
+        discord: "🔴 {channel} is live!\n{title}\n{game}\n{url}",
+        instagram: "🔴 LIVE NOW\n{title}\n🎮 {game}\n{url}"
       };
 
       function showToast(message, type = "info") {
@@ -452,9 +466,13 @@ const nowPlaying = document.getElementById("now-playing");
         if (!currentUser.isAdmin) {
           usersCard.classList.add("hidden");
           if (libraryManagementCard) libraryManagementCard.classList.add("hidden");
+          notificationsForm?.classList.add("hidden");
+          notificationsStatus?.classList.add("hidden");
         } else {
           usersCard.classList.remove("hidden");
           if (libraryManagementCard) libraryManagementCard.classList.remove("hidden");
+          notificationsForm?.classList.remove("hidden");
+          notificationsStatus?.classList.remove("hidden");
         }
         return currentUser;
       }
@@ -745,6 +763,30 @@ const nowPlaying = document.getElementById("now-playing");
           hypeExtensionRatioInput.value = Number(settings.overlay_hype_extension_ratio ?? HYPE_DEFAULTS.extensionRatio);
           hypeUserCooldownSecondsInput.value = Number(settings.overlay_hype_user_cooldown_seconds ?? HYPE_DEFAULTS.userCooldownSeconds);
         }
+        if (currentUser?.isAdmin) {
+          fetchNotificationSettings();
+        }
+      }
+
+      async function fetchNotificationSettings() {
+        if (!currentUser?.isAdmin) return;
+        const response = await fetch("/api/notifications/settings");
+        if (handleUnauthorizedResponse(response)) return;
+        if (!response.ok) {
+          if (notificationsStatus) notificationsStatus.textContent = "Unable to load notification settings.";
+          return;
+        }
+        const settings = await response.json();
+        notificationsDiscordEnabled.checked = Boolean(settings.discord?.enabled);
+        notificationsDiscordWebhook.value = "";
+        notificationsDiscordWebhook.placeholder = settings.discord?.webhookMasked || "";
+        notificationsDiscordTemplate.value = settings.discord?.template || DEFAULT_NOTIFICATION_MESSAGES.discord;
+        notificationsInstagramEnabled.checked = Boolean(settings.instagram?.enabled);
+        notificationsInstagramAccountId.value = "";
+        notificationsInstagramAccountId.placeholder = settings.instagram?.accountIdMasked || "";
+        notificationsInstagramToken.value = "";
+        notificationsInstagramToken.placeholder = settings.instagram?.tokenMasked || "";
+        notificationsInstagramTemplate.value = settings.instagram?.template || DEFAULT_NOTIFICATION_MESSAGES.instagram;
       }
 
       async function fetchActiveVote() {
@@ -1614,6 +1656,58 @@ document.getElementById("logout").addEventListener("click", async () => {
         setTimeout(() => {
           settingsStatus.textContent = "";
         }, 3000);
+      });
+
+      notificationsForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!currentUser?.isAdmin) return;
+        if (notificationsStatus) notificationsStatus.textContent = "Saving notification settings...";
+        const response = await fetch("/api/notifications/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            discord: {
+              enabled: notificationsDiscordEnabled?.checked,
+              webhook: notificationsDiscordWebhook?.value || "",
+              template: notificationsDiscordTemplate?.value || DEFAULT_NOTIFICATION_MESSAGES.discord
+            },
+            instagram: {
+              enabled: notificationsInstagramEnabled?.checked,
+              accountId: notificationsInstagramAccountId?.value || "",
+              token: notificationsInstagramToken?.value || "",
+              template: notificationsInstagramTemplate?.value || DEFAULT_NOTIFICATION_MESSAGES.instagram
+            }
+          })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (notificationsStatus) notificationsStatus.textContent = payload.error || "Unable to save notification settings.";
+          return;
+        }
+        if (notificationsStatus) notificationsStatus.textContent = "Notification settings saved.";
+        notificationsDiscordWebhook.value = "";
+        notificationsInstagramAccountId.value = "";
+        notificationsInstagramToken.value = "";
+        await fetchNotificationSettings();
+      });
+
+      notificationsTestButton?.addEventListener("click", async () => {
+        if (!currentUser?.isAdmin) return;
+        if (notificationsStatus) notificationsStatus.textContent = "Sending test notification...";
+        const response = await fetch("/api/notifications/test", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (notificationsStatus) notificationsStatus.textContent = payload.error || "Unable to send test notification.";
+          return;
+        }
+        const discordStatus = payload.discord?.sent ? "Discord sent" : `Discord skipped (${payload.discord?.reason || "not configured"})`;
+        const instagramStatus = payload.instagram?.sent
+          ? "Instagram sent"
+          : `Instagram skipped (${payload.instagram?.reason || "not configured"})`;
+        if (notificationsStatus) notificationsStatus.textContent = `Test completed. ${discordStatus}. ${instagramStatus}.`;
       });
 
       customCommandCancel.addEventListener("click", () => {
