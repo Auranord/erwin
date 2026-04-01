@@ -12,6 +12,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import tls from "tls";
+import { createInstagramIntegration } from "./integrations/instagram.js";
 
 dotenv.config();
 
@@ -43,6 +44,7 @@ process.on("unhandledRejection", (reason) => {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
 
 const SCHEMA_SQL = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
 
@@ -122,6 +124,12 @@ const hypeRuntime = {
 
 const app = express();
 app.set("trust proxy", 1);
+
+const instagramIntegration = createInstagramIntegration({
+  log,
+  publicBaseUrl: PUBLIC_BASE_URL,
+  staticDir: PUBLIC_DIR
+});
 
 function ensureDbDirectory(dbUrl) {
   if (!dbUrl || dbUrl === ":memory:") return;
@@ -2095,6 +2103,27 @@ function dispatchStreamLiveNotification(payload) {
     url: payload.url,
     timestamp: payload.timestamp
   });
+
+  instagramIntegration
+    .publishStory(payload)
+    .then((result) => {
+      if (result?.skipped) {
+        log("info", "instagram story publish skipped", { reason: result.reason });
+        return;
+      }
+      log("info", "instagram story published", {
+        containerId: result?.containerId || null,
+        mediaId: result?.publishedMediaId || null,
+        mediaUrl: result?.mediaUrl || null
+      });
+    })
+    .catch((error) => {
+      log("error", "instagram story publish failed", {
+        error: String(error?.message || error),
+        meta: error?.meta || null,
+        status: error?.status || null
+      });
+    });
 }
 
 function maybeDispatchStreamLiveNotification(status) {
@@ -4153,7 +4182,7 @@ app.post("/api/overlay/hype/test", requireAuth, (req, res) => {
   });
 });
 
-app.use("/assets", express.static(path.join(__dirname, "..", "public")));
+app.use("/assets", express.static(PUBLIC_DIR));
 
 app.get("/dashboard", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "dashboard.html"));
