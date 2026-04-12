@@ -334,40 +334,43 @@
                 Templates support {command}, {summary}, {number}, {title}, {channel}, {track},
                 {winner}, and {max}.
               </p>
-              <div class="template-help form-section-title" aria-label="Template wildcard help">
-                <details class="template-help-item">
-                  <summary><code>{command}</code></summary>
-                  <p>The command text that triggered the response (for example <code>!vote</code>).</p>
-                </details>
-                <details class="template-help-item">
-                  <summary><code>{summary}</code></summary>
-                  <p>A short summary of the current vote results or state.</p>
-                </details>
-                <details class="template-help-item">
-                  <summary><code>{number}</code></summary>
-                  <p>The option number selected by a viewer.</p>
-                </details>
-                <details class="template-help-item">
-                  <summary><code>{title}</code></summary>
-                  <p>The track title that is currently being referenced.</p>
-                </details>
-                <details class="template-help-item">
-                  <summary><code>{channel}</code></summary>
-                  <p>The Twitch channel name where the message is posted.</p>
-                </details>
-                <details class="template-help-item">
-                  <summary><code>{track}</code></summary>
-                  <p>The formatted track label (typically artist and title).</p>
-                </details>
-                <details class="template-help-item">
-                  <summary><code>{winner}</code></summary>
-                  <p>The winning vote option and track when a vote closes.</p>
-                </details>
-                <details class="template-help-item">
-                  <summary><code>{max}</code></summary>
-                  <p>The highest option number available in the active vote.</p>
-                </details>
-              </div>
+              <details class="template-help form-section-title" aria-label="Template wildcard help">
+                <summary>Template placeholder descriptions</summary>
+                <div class="template-help-body">
+                  <div class="template-help-row">
+                    <code>{command}</code>
+                    <p>The command text that triggered the response (for example <code>!vote</code>).</p>
+                  </div>
+                  <div class="template-help-row">
+                    <code>{summary}</code>
+                    <p>A short summary of the current vote results or state.</p>
+                  </div>
+                  <div class="template-help-row">
+                    <code>{number}</code>
+                    <p>The option number selected by a viewer.</p>
+                  </div>
+                  <div class="template-help-row">
+                    <code>{title}</code>
+                    <p>The track title that is currently being referenced.</p>
+                  </div>
+                  <div class="template-help-row">
+                    <code>{channel}</code>
+                    <p>The Twitch channel name where the message is posted.</p>
+                  </div>
+                  <div class="template-help-row">
+                    <code>{track}</code>
+                    <p>The formatted track label (typically artist and title).</p>
+                  </div>
+                  <div class="template-help-row">
+                    <code>{winner}</code>
+                    <p>The winning vote option and track when a vote closes.</p>
+                  </div>
+                  <div class="template-help-row">
+                    <code>{max}</code>
+                    <p>The highest option number available in the active vote.</p>
+                  </div>
+                </div>
+              </details>
               <div>
                 <label for="settings-twitch-welcome">Welcome message</label>
                 <textarea id="settings-twitch-welcome" name="twitch-welcome" rows="2"></textarea>
