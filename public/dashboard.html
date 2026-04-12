@@ -448,6 +448,21 @@
                 <p class="notice">Leave blank to use webhook defaults.</p>
               </div>
               <div>
+                <label class="card-toggle" for="notifications-discord-button-enabled">
+                  <input id="notifications-discord-button-enabled" type="checkbox" />
+                  Enable Discord link button
+                </label>
+              </div>
+              <div>
+                <label for="notifications-discord-button-label">Discord button label</label>
+                <input id="notifications-discord-button-label" type="text" maxlength="80" placeholder="Watch Stream" />
+              </div>
+              <div>
+                <label for="notifications-discord-button-url-template">Discord button URL template</label>
+                <input id="notifications-discord-button-url-template" type="text" placeholder="https://twitch.tv/{{channel}}" />
+                <p class="notice">Supports {{channel}} (and {channel}) placeholders.</p>
+              </div>
+              <div>
                 <label class="card-toggle" for="notifications-discord-embed-enabled">
                   <input id="notifications-discord-embed-enabled" type="checkbox" />
                   Enable Discord embed

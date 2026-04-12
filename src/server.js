@@ -1201,6 +1201,9 @@ const TWITCH_MESSAGE_DEFAULTS = {
 const NOTIFICATION_SETTINGS_DEFAULTS = {
   discordEnabled: false,
   discordTemplate: "🔴 {channel} is live!\n{title}\n{game}\n{url}",
+  discordButtonEnabled: false,
+  discordButtonLabel: "Watch Stream",
+  discordButtonUrlTemplate: "https://twitch.tv/{{channel}}",
   discordEmbedEnabled: true,
   discordEmbedColor: "#5865F2",
   discordEmbedFooter: "",
@@ -1273,6 +1276,14 @@ function getNotificationSettings({ includeSecrets = false } = {}) {
       webhookMasked: maskSecret(discordWebhook, { visibleStart: 15, visibleEnd: 6 }),
       username: discordUsername,
       avatarUrl: discordAvatarUrl,
+      button: {
+        enabled: getSettingBoolean("notif_discord_button_enabled", NOTIFICATION_SETTINGS_DEFAULTS.discordButtonEnabled),
+        label: getSettingString("notif_discord_button_label", NOTIFICATION_SETTINGS_DEFAULTS.discordButtonLabel),
+        urlTemplate: getSettingString(
+          "notif_discord_button_url_template",
+          NOTIFICATION_SETTINGS_DEFAULTS.discordButtonUrlTemplate
+        )
+      },
       embed: {
         enabled: getSettingBoolean("notif_discord_embed_enabled", NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedEnabled),
         color: getSettingString("notif_discord_embed_color", NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedColor),
@@ -2202,6 +2213,9 @@ function dispatchStreamLiveNotification(payload) {
     username: notificationSettings.discord.username,
     avatarUrl: notificationSettings.discord.avatarUrl,
     enabled: notificationSettings.discord.enabled,
+    buttonEnabled: notificationSettings.discord.button?.enabled,
+    buttonLabel: notificationSettings.discord.button?.label,
+    buttonUrlTemplate: notificationSettings.discord.button?.urlTemplate,
     embedEnabled: notificationSettings.discord.embed?.enabled,
     embedColor: notificationSettings.discord.embed?.color,
     embedFooterText: notificationSettings.discord.embed?.footerText,
@@ -2278,6 +2292,30 @@ function parseDiscordEmbedColor(value) {
   return null;
 }
 
+function parseHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function formatUrlTemplate(template, values) {
+  const withDoubleBraces = String(template || "").replace(/\{\{(\w+)\}\}/g, (match, key) => {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      return String(values[key]);
+    }
+    return match;
+  });
+  return formatTemplate(withDoubleBraces, values);
+}
+
 async function sendDiscordStreamStartNotification(payload, options = {}) {
   const webhookUrl = String(options.webhookUrl || "").trim() || DISCORD_STREAM_LIVE_WEBHOOK_URL;
   const mentionRoleId = String(options.mentionRoleId || "").trim() || DISCORD_MENTION_ROLE_ID;
@@ -2293,6 +2331,9 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
   const embedShowGame = options.embedShowGame !== undefined ? Boolean(options.embedShowGame) : true;
   const embedImageUrlTemplate = String(options.embedImageUrlTemplate || "").trim();
   const embedThumbnailUrlTemplate = String(options.embedThumbnailUrlTemplate || "").trim();
+  const buttonEnabled = options.buttonEnabled !== undefined ? Boolean(options.buttonEnabled) : false;
+  const buttonLabel = String(options.buttonLabel || "").trim();
+  const buttonUrlTemplate = String(options.buttonUrlTemplate || "").trim();
 
   if (!enabled) {
     return { skipped: true, reason: "disabled" };
@@ -2365,6 +2406,25 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
   }
   if (username) requestBody.username = username;
   if (avatarUrl) requestBody.avatar_url = avatarUrl;
+  if (buttonEnabled) {
+    const buttonUrlRaw = formatUrlTemplate(buttonUrlTemplate, templateValues).trim();
+    const buttonUrl = parseHttpUrl(buttonUrlRaw);
+    if (buttonLabel && buttonUrl) {
+      requestBody.components = [
+        {
+          type: 1,
+          components: [
+            {
+              type: 2,
+              style: 5,
+              label: buttonLabel,
+              url: buttonUrl
+            }
+          ]
+        }
+      ];
+    }
+  }
 
   const maxAttempts = 3;
   let lastError = null;
@@ -4427,6 +4487,15 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
     String(instagram.template || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate;
   const nextDiscordUsername = String(discord.username || "").trim();
   const nextDiscordAvatarUrl = String(discord.avatarUrl || "").trim();
+  const discordButton = discord.button || {};
+  const nextDiscordButtonEnabled =
+    discordButton.enabled !== undefined
+      ? (discordButton.enabled ? 1 : 0)
+      : (NOTIFICATION_SETTINGS_DEFAULTS.discordButtonEnabled ? 1 : 0);
+  const nextDiscordButtonLabel =
+    String(discordButton.label || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.discordButtonLabel;
+  const nextDiscordButtonUrlTemplate =
+    String(discordButton.urlTemplate || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.discordButtonUrlTemplate;
   const discordEmbed = discord.embed || {};
   const nextDiscordEmbedEnabled =
     discordEmbed.enabled !== undefined
@@ -4461,6 +4530,9 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
     setSettingValue("notif_discord_webhook", nextDiscordWebhook);
     setSettingValue("notif_discord_username", nextDiscordUsername);
     setSettingValue("notif_discord_avatar_url", nextDiscordAvatarUrl);
+    setSettingValue("notif_discord_button_enabled", nextDiscordButtonEnabled);
+    setSettingValue("notif_discord_button_label", nextDiscordButtonLabel);
+    setSettingValue("notif_discord_button_url_template", nextDiscordButtonUrlTemplate);
     setSettingValue("notif_discord_embed_enabled", nextDiscordEmbedEnabled);
     setSettingValue("notif_discord_embed_color", nextDiscordEmbedColor);
     setSettingValue("notif_discord_embed_footer", nextDiscordEmbedFooter);
@@ -4483,6 +4555,9 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
       "notif_discord_webhook",
       "notif_discord_username",
       "notif_discord_avatar_url",
+      "notif_discord_button_enabled",
+      "notif_discord_button_label",
+      "notif_discord_button_url_template",
       "notif_discord_embed_enabled",
       "notif_discord_embed_color",
       "notif_discord_embed_footer",
@@ -4521,6 +4596,9 @@ app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) 
     username: notificationSettings.discord.username,
     avatarUrl: notificationSettings.discord.avatarUrl,
     enabled: notificationSettings.discord.enabled,
+    buttonEnabled: notificationSettings.discord.button?.enabled,
+    buttonLabel: notificationSettings.discord.button?.label,
+    buttonUrlTemplate: notificationSettings.discord.button?.urlTemplate,
     embedEnabled: notificationSettings.discord.embed?.enabled,
     embedColor: notificationSettings.discord.embed?.color,
     embedFooterText: notificationSettings.discord.embed?.footerText,
