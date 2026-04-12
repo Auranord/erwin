@@ -1210,6 +1210,8 @@ const NOTIFICATION_SETTINGS_DEFAULTS = {
   discordEmbedShowChannel: true,
   discordEmbedShowViewers: true,
   discordEmbedShowGame: true,
+  discordEmbedTitleTemplate: "{title}",
+  discordEmbedDescriptionTemplate: "Category: {game}",
   discordEmbedImageUrlTemplate: "",
   discordEmbedThumbnailUrlTemplate: "",
   instagramEnabled: false,
@@ -1297,6 +1299,14 @@ function getNotificationSettings({ includeSecrets = false } = {}) {
           NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedShowViewers
         ),
         showGame: getSettingBoolean("notif_discord_embed_show_game", NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedShowGame),
+        titleTemplate: getSettingString(
+          "notif_discord_embed_title_template",
+          NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedTitleTemplate
+        ),
+        descriptionTemplate: getSettingString(
+          "notif_discord_embed_description_template",
+          NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedDescriptionTemplate
+        ),
         imageUrlTemplate: getSettingString(
           "notif_discord_embed_image_url_template",
           NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedImageUrlTemplate
@@ -2222,6 +2232,8 @@ function dispatchStreamLiveNotification(payload) {
     embedShowChannel: notificationSettings.discord.embed?.showChannel,
     embedShowViewers: notificationSettings.discord.embed?.showViewers,
     embedShowGame: notificationSettings.discord.embed?.showGame,
+    embedTitleTemplate: notificationSettings.discord.embed?.titleTemplate,
+    embedDescriptionTemplate: notificationSettings.discord.embed?.descriptionTemplate,
     embedImageUrlTemplate: notificationSettings.discord.embed?.imageUrlTemplate,
     embedThumbnailUrlTemplate: notificationSettings.discord.embed?.thumbnailUrlTemplate
   })
@@ -2316,6 +2328,15 @@ function formatUrlTemplate(template, values) {
   return formatTemplate(withDoubleBraces, values);
 }
 
+const NOTIFICATION_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+const NOTIFICATION_UPLOAD_DIR = path.join(PUBLIC_DIR, "uploads", "notifications");
+const ALLOWED_NOTIFICATION_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+
+function buildPublicBaseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/$/, "");
+  return `${req.protocol}://${req.get("host")}`;
+}
+
 async function sendDiscordStreamStartNotification(payload, options = {}) {
   const webhookUrl = String(options.webhookUrl || "").trim() || DISCORD_STREAM_LIVE_WEBHOOK_URL;
   const mentionRoleId = String(options.mentionRoleId || "").trim() || DISCORD_MENTION_ROLE_ID;
@@ -2329,6 +2350,9 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
   const embedShowChannel = options.embedShowChannel !== undefined ? Boolean(options.embedShowChannel) : true;
   const embedShowViewers = options.embedShowViewers !== undefined ? Boolean(options.embedShowViewers) : true;
   const embedShowGame = options.embedShowGame !== undefined ? Boolean(options.embedShowGame) : true;
+  const embedTitleTemplate = String(options.embedTitleTemplate || "").trim() || "{title}";
+  const embedDescriptionTemplate =
+    String(options.embedDescriptionTemplate || "").trim() || "Category: {game}";
   const embedImageUrlTemplate = String(options.embedImageUrlTemplate || "").trim();
   const embedThumbnailUrlTemplate = String(options.embedThumbnailUrlTemplate || "").trim();
   const buttonEnabled = options.buttonEnabled !== undefined ? Boolean(options.buttonEnabled) : false;
@@ -2380,9 +2404,10 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
     }
 
     const embed = {
-      title: payload.title || "Stream is live",
+      title: formatTemplate(embedTitleTemplate, templateValues).trim() || "Stream is live",
       url: payload.url || "https://twitch.tv",
-      description: payload.game ? `Category: ${payload.game}` : "Category: Unknown",
+      description:
+        formatTemplate(embedDescriptionTemplate, templateValues).trim() || "Category: Unknown",
       timestamp: payload.startedAt || payload.timestamp || new Date().toISOString()
     };
     if (fields.length) {
@@ -4474,6 +4499,49 @@ app.get("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
   res.json(getNotificationSettings({ includeSecrets: false }));
 });
 
+app.post("/api/notifications/upload-image", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const filenameRaw = String(req.body?.filename || "").trim();
+    const mimeTypeRaw = String(req.body?.mimeType || "").trim().toLowerCase();
+    const dataRaw = String(req.body?.data || "").trim();
+    if (!filenameRaw || !mimeTypeRaw || !dataRaw) {
+      return res.status(400).json({ error: "filename, mimeType, and data are required" });
+    }
+    if (!ALLOWED_NOTIFICATION_IMAGE_TYPES.has(mimeTypeRaw)) {
+      return res.status(400).json({ error: "Only PNG, JPG, WEBP, and GIF are allowed" });
+    }
+    const buffer = Buffer.from(dataRaw, "base64");
+    if (!buffer.length || buffer.length > NOTIFICATION_UPLOAD_MAX_BYTES) {
+      return res.status(400).json({ error: "Image must be between 1 byte and 5MB" });
+    }
+    const extByMime = {
+      "image/png": ".png",
+      "image/jpeg": ".jpg",
+      "image/webp": ".webp",
+      "image/gif": ".gif"
+    };
+    const safeBaseName = path
+      .basename(filenameRaw, path.extname(filenameRaw))
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 40) || "notification-image";
+    const finalName = `${safeBaseName}-${Date.now()}-${nanoid(6)}${extByMime[mimeTypeRaw] || ".png"}`;
+    await fsPromises.mkdir(NOTIFICATION_UPLOAD_DIR, { recursive: true });
+    await fsPromises.writeFile(path.join(NOTIFICATION_UPLOAD_DIR, finalName), buffer);
+    const assetPath = `/assets/uploads/notifications/${finalName}`;
+    return res.json({
+      ok: true,
+      path: assetPath,
+      url: `${buildPublicBaseUrl(req)}${assetPath}`
+    });
+  } catch (error) {
+    log("error", "notification image upload failed", { error: String(error?.message || error) });
+    return res.status(500).json({ error: "Image upload failed" });
+  }
+});
+
 app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
   const payload = req.body || {};
   const discord = payload.discord || {};
@@ -4516,6 +4584,11 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
     discordEmbed.showGame !== undefined
       ? (discordEmbed.showGame ? 1 : 0)
       : (NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedShowGame ? 1 : 0);
+  const nextDiscordEmbedTitleTemplate =
+    String(discordEmbed.titleTemplate || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedTitleTemplate;
+  const nextDiscordEmbedDescriptionTemplate =
+    String(discordEmbed.descriptionTemplate || "").trim() ||
+    NOTIFICATION_SETTINGS_DEFAULTS.discordEmbedDescriptionTemplate;
   const nextDiscordEmbedImageUrlTemplate = String(discordEmbed.imageUrlTemplate || "").trim();
   const nextDiscordEmbedThumbnailUrlTemplate = String(discordEmbed.thumbnailUrlTemplate || "").trim();
 
@@ -4539,6 +4612,8 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
     setSettingValue("notif_discord_embed_show_channel", nextDiscordEmbedShowChannel);
     setSettingValue("notif_discord_embed_show_viewers", nextDiscordEmbedShowViewers);
     setSettingValue("notif_discord_embed_show_game", nextDiscordEmbedShowGame);
+    setSettingValue("notif_discord_embed_title_template", nextDiscordEmbedTitleTemplate);
+    setSettingValue("notif_discord_embed_description_template", nextDiscordEmbedDescriptionTemplate);
     setSettingValue("notif_discord_embed_image_url_template", nextDiscordEmbedImageUrlTemplate);
     setSettingValue("notif_discord_embed_thumbnail_url_template", nextDiscordEmbedThumbnailUrlTemplate);
     setSettingValue("notif_instagram_enabled", nextInstagramEnabled);
@@ -4564,6 +4639,8 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
       "notif_discord_embed_show_channel",
       "notif_discord_embed_show_viewers",
       "notif_discord_embed_show_game",
+      "notif_discord_embed_title_template",
+      "notif_discord_embed_description_template",
       "notif_discord_embed_image_url_template",
       "notif_discord_embed_thumbnail_url_template",
       "notif_instagram_enabled",
@@ -4605,6 +4682,8 @@ app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) 
     embedShowChannel: notificationSettings.discord.embed?.showChannel,
     embedShowViewers: notificationSettings.discord.embed?.showViewers,
     embedShowGame: notificationSettings.discord.embed?.showGame,
+    embedTitleTemplate: notificationSettings.discord.embed?.titleTemplate,
+    embedDescriptionTemplate: notificationSettings.discord.embed?.descriptionTemplate,
     embedImageUrlTemplate: notificationSettings.discord.embed?.imageUrlTemplate,
     embedThumbnailUrlTemplate: notificationSettings.discord.embed?.thumbnailUrlTemplate
   }).catch((error) => ({ error: String(error?.message || error) }));

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Erwin Dashboard</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260315a" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260412b" />
   </head>
   <body class="dashboard-page">
     <header>
@@ -436,16 +436,20 @@
               <div>
                 <label for="notifications-discord-template">Discord template</label>
                 <textarea id="notifications-discord-template" rows="3" placeholder="🔴 {channel} is live!&#10;{title}&#10;{game}&#10;{url}"></textarea>
+                <p class="notice">This is the plain message content.</p>
               </div>
               <div>
-                <label for="notifications-discord-username">Discord username override</label>
+                <label for="notifications-discord-username">Webhook username</label>
                 <input id="notifications-discord-username" type="text" maxlength="80" placeholder="Erwin Alerts" />
-                <p class="notice">Leave blank to use webhook defaults.</p>
+                <p class="notice">Leave blank to keep the webhook default username.</p>
               </div>
               <div>
-                <label for="notifications-discord-avatar-url">Discord avatar URL override</label>
-                <input id="notifications-discord-avatar-url" type="url" placeholder="https://example.com/avatar.png" />
-                <p class="notice">Leave blank to use webhook defaults.</p>
+                <label for="notifications-discord-avatar-url">Webhook avatar URL</label>
+                <div class="input-with-action">
+                  <input id="notifications-discord-avatar-url" type="url" placeholder="https://example.com/avatar.png" />
+                  <button id="notifications-discord-avatar-upload" class="secondary" type="button">Upload</button>
+                </div>
+                <p class="notice">Leave blank to keep the webhook default avatar.</p>
               </div>
               <div>
                 <label class="card-toggle" for="notifications-discord-button-enabled">
@@ -478,6 +482,14 @@
                 <input id="notifications-discord-embed-footer" type="text" maxlength="200" placeholder="Live alert powered by Erwin" />
               </div>
               <div>
+                <label for="notifications-discord-embed-title-template">Discord embed title</label>
+                <input id="notifications-discord-embed-title-template" type="text" placeholder="{title}" />
+              </div>
+              <div>
+                <label for="notifications-discord-embed-description-template">Discord embed description</label>
+                <textarea id="notifications-discord-embed-description-template" rows="2" placeholder="Category: {game}"></textarea>
+              </div>
+              <div>
                 <label class="card-toggle" for="notifications-discord-embed-show-channel">
                   <input id="notifications-discord-embed-show-channel" type="checkbox" />
                   Show Channel field
@@ -497,11 +509,17 @@
               </div>
               <div>
                 <label for="notifications-discord-embed-image-url-template">Discord embed image URL template</label>
-                <input id="notifications-discord-embed-image-url-template" type="text" placeholder="https://example.com/live/{channel}.png" />
+                <div class="input-with-action">
+                  <input id="notifications-discord-embed-image-url-template" type="text" placeholder="https://example.com/live/{channel}.png" />
+                  <button id="notifications-discord-embed-image-upload" class="secondary" type="button">Upload</button>
+                </div>
               </div>
               <div>
                 <label for="notifications-discord-embed-thumbnail-url-template">Discord embed thumbnail URL template</label>
-                <input id="notifications-discord-embed-thumbnail-url-template" type="text" placeholder="https://example.com/thumbs/{channel}.png" />
+                <div class="input-with-action">
+                  <input id="notifications-discord-embed-thumbnail-url-template" type="text" placeholder="https://example.com/thumbs/{channel}.png" />
+                  <button id="notifications-discord-embed-thumbnail-upload" class="secondary" type="button">Upload</button>
+                </div>
               </div>
               <div>
                 <label class="card-toggle" for="notifications-instagram-enabled">
@@ -525,6 +543,7 @@
 
     <input id="playlist-import-file" type="file" accept="application/json" class="hidden" />
     <input id="library-import-file" type="file" accept="application/json" class="hidden" />
+    <input id="notifications-image-upload-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" />
 
     <div id="rename-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rename-title">
       <div class="modal-card">
@@ -566,7 +585,7 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/assets/dashboard.js?v=20260412a"></script>
+    <script src="/assets/dashboard.js?v=20260412b"></script>
 
   </body>
 </html>
