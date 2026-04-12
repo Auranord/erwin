@@ -52,6 +52,12 @@ const nowPlaying = document.getElementById("now-playing");
       const notificationsDiscordEmbedEnabled = document.getElementById("notifications-discord-embed-enabled");
       const notificationsDiscordEmbedColor = document.getElementById("notifications-discord-embed-color");
       const notificationsDiscordEmbedFooter = document.getElementById("notifications-discord-embed-footer");
+      const notificationsDiscordEmbedTitleTemplate = document.getElementById(
+        "notifications-discord-embed-title-template"
+      );
+      const notificationsDiscordEmbedDescriptionTemplate = document.getElementById(
+        "notifications-discord-embed-description-template"
+      );
       const notificationsDiscordEmbedShowChannel = document.getElementById("notifications-discord-embed-show-channel");
       const notificationsDiscordEmbedShowViewers = document.getElementById("notifications-discord-embed-show-viewers");
       const notificationsDiscordEmbedShowGame = document.getElementById("notifications-discord-embed-show-game");
@@ -63,6 +69,12 @@ const nowPlaying = document.getElementById("now-playing");
       );
       const notificationsInstagramEnabled = document.getElementById("notifications-instagram-enabled");
       const notificationsInstagramTemplate = document.getElementById("notifications-instagram-template");
+      const notificationsImageUploadInput = document.getElementById("notifications-image-upload-input");
+      const notificationsDiscordAvatarUpload = document.getElementById("notifications-discord-avatar-upload");
+      const notificationsDiscordEmbedImageUpload = document.getElementById("notifications-discord-embed-image-upload");
+      const notificationsDiscordEmbedThumbnailUpload = document.getElementById(
+        "notifications-discord-embed-thumbnail-upload"
+      );
       const themeToggle = document.getElementById("theme-toggle");
       const usersStatus = document.getElementById("users-status");
       const usersList = document.getElementById("users-list");
@@ -232,6 +244,8 @@ const nowPlaying = document.getElementById("now-playing");
         showChannel: true,
         showViewers: true,
         showGame: true,
+        titleTemplate: "{title}",
+        descriptionTemplate: "Category: {game}",
         imageUrlTemplate: "",
         thumbnailUrlTemplate: ""
       };
@@ -875,6 +889,10 @@ const nowPlaying = document.getElementById("now-playing");
         notificationsDiscordEmbedColor.value = settings.discord?.embed?.color || DEFAULT_DISCORD_EMBED_SETTINGS.color;
         notificationsDiscordEmbedFooter.value =
           settings.discord?.embed?.footerText || DEFAULT_DISCORD_EMBED_SETTINGS.footerText;
+        notificationsDiscordEmbedTitleTemplate.value =
+          settings.discord?.embed?.titleTemplate || DEFAULT_DISCORD_EMBED_SETTINGS.titleTemplate;
+        notificationsDiscordEmbedDescriptionTemplate.value =
+          settings.discord?.embed?.descriptionTemplate || DEFAULT_DISCORD_EMBED_SETTINGS.descriptionTemplate;
         notificationsDiscordEmbedShowChannel.checked = Boolean(
           settings.discord?.embed?.showChannel ?? DEFAULT_DISCORD_EMBED_SETTINGS.showChannel
         );
@@ -890,6 +908,46 @@ const nowPlaying = document.getElementById("now-playing");
           settings.discord?.embed?.thumbnailUrlTemplate || DEFAULT_DISCORD_EMBED_SETTINGS.thumbnailUrlTemplate;
         notificationsInstagramEnabled.checked = Boolean(settings.instagram?.enabled);
         notificationsInstagramTemplate.value = settings.instagram?.template || DEFAULT_NOTIFICATION_MESSAGES.instagram;
+      }
+
+      async function uploadNotificationImage(file, targetInput) {
+        if (!file || !targetInput) return;
+        const maxBytes = 5 * 1024 * 1024;
+        if (file.size > maxBytes) {
+          if (notificationsStatus) notificationsStatus.textContent = "Image too large (max 5MB).";
+          return;
+        }
+        if (notificationsStatus) notificationsStatus.textContent = "Uploading image...";
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = String(reader.result || "");
+            const commaIndex = result.indexOf(",");
+            resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : "");
+          };
+          reader.onerror = () => reject(new Error("Failed to read file"));
+          reader.readAsDataURL(file);
+        }).catch(() => "");
+        if (!base64Data) {
+          if (notificationsStatus) notificationsStatus.textContent = "Unable to read selected image.";
+          return;
+        }
+        const response = await fetch("/api/notifications/upload-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            mimeType: file.type || "image/png",
+            data: base64Data
+          })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.url) {
+          if (notificationsStatus) notificationsStatus.textContent = payload.error || "Image upload failed.";
+          return;
+        }
+        targetInput.value = payload.url;
+        if (notificationsStatus) notificationsStatus.textContent = "Image uploaded.";
       }
 
       async function fetchActiveVote() {
@@ -1785,6 +1843,11 @@ document.getElementById("logout").addEventListener("click", async () => {
                 enabled: notificationsDiscordEmbedEnabled?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.enabled,
                 color: notificationsDiscordEmbedColor?.value || DEFAULT_DISCORD_EMBED_SETTINGS.color,
                 footerText: notificationsDiscordEmbedFooter?.value || DEFAULT_DISCORD_EMBED_SETTINGS.footerText,
+                titleTemplate:
+                  notificationsDiscordEmbedTitleTemplate?.value || DEFAULT_DISCORD_EMBED_SETTINGS.titleTemplate,
+                descriptionTemplate:
+                  notificationsDiscordEmbedDescriptionTemplate?.value ||
+                  DEFAULT_DISCORD_EMBED_SETTINGS.descriptionTemplate,
                 showChannel: notificationsDiscordEmbedShowChannel?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.showChannel,
                 showViewers: notificationsDiscordEmbedShowViewers?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.showViewers,
                 showGame: notificationsDiscordEmbedShowGame?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.showGame,
@@ -1809,6 +1872,34 @@ document.getElementById("logout").addEventListener("click", async () => {
         if (notificationsStatus) notificationsStatus.textContent = "Notification settings saved.";
         notificationsDiscordWebhook.value = "";
         await fetchNotificationSettings();
+      });
+
+      function queueNotificationImageUpload(target) {
+        if (!notificationsImageUploadInput) return;
+        notificationsImageUploadInput.dataset.targetInput = target;
+        notificationsImageUploadInput.click();
+      }
+
+      notificationsDiscordAvatarUpload?.addEventListener("click", () => {
+        queueNotificationImageUpload("avatar");
+      });
+      notificationsDiscordEmbedImageUpload?.addEventListener("click", () => {
+        queueNotificationImageUpload("embedImage");
+      });
+      notificationsDiscordEmbedThumbnailUpload?.addEventListener("click", () => {
+        queueNotificationImageUpload("embedThumbnail");
+      });
+      notificationsImageUploadInput?.addEventListener("change", async () => {
+        const [file] = Array.from(notificationsImageUploadInput.files || []);
+        const targetType = notificationsImageUploadInput.dataset.targetInput || "";
+        let targetInput = null;
+        if (targetType === "avatar") targetInput = notificationsDiscordAvatarUrl;
+        if (targetType === "embedImage") targetInput = notificationsDiscordEmbedImageUrlTemplate;
+        if (targetType === "embedThumbnail") targetInput = notificationsDiscordEmbedThumbnailUrlTemplate;
+        if (file && targetInput) {
+          await uploadNotificationImage(file, targetInput);
+        }
+        notificationsImageUploadInput.value = "";
       });
 
       notificationsTestButton?.addEventListener("click", async () => {
