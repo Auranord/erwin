@@ -46,6 +46,18 @@ const nowPlaying = document.getElementById("now-playing");
       const notificationsDiscordTemplate = document.getElementById("notifications-discord-template");
       const notificationsDiscordUsername = document.getElementById("notifications-discord-username");
       const notificationsDiscordAvatarUrl = document.getElementById("notifications-discord-avatar-url");
+      const notificationsDiscordEmbedEnabled = document.getElementById("notifications-discord-embed-enabled");
+      const notificationsDiscordEmbedColor = document.getElementById("notifications-discord-embed-color");
+      const notificationsDiscordEmbedFooter = document.getElementById("notifications-discord-embed-footer");
+      const notificationsDiscordEmbedShowChannel = document.getElementById("notifications-discord-embed-show-channel");
+      const notificationsDiscordEmbedShowViewers = document.getElementById("notifications-discord-embed-show-viewers");
+      const notificationsDiscordEmbedShowGame = document.getElementById("notifications-discord-embed-show-game");
+      const notificationsDiscordEmbedImageUrlTemplate = document.getElementById(
+        "notifications-discord-embed-image-url-template"
+      );
+      const notificationsDiscordEmbedThumbnailUrlTemplate = document.getElementById(
+        "notifications-discord-embed-thumbnail-url-template"
+      );
       const notificationsInstagramEnabled = document.getElementById("notifications-instagram-enabled");
       const notificationsInstagramTemplate = document.getElementById("notifications-instagram-template");
       const themeToggle = document.getElementById("theme-toggle");
@@ -204,6 +216,16 @@ const nowPlaying = document.getElementById("now-playing");
       const DEFAULT_NOTIFICATION_MESSAGES = {
         discord: "🔴 {channel} is live!\n{title}\n{game}\n{url}",
         instagram: "🔴 LIVE NOW\n{title}\n🎮 {game}\n{url}"
+      };
+      const DEFAULT_DISCORD_EMBED_SETTINGS = {
+        enabled: true,
+        color: "#5865F2",
+        footerText: "",
+        showChannel: true,
+        showViewers: true,
+        showGame: true,
+        imageUrlTemplate: "",
+        thumbnailUrlTemplate: ""
       };
 
       function showToast(message, type = "info") {
@@ -832,6 +854,25 @@ const nowPlaying = document.getElementById("now-playing");
         notificationsDiscordTemplate.value = settings.discord?.template || DEFAULT_NOTIFICATION_MESSAGES.discord;
         notificationsDiscordUsername.value = settings.discord?.username || "";
         notificationsDiscordAvatarUrl.value = settings.discord?.avatarUrl || "";
+        notificationsDiscordEmbedEnabled.checked = Boolean(
+          settings.discord?.embed?.enabled ?? DEFAULT_DISCORD_EMBED_SETTINGS.enabled
+        );
+        notificationsDiscordEmbedColor.value = settings.discord?.embed?.color || DEFAULT_DISCORD_EMBED_SETTINGS.color;
+        notificationsDiscordEmbedFooter.value =
+          settings.discord?.embed?.footerText || DEFAULT_DISCORD_EMBED_SETTINGS.footerText;
+        notificationsDiscordEmbedShowChannel.checked = Boolean(
+          settings.discord?.embed?.showChannel ?? DEFAULT_DISCORD_EMBED_SETTINGS.showChannel
+        );
+        notificationsDiscordEmbedShowViewers.checked = Boolean(
+          settings.discord?.embed?.showViewers ?? DEFAULT_DISCORD_EMBED_SETTINGS.showViewers
+        );
+        notificationsDiscordEmbedShowGame.checked = Boolean(
+          settings.discord?.embed?.showGame ?? DEFAULT_DISCORD_EMBED_SETTINGS.showGame
+        );
+        notificationsDiscordEmbedImageUrlTemplate.value =
+          settings.discord?.embed?.imageUrlTemplate || DEFAULT_DISCORD_EMBED_SETTINGS.imageUrlTemplate;
+        notificationsDiscordEmbedThumbnailUrlTemplate.value =
+          settings.discord?.embed?.thumbnailUrlTemplate || DEFAULT_DISCORD_EMBED_SETTINGS.thumbnailUrlTemplate;
         notificationsInstagramEnabled.checked = Boolean(settings.instagram?.enabled);
         notificationsInstagramTemplate.value = settings.instagram?.template || DEFAULT_NOTIFICATION_MESSAGES.instagram;
       }
@@ -1718,7 +1759,20 @@ document.getElementById("logout").addEventListener("click", async () => {
               webhook: notificationsDiscordWebhook?.value || "",
               template: notificationsDiscordTemplate?.value || DEFAULT_NOTIFICATION_MESSAGES.discord,
               username: notificationsDiscordUsername?.value || "",
-              avatarUrl: notificationsDiscordAvatarUrl?.value || ""
+              avatarUrl: notificationsDiscordAvatarUrl?.value || "",
+              embed: {
+                enabled: notificationsDiscordEmbedEnabled?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.enabled,
+                color: notificationsDiscordEmbedColor?.value || DEFAULT_DISCORD_EMBED_SETTINGS.color,
+                footerText: notificationsDiscordEmbedFooter?.value || DEFAULT_DISCORD_EMBED_SETTINGS.footerText,
+                showChannel: notificationsDiscordEmbedShowChannel?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.showChannel,
+                showViewers: notificationsDiscordEmbedShowViewers?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.showViewers,
+                showGame: notificationsDiscordEmbedShowGame?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.showGame,
+                imageUrlTemplate:
+                  notificationsDiscordEmbedImageUrlTemplate?.value || DEFAULT_DISCORD_EMBED_SETTINGS.imageUrlTemplate,
+                thumbnailUrlTemplate:
+                  notificationsDiscordEmbedThumbnailUrlTemplate?.value ||
+                  DEFAULT_DISCORD_EMBED_SETTINGS.thumbnailUrlTemplate
+              }
             },
             instagram: {
               enabled: notificationsInstagramEnabled?.checked,
