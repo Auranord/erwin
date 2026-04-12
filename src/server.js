@@ -12,6 +12,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { execFile } from "child_process";
 import tls from "tls";
+import { createInstagramIntegration } from "./integrations/instagram.js";
 
 dotenv.config();
 
@@ -43,6 +44,7 @@ process.on("unhandledRejection", (reason) => {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
 
 const SCHEMA_SQL = fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8");
 
@@ -78,8 +80,21 @@ const TWITCH_REFRESH_TOKEN = envTrim("TWITCH_REFRESH_TOKEN", "");
 const TWITCH_CLIENT_ID = envTrim("TWITCH_CLIENT_ID", "");
 const TWITCH_CLIENT_SECRET = envTrim("TWITCH_CLIENT_SECRET", "");
 const TWITCH_REDIRECT_URI = envTrim("TWITCH_REDIRECT_URI", "");
+const META_APP_ID = envTrim("META_APP_ID", "");
+const META_APP_SECRET = envTrim("META_APP_SECRET", "");
+const META_REDIRECT_URI = envTrim("META_REDIRECT_URI", "");
+const META_OAUTH_CONFIGURED = Boolean(META_APP_ID && META_APP_SECRET);
 const TWITCH_CHANNEL = envTrim("TWITCH_CHANNEL", "");
 const TWITCH_COMMAND_PREFIX = envTrim("TWITCH_COMMAND_PREFIX", "!");
+const DISCORD_STREAM_LIVE_WEBHOOK_URL = envTrim(
+  "DISCORD_STREAM_LIVE_WEBHOOK_URL",
+  envTrim("DISCORD_WEBHOOK_URL", "")
+);
+const DISCORD_MENTION_ROLE_ID = envTrim("DISCORD_MENTION_ROLE_ID", "");
+const NOTIFY_TEMPLATE_DISCORD = envTrim(
+  "NOTIFY_TEMPLATE_DISCORD",
+  "🔴 {channel} is live!\n{title}\n{game}\n{url}"
+);
 const TWITCH_ADMINS = parseCsvSet(envTrim("TWITCH_ADMINS", ""));
 const TWITCH_CHANNEL_MEMBERS = parseCsvSet(envTrim("TWITCH_CHANNEL_MEMBERS", ""));
 const TWITCH_CHANNEL_MEMBERS_ROLE = envTrim("TWITCH_CHANNEL_MEMBERS_ROLE", "channel_member");
@@ -120,19 +135,6 @@ const hypeRuntime = {
   userLastCountedAt: new Map()
 };
 
-const app = express();
-app.set("trust proxy", 1);
-
-function ensureDbDirectory(dbUrl) {
-  if (!dbUrl || dbUrl === ":memory:") return;
-  if (/^[a-zA-Z]+:\/\//.test(dbUrl) || dbUrl.startsWith("file:")) return;
-  const dbDir = path.dirname(path.resolve(dbUrl));
-  fs.mkdirSync(dbDir, { recursive: true });
-}
-
-ensureDbDirectory(DB_URL);
-const db = new Database(DB_URL);
-
 const LOG_LEVELS = {
   error: 0,
   warn: 1,
@@ -160,6 +162,25 @@ function log(level, message, meta = {}) {
     console.log(line);
   }
 }
+
+const app = express();
+app.set("trust proxy", 1);
+
+const instagramIntegration = createInstagramIntegration({
+  log,
+  publicBaseUrl: PUBLIC_BASE_URL,
+  staticDir: PUBLIC_DIR
+});
+
+function ensureDbDirectory(dbUrl) {
+  if (!dbUrl || dbUrl === ":memory:") return;
+  if (/^[a-zA-Z]+:\/\//.test(dbUrl) || dbUrl.startsWith("file:")) return;
+  const dbDir = path.dirname(path.resolve(dbUrl));
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+ensureDbDirectory(DB_URL);
+const db = new Database(DB_URL);
 
 
 app.use(cookieParser());
@@ -1175,6 +1196,12 @@ const TWITCH_MESSAGE_DEFAULTS = {
   pause: "Playback paused.",
   resume: "Playback resumed."
 };
+const NOTIFICATION_SETTINGS_DEFAULTS = {
+  discordEnabled: false,
+  discordTemplate: "🔴 {channel} is live!\n{title}\n{game}\n{url}",
+  instagramEnabled: false,
+  instagramTemplate: "🔴 LIVE NOW\n{title}\n🎮 {game}\n{url}"
+};
 
 function clampNumber(value, min, max, fallback) {
   if (!Number.isFinite(value)) return fallback;
@@ -1212,6 +1239,40 @@ function getSettingString(key, fallback) {
 
 function setSettingValue(key, value) {
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, String(value));
+}
+
+function maskSecret(value, { visibleStart = 3, visibleEnd = 2 } = {}) {
+  const raw = String(value || "");
+  if (!raw) return "";
+  if (raw.length <= visibleStart + visibleEnd) {
+    return `${raw.slice(0, 1)}***`;
+  }
+  return `${raw.slice(0, visibleStart)}***${raw.slice(-visibleEnd)}`;
+}
+
+function getNotificationSettings({ includeSecrets = false } = {}) {
+  const discordWebhook = getSettingString("notif_discord_webhook", "");
+  const instagramAccountId = getSettingString("notif_instagram_account_id", "");
+  const instagramToken = getSettingString("notif_instagram_token", "");
+  const settings = {
+    discord: {
+      enabled: getSettingBoolean("notif_discord_enabled", NOTIFICATION_SETTINGS_DEFAULTS.discordEnabled),
+      template: getSettingString("notif_discord_template", NOTIFICATION_SETTINGS_DEFAULTS.discordTemplate),
+      webhookMasked: maskSecret(discordWebhook, { visibleStart: 15, visibleEnd: 6 })
+    },
+    instagram: {
+      enabled: getSettingBoolean("notif_instagram_enabled", NOTIFICATION_SETTINGS_DEFAULTS.instagramEnabled),
+      template: getSettingString("notif_instagram_template", NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate),
+      accountIdMasked: maskSecret(instagramAccountId, { visibleStart: 4, visibleEnd: 2 }),
+      tokenMasked: maskSecret(instagramToken, { visibleStart: 5, visibleEnd: 4 })
+    }
+  };
+  if (includeSecrets) {
+    settings.discord.webhook = discordWebhook;
+    settings.instagram.accountId = instagramAccountId;
+    settings.instagram.token = instagramToken;
+  }
+  return settings;
 }
 
 function normalizeEmoteList(value) {
@@ -1995,15 +2056,19 @@ let twitchTokenRefreshTimer = null;
 let twitchRefreshInFlight = null;
 
 const TWITCH_CHANNEL_STATUS_TTL_MS = 10_000;
+const STREAM_NOTIFICATION_WATCH_INTERVAL_MS = 30_000;
+const STREAM_NOTIFICATION_COOLDOWN_MS = 3 * 60 * 1000;
 const twitchChannelStatusCache = {
   fetchedAt: 0,
   channel: TWITCH_CHANNEL || "",
   live: false,
   viewerCount: 0,
+  startedAt: "",
   gameName: "",
   title: "",
   error: ""
 };
+let previousLive = null;
 
 function getTwitchHelixAccessToken() {
   const channelToken = getSettingString("twitch_channel_auth_access_token", "");
@@ -2022,6 +2087,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = "";
     twitchChannelStatusCache.live = false;
     twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.startedAt = "";
     twitchChannelStatusCache.error = "channel_not_linked";
     return twitchChannelStatusCache;
   }
@@ -2031,6 +2097,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = channelLogin;
     twitchChannelStatusCache.live = false;
     twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.startedAt = "";
     twitchChannelStatusCache.error = "missing_twitch_api_credentials";
     return twitchChannelStatusCache;
   }
@@ -2051,6 +2118,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
       twitchChannelStatusCache.channel = channelLogin;
       twitchChannelStatusCache.live = false;
       twitchChannelStatusCache.viewerCount = 0;
+      twitchChannelStatusCache.startedAt = "";
       twitchChannelStatusCache.error = `helix_stream_error_${response.status}`;
       log("warn", "twitch channel status request failed", { status: response.status, body: text.slice(0, 300) });
       return twitchChannelStatusCache;
@@ -2061,6 +2129,7 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = channelLogin;
     twitchChannelStatusCache.live = Boolean(stream);
     twitchChannelStatusCache.viewerCount = Number(stream?.viewer_count || 0);
+    twitchChannelStatusCache.startedAt = String(stream?.started_at || "");
     twitchChannelStatusCache.gameName = String(stream?.game_name || "");
     twitchChannelStatusCache.title = String(stream?.title || "");
     twitchChannelStatusCache.error = "";
@@ -2070,9 +2139,250 @@ async function fetchTwitchChannelStatus({ force = false } = {}) {
     twitchChannelStatusCache.channel = channelLogin;
     twitchChannelStatusCache.live = false;
     twitchChannelStatusCache.viewerCount = 0;
+    twitchChannelStatusCache.startedAt = "";
     twitchChannelStatusCache.error = "network_error";
     log("warn", "twitch channel status network error", { error: String(error?.message || error) });
     return twitchChannelStatusCache;
+  }
+}
+
+function dispatchStreamLiveNotification(payload) {
+  log("info", "stream live notification dispatch", {
+    channelLogin: payload.channelLogin,
+    channelDisplayName: payload.channelDisplayName,
+    title: payload.title,
+    game: payload.game,
+    viewerCount: payload.viewerCount,
+    url: payload.url,
+    timestamp: payload.timestamp
+  });
+
+  const notificationSettings = getNotificationSettings({ includeSecrets: true });
+
+  sendDiscordStreamStartNotification(payload, {
+    webhookUrl: notificationSettings.discord.webhook || DISCORD_WEBHOOK_URL,
+    mentionRoleId: DISCORD_MENTION_ROLE_ID,
+    template: notificationSettings.discord.template || NOTIFY_TEMPLATE_DISCORD,
+    enabled: notificationSettings.discord.enabled
+  })
+    .then((result) => {
+      if (result?.skipped) {
+        log("info", "discord stream notification skipped", { reason: result.reason });
+        return;
+      }
+      log("info", "discord stream notification sent", {
+        channelLogin: payload.channelLogin,
+        status: result?.status || null
+      });
+    })
+    .catch((error) => {
+      log("error", "discord stream notification failed", {
+        error: String(error?.message || error),
+        channelLogin: payload.channelLogin
+      });
+    });
+
+  if (!notificationSettings.instagram.enabled) {
+    return;
+  }
+
+  instagramIntegration
+    .publishStory(payload, {
+      businessAccountId: notificationSettings.instagram.accountId,
+      accessToken: notificationSettings.instagram.token,
+      template: notificationSettings.instagram.template || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate
+    })
+    .then((result) => {
+      if (result?.skipped) {
+        log("info", "instagram story publish skipped", { reason: result.reason });
+        return;
+      }
+      log("info", "instagram story published", {
+        containerId: result?.containerId || null,
+        mediaId: result?.publishedMediaId || null,
+        mediaUrl: result?.mediaUrl || null
+      });
+    })
+    .catch((error) => {
+      log("error", "instagram story publish failed", {
+        error: String(error?.message || error),
+        meta: error?.meta || null,
+        status: error?.status || null
+      });
+    });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendDiscordStreamStartNotification(payload, options = {}) {
+  const webhookUrl = String(options.webhookUrl || "").trim() || DISCORD_STREAM_LIVE_WEBHOOK_URL;
+  const mentionRoleId = String(options.mentionRoleId || "").trim() || DISCORD_MENTION_ROLE_ID;
+  const template = String(options.template || "").trim() || NOTIFY_TEMPLATE_DISCORD;
+  const enabled = options.enabled !== undefined ? Boolean(options.enabled) : true;
+
+  if (!enabled) {
+    return { skipped: true, reason: "disabled" };
+  }
+
+  if (!webhookUrl) {
+    return { skipped: true, reason: "webhook_not_configured" };
+  }
+
+  const templateValues = {
+    channel: payload.channelDisplayName || payload.channelLogin || "",
+    title: payload.title || "",
+    game: payload.game || "",
+    url: payload.url || "",
+    startedAt: payload.startedAt || payload.timestamp || ""
+  };
+  const formattedContent = formatTemplate(template, templateValues).trim();
+  const mentionPrefix = mentionRoleId ? `<@&${mentionRoleId}>` : "";
+  const content = [mentionPrefix, formattedContent].filter(Boolean).join("\n");
+
+  const requestBody = {
+    username: "Erwin",
+    avatar_url: "https://static-cdn.jtvnw.net/jtv_user_pictures/xarth/404_user_70x70.png",
+    content,
+    embeds: [
+      {
+        title: payload.title || "Stream is live",
+        url: payload.url || "https://twitch.tv",
+        description: payload.game ? `Category: ${payload.game}` : "Category: Unknown",
+        timestamp: payload.startedAt || payload.timestamp || new Date().toISOString(),
+        fields: [
+          { name: "Channel", value: payload.channelDisplayName || payload.channelLogin || "Unknown", inline: true },
+          { name: "Viewers", value: String(Math.max(0, Number(payload.viewerCount || 0))), inline: true }
+        ]
+      }
+    ]
+  };
+
+  const maxAttempts = 3;
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody)
+      });
+      const bodyText = await response.text();
+      if (response.ok) {
+        return { ok: true, status: response.status };
+      }
+
+      const snippet = bodyText.slice(0, 300);
+      lastError = new Error(`discord webhook responded with status ${response.status}`);
+      log("warn", "discord webhook request failed", {
+        attempt,
+        status: response.status,
+        body: snippet
+      });
+    } catch (error) {
+      lastError = error;
+      log("warn", "discord webhook network error", {
+        attempt,
+        error: String(error?.message || error)
+      });
+    }
+
+    if (attempt < maxAttempts) {
+      await delay(attempt * 500);
+    }
+  }
+
+  throw lastError || new Error("discord webhook request failed");
+}
+
+function maybeDispatchStreamLiveNotification(status) {
+  const currentLive = Boolean(status?.live);
+  if (previousLive === null) {
+    previousLive = currentLive;
+    return;
+  }
+  const isRisingEdge = previousLive === false && currentLive === true;
+  if (!isRisingEdge) {
+    previousLive = currentLive;
+    return;
+  }
+  const now = Date.now();
+  const startedAt = String(status?.startedAt || "");
+  const title = String(status?.title || "").trim();
+  const game = String(status?.gameName || "").trim();
+  const lastStartedAt = getSettingString("notif_last_stream_started_at", "");
+  const lastTitle = getSettingString("notif_last_stream_title", "");
+  const lastGame = getSettingString("notif_last_stream_game", "");
+  const lastTriggeredRaw = Number(getSettingValue("notif_last_triggered_at", 0));
+  const lastTriggeredAt = Number.isFinite(lastTriggeredRaw) ? lastTriggeredRaw : 0;
+  const inCooldown = now - lastTriggeredAt < STREAM_NOTIFICATION_COOLDOWN_MS;
+  const sameStreamFingerprint =
+    startedAt !== "" &&
+    startedAt === lastStartedAt &&
+    title === lastTitle &&
+    game === lastGame;
+  if (inCooldown || sameStreamFingerprint) {
+    log("info", "stream transition notification suppressed", {
+      reason: inCooldown ? "cooldown" : "duplicate_stream",
+      cooldownMsRemaining: inCooldown ? STREAM_NOTIFICATION_COOLDOWN_MS - (now - lastTriggeredAt) : 0,
+      startedAt,
+      title,
+      game
+    });
+    previousLive = currentLive;
+    return;
+  }
+
+  const channelLogin = String(status?.channel || TWITCH_CHANNEL || getSettingString("twitch_channel_auth_login", "")).trim();
+  const channelDisplayName = String(
+    getSettingString("twitch_channel_auth_display_name", channelLogin || status?.channel || "")
+  ).trim();
+  const payload = {
+    channelLogin,
+    channelDisplayName: channelDisplayName || channelLogin,
+    title,
+    game,
+    viewerCount: Number(status?.viewerCount || 0),
+    url: channelLogin ? `https://twitch.tv/${channelLogin}` : "https://twitch.tv",
+    startedAt: startedAt || "",
+    timestamp: new Date(now).toISOString()
+  };
+  try {
+    dispatchStreamLiveNotification(payload);
+    setSettingValue("notif_last_stream_started_at", startedAt);
+    setSettingValue("notif_last_stream_title", title);
+    setSettingValue("notif_last_stream_game", game);
+    setSettingValue("notif_last_triggered_at", String(now));
+  } catch (error) {
+    log("error", "stream live notification dispatch failed", {
+      error: String(error?.message || error),
+      channelLogin,
+      startedAt,
+      title,
+      game
+    });
+  }
+  previousLive = currentLive;
+}
+
+async function runStreamNotificationWatcher() {
+  try {
+    const status = await fetchTwitchChannelStatus({ force: true });
+    log("info", "stream transition", {
+      previousLive,
+      currentLive: Boolean(status?.live),
+      channel: status?.channel || "",
+      viewerCount: Number(status?.viewerCount || 0),
+      startedAt: status?.startedAt || "",
+      title: status?.title || "",
+      game: status?.gameName || ""
+    });
+    maybeDispatchStreamLiveNotification(status);
+  } catch (error) {
+    log("warn", "stream transition watcher failed", {
+      error: String(error?.message || error)
+    });
   }
 }
 
@@ -2419,6 +2729,15 @@ const CALLBACK_ERROR_MESSAGES = {
   twitch_login_failed: "Twitch login failed. Please try again."
 };
 
+const META_CALLBACK_ERROR_MESSAGES = {
+  meta_config_missing: "Meta OAuth is not configured on this server.",
+  invalid_oauth_state: "Your Meta login session expired or was invalid. Please try again.",
+  missing_oauth_code: "Meta did not return an authorization code. Please try again.",
+  token_exchange_failed: "Unable to complete Meta token exchange. Please try again.",
+  instagram_account_missing: "No Instagram business account was found in the connected Meta account.",
+  meta_login_failed: "Meta login failed. Please try again."
+};
+
 function getUserRole({ login, twitchId, isModerator = false, isVip = false }) {
   const normalizedLogin = String(login || "").trim().toLowerCase();
   const normalizedId = String(twitchId || "").trim().toLowerCase();
@@ -2452,6 +2771,33 @@ function redirectLoginError(res, reason, context = {}) {
     protocol: context.protocol || null
   });
   return res.redirect(`/login?error=${encodeURIComponent(safeReason)}`);
+}
+
+function resolveMetaRedirectUri(req) {
+  if (META_REDIRECT_URI) return META_REDIRECT_URI;
+  if (PUBLIC_BASE_URL) {
+    return `${PUBLIC_BASE_URL.replace(/\/$/, "")}/auth/meta/callback`;
+  }
+  return `${req.protocol}://${req.get("host")}/auth/meta/callback`;
+}
+
+function redirectDashboardOAuthError(res, reason, context = {}) {
+  const safeReason = META_CALLBACK_ERROR_MESSAGES[reason] ? reason : "meta_login_failed";
+  log("error", "meta callback failed", {
+    reason: safeReason,
+    rawError: context.rawError || null
+  });
+  return res.redirect(`/dashboard?oauth_error=${encodeURIComponent(safeReason)}`);
+}
+
+async function fetchMetaJson(url) {
+  const response = await fetch(url);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.error) {
+    const message = payload?.error?.message || `Meta API request failed (${response.status})`;
+    throw new Error(message);
+  }
+  return payload;
 }
 
 async function fetchTwitchToken({ code, redirectUri }) {
@@ -2577,6 +2923,29 @@ app.get("/auth/twitch", (req, res) => {
 
 app.get("/auth/twitch/channel", requireAuth, requireAdmin, (req, res) => {
   beginTwitchAuth(req, res, "channel");
+});
+
+app.get("/auth/meta/instagram", requireAuth, requireAdmin, (req, res) => {
+  if (!META_OAUTH_CONFIGURED) {
+    return redirectDashboardOAuthError(res, "meta_config_missing", {
+      rawError: "META_APP_ID/META_APP_SECRET missing"
+    });
+  }
+  const redirectUri = resolveMetaRedirectUri(req);
+  const state = nanoid();
+  req.session.metaOauthState = state;
+  req.session.metaOauthRedirectUri = redirectUri;
+  req.session.save(() => {
+    const authUrl = new URL("https://www.facebook.com/v21.0/dialog/oauth");
+    authUrl.searchParams.set("client_id", META_APP_ID);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set(
+      "scope",
+      "instagram_basic,instagram_content_publish,pages_show_list,business_management"
+    );
+    res.redirect(authUrl.toString());
+  });
 });
 
 app.get("/auth/twitch/callback", async (req, res) => {
@@ -2728,6 +3097,67 @@ app.get("/auth/twitch/callback", async (req, res) => {
   }
 });
 
+app.get("/auth/meta/callback", requireAuth, requireAdmin, async (req, res) => {
+  const redirectUri = req.session?.metaOauthRedirectUri || resolveMetaRedirectUri(req);
+  const { state, code } = req.query || {};
+  if (!req.session?.metaOauthState || state !== req.session.metaOauthState) {
+    return redirectDashboardOAuthError(res, "invalid_oauth_state");
+  }
+  if (!code) {
+    return redirectDashboardOAuthError(res, "missing_oauth_code");
+  }
+
+  try {
+    const shortTokenUrl = new URL("https://graph.facebook.com/v21.0/oauth/access_token");
+    shortTokenUrl.searchParams.set("client_id", META_APP_ID);
+    shortTokenUrl.searchParams.set("client_secret", META_APP_SECRET);
+    shortTokenUrl.searchParams.set("redirect_uri", redirectUri);
+    shortTokenUrl.searchParams.set("code", String(code));
+    const shortTokenPayload = await fetchMetaJson(shortTokenUrl.toString());
+    const shortToken = String(shortTokenPayload?.access_token || "").trim();
+    if (!shortToken) throw new Error("missing short-lived access token");
+
+    const longTokenUrl = new URL("https://graph.facebook.com/v21.0/oauth/access_token");
+    longTokenUrl.searchParams.set("grant_type", "fb_exchange_token");
+    longTokenUrl.searchParams.set("client_id", META_APP_ID);
+    longTokenUrl.searchParams.set("client_secret", META_APP_SECRET);
+    longTokenUrl.searchParams.set("fb_exchange_token", shortToken);
+    const longTokenPayload = await fetchMetaJson(longTokenUrl.toString());
+    const longLivedToken = String(longTokenPayload?.access_token || "").trim();
+    if (!longLivedToken) throw new Error("missing long-lived access token");
+
+    const pagesUrl = new URL("https://graph.facebook.com/v21.0/me/accounts");
+    pagesUrl.searchParams.set("fields", "id,name,instagram_business_account{id,username,name}");
+    pagesUrl.searchParams.set("access_token", longLivedToken);
+    const pagesPayload = await fetchMetaJson(pagesUrl.toString());
+    const pageWithInstagram = (pagesPayload?.data || []).find((page) => page?.instagram_business_account?.id);
+    const instagramAccount = pageWithInstagram?.instagram_business_account;
+    if (!instagramAccount?.id) {
+      return redirectDashboardOAuthError(res, "instagram_account_missing");
+    }
+
+    const tx = db.transaction(() => {
+      setSettingValue("notif_instagram_account_id", instagramAccount.id);
+      setSettingValue("notif_instagram_token", longLivedToken);
+      setSettingValue("meta_instagram_auth_connected", "1");
+      setSettingValue("meta_instagram_auth_account_id", instagramAccount.id);
+      setSettingValue("meta_instagram_auth_username", instagramAccount.username || "");
+      setSettingValue("meta_instagram_auth_name", instagramAccount.name || "");
+      setSettingValue("meta_instagram_auth_updated_at", new Date().toISOString());
+    });
+    tx();
+    req.session.metaOauthState = null;
+    req.session.metaOauthRedirectUri = null;
+    req.session.save(() => {
+      res.redirect("/dashboard?oauth=meta_connected");
+    });
+  } catch (error) {
+    return redirectDashboardOAuthError(res, "token_exchange_failed", {
+      rawError: String(error?.message || error)
+    });
+  }
+});
+
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
     log("info", "logout", { userId: req.session?.user?.id || null });
@@ -2760,6 +3190,25 @@ app.get("/api/channel-auth/status", requireAuth, requireAdmin, (req, res) => {
   const displayName = getSettingString("twitch_channel_auth_display_name", "");
   const updatedAt = getSettingString("twitch_channel_auth_updated_at", "");
   res.json({ connected, login, displayName, updatedAt });
+});
+
+app.get("/api/meta-auth/status", requireAuth, requireAdmin, (req, res) => {
+  const connected =
+    getSettingBoolean("meta_instagram_auth_connected", false) &&
+    Boolean(getSettingString("notif_instagram_account_id", "")) &&
+    Boolean(getSettingString("notif_instagram_token", ""));
+  const accountId = getSettingString("meta_instagram_auth_account_id", "");
+  const username = getSettingString("meta_instagram_auth_username", "");
+  const name = getSettingString("meta_instagram_auth_name", "");
+  const updatedAt = getSettingString("meta_instagram_auth_updated_at", "");
+  res.json({
+    available: META_OAUTH_CONFIGURED,
+    connected,
+    accountIdMasked: maskSecret(accountId, { visibleStart: 4, visibleEnd: 2 }),
+    username,
+    name,
+    updatedAt
+  });
 });
 
 app.get("/api/twitch/channel-status", requireAuth, async (req, res) => {
@@ -3854,6 +4303,101 @@ app.get("/api/settings", requireAuth, (req, res) => {
   res.json(settings);
 });
 
+app.get("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+  res.json(getNotificationSettings({ includeSecrets: false }));
+});
+
+app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+  const payload = req.body || {};
+  const discord = payload.discord || {};
+  const instagram = payload.instagram || {};
+
+  const nextDiscordEnabled = discord.enabled ? 1 : 0;
+  const nextInstagramEnabled = instagram.enabled ? 1 : 0;
+  const nextDiscordTemplate =
+    String(discord.template || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.discordTemplate;
+  const nextInstagramTemplate =
+    String(instagram.template || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate;
+
+  const current = getNotificationSettings({ includeSecrets: true });
+  const nextDiscordWebhook = String(discord.webhook || "").trim() || current.discord.webhook || "";
+  const nextInstagramAccountId = String(instagram.accountId || "").trim() || current.instagram.accountId || "";
+  const nextInstagramToken = String(instagram.token || "").trim() || current.instagram.token || "";
+
+  const tx = db.transaction(() => {
+    setSettingValue("notif_discord_enabled", nextDiscordEnabled);
+    setSettingValue("notif_discord_template", nextDiscordTemplate);
+    setSettingValue("notif_discord_webhook", nextDiscordWebhook);
+    setSettingValue("notif_instagram_enabled", nextInstagramEnabled);
+    setSettingValue("notif_instagram_template", nextInstagramTemplate);
+    setSettingValue("notif_instagram_account_id", nextInstagramAccountId);
+    setSettingValue("notif_instagram_token", nextInstagramToken);
+  });
+  tx();
+
+  broadcast("SETTINGS_UPDATE", {
+    keys: [
+      "notif_discord_enabled",
+      "notif_discord_template",
+      "notif_discord_webhook",
+      "notif_instagram_enabled",
+      "notif_instagram_template",
+      "notif_instagram_account_id",
+      "notif_instagram_token"
+    ]
+  });
+  res.json({ ok: true, settings: getNotificationSettings({ includeSecrets: false }) });
+});
+
+app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) => {
+  const notificationSettings = getNotificationSettings({ includeSecrets: true });
+  const now = new Date().toISOString();
+  const payload = {
+    channelLogin: TWITCH_CHANNEL || "test_channel",
+    channelDisplayName: TWITCH_CHANNEL || "Test Channel",
+    title: "Test Stream Notification",
+    game: "Just Testing",
+    viewerCount: 42,
+    url: `https://twitch.tv/${TWITCH_CHANNEL || "test_channel"}`,
+    timestamp: now,
+    startedAt: now
+  };
+
+  const discordResult = await sendDiscordStreamStartNotification(payload, {
+    webhookUrl: notificationSettings.discord.webhook || DISCORD_WEBHOOK_URL,
+    mentionRoleId: DISCORD_MENTION_ROLE_ID,
+    template: notificationSettings.discord.template || NOTIFY_TEMPLATE_DISCORD,
+    enabled: notificationSettings.discord.enabled
+  }).catch((error) => ({ error: String(error?.message || error) }));
+
+  let instagramResult = { skipped: true, reason: "disabled" };
+  if (notificationSettings.instagram.enabled) {
+    instagramResult = await instagramIntegration
+      .publishStory(payload, {
+        businessAccountId: notificationSettings.instagram.accountId,
+        accessToken: notificationSettings.instagram.token,
+        template: notificationSettings.instagram.template || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate
+      })
+      .catch((error) => ({ error: String(error?.message || error) }));
+  }
+
+  const responseBody = {
+    ok: !discordResult?.error && !instagramResult?.error,
+    discord: {
+      sent: Boolean(discordResult?.ok),
+      reason: discordResult?.reason || null,
+      error: discordResult?.error || null
+    },
+    instagram: {
+      sent: Boolean(instagramResult && instagramResult.skipped === false),
+      reason: instagramResult?.reason || null,
+      error: instagramResult?.error || null
+    }
+  };
+  const status = responseBody.ok ? 200 : 502;
+  res.status(status).json(responseBody);
+});
+
 app.get("/api/twitch/custom-commands", requireAuth, (req, res) => {
   res.json(getCustomCommands());
 });
@@ -4043,7 +4587,7 @@ app.post("/api/overlay/hype/test", requireAuth, (req, res) => {
   });
 });
 
-app.use("/assets", express.static(path.join(__dirname, "..", "public")));
+app.use("/assets", express.static(PUBLIC_DIR));
 
 app.get("/dashboard", requireAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "dashboard.html"));
@@ -4235,6 +4779,12 @@ const stateBroadcastInterval = setInterval(() => {
   broadcastStateUpdate();
 }, 10000);
 
+const streamNotificationWatchInterval = setInterval(() => {
+  runStreamNotificationWatcher();
+}, STREAM_NOTIFICATION_WATCH_INTERVAL_MS);
+streamNotificationWatchInterval.unref?.();
+runStreamNotificationWatcher();
+
 async function startTwitchBot() {
   if (!twitchOauthToken && twitchRefreshToken && TWITCH_CLIENT_ID && TWITCH_CLIENT_SECRET) {
     await refreshTwitchAccessToken("startup");
@@ -4350,6 +4900,7 @@ function shutdown(signal) {
   clearInterval(voteInterval);
   clearInterval(retentionInterval);
   clearInterval(stateBroadcastInterval);
+  clearInterval(streamNotificationWatchInterval);
   if (twitchTokenRefreshTimer) {
     clearTimeout(twitchTokenRefreshTimer);
     twitchTokenRefreshTimer = null;

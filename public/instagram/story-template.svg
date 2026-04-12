@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1080" height="1920" viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4f46e5"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1080" height="1920" fill="url(#bg)"/>
+  <rect x="72" y="72" width="936" height="1776" rx="44" fill="rgba(15,23,42,0.35)" stroke="rgba(255,255,255,0.2)" stroke-width="3"/>
+  <text x="90" y="200" fill="#a5b4fc" font-size="48" font-family="Arial, Helvetica, sans-serif" font-weight="700">ERWIN</text>
+  <text x="90" y="290" fill="#ffffff" font-size="88" font-family="Arial, Helvetica, sans-serif" font-weight="800">LIVE ON TWITCH</text>
+  <text x="90" y="1760" fill="#cbd5e1" font-size="42" font-family="Arial, Helvetica, sans-serif">https://twitch.tv</text>
+</svg>

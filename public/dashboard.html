@@ -302,11 +302,16 @@
       <section class="tab-panel" data-tab-panel="settings">
         <div class="grid two">
           <div class="card" id="users-card">
-            <p id="channel-auth-status" class="notice">Channel auth: not connected</p>
             <h2>Admin Panel</h2>
-            <button id="connect-channel" class="twitch-action-button hidden" type="button">Connect Channel</button>
             <p id="users-status" class="notice">Checking permissions...</p>
             <div id="users-list" class="list hidden" style="margin-top: 16px;"></div>
+            <div id="oauth-logins-box" class="oauth-logins-box hidden">
+              <div class="section-title form-section-title">Account OAuth Logins</div>
+              <p id="channel-auth-status" class="notice">Twitch channel OAuth: not connected</p>
+              <button id="connect-channel" class="twitch-action-button" type="button">Connect Twitch Channel</button>
+              <p id="meta-auth-status" class="notice" style="margin-top: 12px;">Instagram/Meta OAuth: not connected</p>
+              <button id="connect-meta-instagram" class="secondary" type="button">Connect Instagram (Meta)</button>
+            </div>
           </div>
 
           <div class="card">
@@ -329,6 +334,40 @@
                 Templates support {command}, {summary}, {number}, {title}, {channel}, {track},
                 {winner}, and {max}.
               </p>
+              <div class="template-help form-section-title" aria-label="Template wildcard help">
+                <details class="template-help-item">
+                  <summary><code>{command}</code></summary>
+                  <p>The command text that triggered the response (for example <code>!vote</code>).</p>
+                </details>
+                <details class="template-help-item">
+                  <summary><code>{summary}</code></summary>
+                  <p>A short summary of the current vote results or state.</p>
+                </details>
+                <details class="template-help-item">
+                  <summary><code>{number}</code></summary>
+                  <p>The option number selected by a viewer.</p>
+                </details>
+                <details class="template-help-item">
+                  <summary><code>{title}</code></summary>
+                  <p>The track title that is currently being referenced.</p>
+                </details>
+                <details class="template-help-item">
+                  <summary><code>{channel}</code></summary>
+                  <p>The Twitch channel name where the message is posted.</p>
+                </details>
+                <details class="template-help-item">
+                  <summary><code>{track}</code></summary>
+                  <p>The formatted track label (typically artist and title).</p>
+                </details>
+                <details class="template-help-item">
+                  <summary><code>{winner}</code></summary>
+                  <p>The winning vote option and track when a vote closes.</p>
+                </details>
+                <details class="template-help-item">
+                  <summary><code>{max}</code></summary>
+                  <p>The highest option number available in the active vote.</p>
+                </details>
+              </div>
               <div>
                 <label for="settings-twitch-welcome">Welcome message</label>
                 <textarea id="settings-twitch-welcome" name="twitch-welcome" rows="2"></textarea>
@@ -376,6 +415,40 @@
               <button type="submit">Save Settings</button>
             </form>
             <p id="settings-status" class="notice" aria-live="polite"></p>
+            <div class="section-title form-section-title">Notifications</div>
+            <p class="notice form-section-title">
+              Configure Discord and Instagram notifications for stream alerts.
+            </p>
+            <form id="notifications-form" class="grid" method="post">
+              <div>
+                <label class="card-toggle" for="notifications-discord-enabled">
+                  <input id="notifications-discord-enabled" type="checkbox" />
+                  Enable Discord notifications
+                </label>
+              </div>
+              <div>
+                <label for="notifications-discord-webhook">Discord webhook URL</label>
+                <input id="notifications-discord-webhook" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/..." />
+              </div>
+              <div>
+                <label for="notifications-discord-template">Discord template</label>
+                <textarea id="notifications-discord-template" rows="3" placeholder="🔴 {channel} is live!&#10;{title}&#10;{game}&#10;{url}"></textarea>
+              </div>
+              <div>
+                <label class="card-toggle" for="notifications-instagram-enabled">
+                  <input id="notifications-instagram-enabled" type="checkbox" />
+                  Enable Instagram notifications
+                </label>
+              </div>
+              <p class="notice form-section-title">Instagram credentials are managed in Account OAuth Logins.</p>
+              <div>
+                <label for="notifications-instagram-template">Instagram template</label>
+                <textarea id="notifications-instagram-template" rows="3" placeholder="🔴 LIVE NOW&#10;{title}&#10;🎮 {game}&#10;{url}"></textarea>
+              </div>
+              <button type="submit">Save Notification Settings</button>
+              <button id="notifications-test-button" class="secondary" type="button">Send Test Notification</button>
+            </form>
+            <p id="notifications-status" class="notice" aria-live="polite"></p>
           </div>
         </div>
       </section>
