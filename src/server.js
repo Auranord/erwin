@@ -2407,8 +2407,7 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
       title: formatTemplate(embedTitleTemplate, templateValues).trim() || "Stream is live",
       url: payload.url || "https://twitch.tv",
       description:
-        formatTemplate(embedDescriptionTemplate, templateValues).trim() || "Category: Unknown",
-      timestamp: payload.startedAt || payload.timestamp || new Date().toISOString()
+        formatTemplate(embedDescriptionTemplate, templateValues).trim() || "Category: Unknown"
     };
     if (fields.length) {
       embed.fields = fields;
