@@ -46,6 +46,9 @@ const nowPlaying = document.getElementById("now-playing");
       const notificationsDiscordTemplate = document.getElementById("notifications-discord-template");
       const notificationsDiscordUsername = document.getElementById("notifications-discord-username");
       const notificationsDiscordAvatarUrl = document.getElementById("notifications-discord-avatar-url");
+      const notificationsDiscordButtonEnabled = document.getElementById("notifications-discord-button-enabled");
+      const notificationsDiscordButtonLabel = document.getElementById("notifications-discord-button-label");
+      const notificationsDiscordButtonUrlTemplate = document.getElementById("notifications-discord-button-url-template");
       const notificationsDiscordEmbedEnabled = document.getElementById("notifications-discord-embed-enabled");
       const notificationsDiscordEmbedColor = document.getElementById("notifications-discord-embed-color");
       const notificationsDiscordEmbedFooter = document.getElementById("notifications-discord-embed-footer");
@@ -216,6 +219,11 @@ const nowPlaying = document.getElementById("now-playing");
       const DEFAULT_NOTIFICATION_MESSAGES = {
         discord: "🔴 {channel} is live!\n{title}\n{game}\n{url}",
         instagram: "🔴 LIVE NOW\n{title}\n🎮 {game}\n{url}"
+      };
+      const DEFAULT_DISCORD_BUTTON_SETTINGS = {
+        enabled: false,
+        label: "Watch Stream",
+        urlTemplate: "https://twitch.tv/{{channel}}"
       };
       const DEFAULT_DISCORD_EMBED_SETTINGS = {
         enabled: true,
@@ -854,6 +862,13 @@ const nowPlaying = document.getElementById("now-playing");
         notificationsDiscordTemplate.value = settings.discord?.template || DEFAULT_NOTIFICATION_MESSAGES.discord;
         notificationsDiscordUsername.value = settings.discord?.username || "";
         notificationsDiscordAvatarUrl.value = settings.discord?.avatarUrl || "";
+        notificationsDiscordButtonEnabled.checked = Boolean(
+          settings.discord?.button?.enabled ?? DEFAULT_DISCORD_BUTTON_SETTINGS.enabled
+        );
+        notificationsDiscordButtonLabel.value =
+          settings.discord?.button?.label || DEFAULT_DISCORD_BUTTON_SETTINGS.label;
+        notificationsDiscordButtonUrlTemplate.value =
+          settings.discord?.button?.urlTemplate || DEFAULT_DISCORD_BUTTON_SETTINGS.urlTemplate;
         notificationsDiscordEmbedEnabled.checked = Boolean(
           settings.discord?.embed?.enabled ?? DEFAULT_DISCORD_EMBED_SETTINGS.enabled
         );
@@ -1760,6 +1775,12 @@ document.getElementById("logout").addEventListener("click", async () => {
               template: notificationsDiscordTemplate?.value || DEFAULT_NOTIFICATION_MESSAGES.discord,
               username: notificationsDiscordUsername?.value || "",
               avatarUrl: notificationsDiscordAvatarUrl?.value || "",
+              button: {
+                enabled: notificationsDiscordButtonEnabled?.checked ?? DEFAULT_DISCORD_BUTTON_SETTINGS.enabled,
+                label: notificationsDiscordButtonLabel?.value || DEFAULT_DISCORD_BUTTON_SETTINGS.label,
+                urlTemplate:
+                  notificationsDiscordButtonUrlTemplate?.value || DEFAULT_DISCORD_BUTTON_SETTINGS.urlTemplate
+              },
               embed: {
                 enabled: notificationsDiscordEmbedEnabled?.checked ?? DEFAULT_DISCORD_EMBED_SETTINGS.enabled,
                 color: notificationsDiscordEmbedColor?.value || DEFAULT_DISCORD_EMBED_SETTINGS.color,
