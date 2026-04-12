@@ -448,6 +448,47 @@
                 <p class="notice">Leave blank to use webhook defaults.</p>
               </div>
               <div>
+                <label class="card-toggle" for="notifications-discord-embed-enabled">
+                  <input id="notifications-discord-embed-enabled" type="checkbox" />
+                  Enable Discord embed
+                </label>
+                <p class="notice">Disable this to send only content from the Discord template.</p>
+              </div>
+              <div>
+                <label for="notifications-discord-embed-color">Discord embed color</label>
+                <input id="notifications-discord-embed-color" type="text" placeholder="#5865F2 or 5793266" />
+              </div>
+              <div>
+                <label for="notifications-discord-embed-footer">Discord embed footer text</label>
+                <input id="notifications-discord-embed-footer" type="text" maxlength="200" placeholder="Live alert powered by Erwin" />
+              </div>
+              <div>
+                <label class="card-toggle" for="notifications-discord-embed-show-channel">
+                  <input id="notifications-discord-embed-show-channel" type="checkbox" />
+                  Show Channel field
+                </label>
+              </div>
+              <div>
+                <label class="card-toggle" for="notifications-discord-embed-show-viewers">
+                  <input id="notifications-discord-embed-show-viewers" type="checkbox" />
+                  Show Viewers field
+                </label>
+              </div>
+              <div>
+                <label class="card-toggle" for="notifications-discord-embed-show-game">
+                  <input id="notifications-discord-embed-show-game" type="checkbox" />
+                  Show Game field
+                </label>
+              </div>
+              <div>
+                <label for="notifications-discord-embed-image-url-template">Discord embed image URL template</label>
+                <input id="notifications-discord-embed-image-url-template" type="text" placeholder="https://example.com/live/{channel}.png" />
+              </div>
+              <div>
+                <label for="notifications-discord-embed-thumbnail-url-template">Discord embed thumbnail URL template</label>
+                <input id="notifications-discord-embed-thumbnail-url-template" type="text" placeholder="https://example.com/thumbs/{channel}.png" />
+              </div>
+              <div>
                 <label class="card-toggle" for="notifications-instagram-enabled">
                   <input id="notifications-instagram-enabled" type="checkbox" />
                   Enable Instagram notifications
@@ -510,7 +551,7 @@
 
     <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
 
-    <script src="/assets/dashboard.js?v=20260315e"></script>
+    <script src="/assets/dashboard.js?v=20260412a"></script>
 
   </body>
 </html>
