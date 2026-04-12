@@ -95,6 +95,8 @@ const NOTIFY_TEMPLATE_DISCORD = envTrim(
   "NOTIFY_TEMPLATE_DISCORD",
   "🔴 {channel} is live!\n{title}\n{game}\n{url}"
 );
+const NOTIF_DISCORD_USERNAME = envTrim("NOTIF_DISCORD_USERNAME", "");
+const NOTIF_DISCORD_AVATAR_URL = envTrim("NOTIF_DISCORD_AVATAR_URL", "");
 const TWITCH_ADMINS = parseCsvSet(envTrim("TWITCH_ADMINS", ""));
 const TWITCH_CHANNEL_MEMBERS = parseCsvSet(envTrim("TWITCH_CHANNEL_MEMBERS", ""));
 const TWITCH_CHANNEL_MEMBERS_ROLE = envTrim("TWITCH_CHANNEL_MEMBERS_ROLE", "channel_member");
@@ -1252,13 +1254,17 @@ function maskSecret(value, { visibleStart = 3, visibleEnd = 2 } = {}) {
 
 function getNotificationSettings({ includeSecrets = false } = {}) {
   const discordWebhook = getSettingString("notif_discord_webhook", "");
+  const discordUsername = getSettingString("notif_discord_username", NOTIF_DISCORD_USERNAME);
+  const discordAvatarUrl = getSettingString("notif_discord_avatar_url", NOTIF_DISCORD_AVATAR_URL);
   const instagramAccountId = getSettingString("notif_instagram_account_id", "");
   const instagramToken = getSettingString("notif_instagram_token", "");
   const settings = {
     discord: {
       enabled: getSettingBoolean("notif_discord_enabled", NOTIFICATION_SETTINGS_DEFAULTS.discordEnabled),
       template: getSettingString("notif_discord_template", NOTIFICATION_SETTINGS_DEFAULTS.discordTemplate),
-      webhookMasked: maskSecret(discordWebhook, { visibleStart: 15, visibleEnd: 6 })
+      webhookMasked: maskSecret(discordWebhook, { visibleStart: 15, visibleEnd: 6 }),
+      username: discordUsername,
+      avatarUrl: discordAvatarUrl
     },
     instagram: {
       enabled: getSettingBoolean("notif_instagram_enabled", NOTIFICATION_SETTINGS_DEFAULTS.instagramEnabled),
@@ -2163,6 +2169,8 @@ function dispatchStreamLiveNotification(payload) {
     webhookUrl: notificationSettings.discord.webhook || DISCORD_WEBHOOK_URL,
     mentionRoleId: DISCORD_MENTION_ROLE_ID,
     template: notificationSettings.discord.template || NOTIFY_TEMPLATE_DISCORD,
+    username: notificationSettings.discord.username,
+    avatarUrl: notificationSettings.discord.avatarUrl,
     enabled: notificationSettings.discord.enabled
   })
     .then((result) => {
@@ -2220,6 +2228,8 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
   const webhookUrl = String(options.webhookUrl || "").trim() || DISCORD_STREAM_LIVE_WEBHOOK_URL;
   const mentionRoleId = String(options.mentionRoleId || "").trim() || DISCORD_MENTION_ROLE_ID;
   const template = String(options.template || "").trim() || NOTIFY_TEMPLATE_DISCORD;
+  const username = String(options.username || "").trim();
+  const avatarUrl = String(options.avatarUrl || "").trim();
   const enabled = options.enabled !== undefined ? Boolean(options.enabled) : true;
 
   if (!enabled) {
@@ -2242,8 +2252,6 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
   const content = [mentionPrefix, formattedContent].filter(Boolean).join("\n");
 
   const requestBody = {
-    username: "Erwin",
-    avatar_url: "https://static-cdn.jtvnw.net/jtv_user_pictures/xarth/404_user_70x70.png",
     content,
     embeds: [
       {
@@ -2258,6 +2266,8 @@ async function sendDiscordStreamStartNotification(payload, options = {}) {
       }
     ]
   };
+  if (username) requestBody.username = username;
+  if (avatarUrl) requestBody.avatar_url = avatarUrl;
 
   const maxAttempts = 3;
   let lastError = null;
@@ -4318,6 +4328,8 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
     String(discord.template || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.discordTemplate;
   const nextInstagramTemplate =
     String(instagram.template || "").trim() || NOTIFICATION_SETTINGS_DEFAULTS.instagramTemplate;
+  const nextDiscordUsername = String(discord.username || "").trim();
+  const nextDiscordAvatarUrl = String(discord.avatarUrl || "").trim();
 
   const current = getNotificationSettings({ includeSecrets: true });
   const nextDiscordWebhook = String(discord.webhook || "").trim() || current.discord.webhook || "";
@@ -4328,6 +4340,8 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
     setSettingValue("notif_discord_enabled", nextDiscordEnabled);
     setSettingValue("notif_discord_template", nextDiscordTemplate);
     setSettingValue("notif_discord_webhook", nextDiscordWebhook);
+    setSettingValue("notif_discord_username", nextDiscordUsername);
+    setSettingValue("notif_discord_avatar_url", nextDiscordAvatarUrl);
     setSettingValue("notif_instagram_enabled", nextInstagramEnabled);
     setSettingValue("notif_instagram_template", nextInstagramTemplate);
     setSettingValue("notif_instagram_account_id", nextInstagramAccountId);
@@ -4340,6 +4354,8 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
       "notif_discord_enabled",
       "notif_discord_template",
       "notif_discord_webhook",
+      "notif_discord_username",
+      "notif_discord_avatar_url",
       "notif_instagram_enabled",
       "notif_instagram_template",
       "notif_instagram_account_id",
@@ -4367,6 +4383,8 @@ app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) 
     webhookUrl: notificationSettings.discord.webhook || DISCORD_WEBHOOK_URL,
     mentionRoleId: DISCORD_MENTION_ROLE_ID,
     template: notificationSettings.discord.template || NOTIFY_TEMPLATE_DISCORD,
+    username: notificationSettings.discord.username,
+    avatarUrl: notificationSettings.discord.avatarUrl,
     enabled: notificationSettings.discord.enabled
   }).catch((error) => ({ error: String(error?.message || error) }));
 

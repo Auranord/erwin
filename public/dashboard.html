@@ -438,6 +438,16 @@
                 <textarea id="notifications-discord-template" rows="3" placeholder="🔴 {channel} is live!&#10;{title}&#10;{game}&#10;{url}"></textarea>
               </div>
               <div>
+                <label for="notifications-discord-username">Discord username override</label>
+                <input id="notifications-discord-username" type="text" maxlength="80" placeholder="Erwin Alerts" />
+                <p class="notice">Leave blank to use webhook defaults.</p>
+              </div>
+              <div>
+                <label for="notifications-discord-avatar-url">Discord avatar URL override</label>
+                <input id="notifications-discord-avatar-url" type="url" placeholder="https://example.com/avatar.png" />
+                <p class="notice">Leave blank to use webhook defaults.</p>
+              </div>
+              <div>
                 <label class="card-toggle" for="notifications-instagram-enabled">
                   <input id="notifications-instagram-enabled" type="checkbox" />
                   Enable Instagram notifications

@@ -44,6 +44,8 @@ const nowPlaying = document.getElementById("now-playing");
       const notificationsDiscordEnabled = document.getElementById("notifications-discord-enabled");
       const notificationsDiscordWebhook = document.getElementById("notifications-discord-webhook");
       const notificationsDiscordTemplate = document.getElementById("notifications-discord-template");
+      const notificationsDiscordUsername = document.getElementById("notifications-discord-username");
+      const notificationsDiscordAvatarUrl = document.getElementById("notifications-discord-avatar-url");
       const notificationsInstagramEnabled = document.getElementById("notifications-instagram-enabled");
       const notificationsInstagramTemplate = document.getElementById("notifications-instagram-template");
       const themeToggle = document.getElementById("theme-toggle");
@@ -828,6 +830,8 @@ const nowPlaying = document.getElementById("now-playing");
         notificationsDiscordWebhook.value = "";
         notificationsDiscordWebhook.placeholder = settings.discord?.webhookMasked || "";
         notificationsDiscordTemplate.value = settings.discord?.template || DEFAULT_NOTIFICATION_MESSAGES.discord;
+        notificationsDiscordUsername.value = settings.discord?.username || "";
+        notificationsDiscordAvatarUrl.value = settings.discord?.avatarUrl || "";
         notificationsInstagramEnabled.checked = Boolean(settings.instagram?.enabled);
         notificationsInstagramTemplate.value = settings.instagram?.template || DEFAULT_NOTIFICATION_MESSAGES.instagram;
       }
@@ -1712,7 +1716,9 @@ document.getElementById("logout").addEventListener("click", async () => {
             discord: {
               enabled: notificationsDiscordEnabled?.checked,
               webhook: notificationsDiscordWebhook?.value || "",
-              template: notificationsDiscordTemplate?.value || DEFAULT_NOTIFICATION_MESSAGES.discord
+              template: notificationsDiscordTemplate?.value || DEFAULT_NOTIFICATION_MESSAGES.discord,
+              username: notificationsDiscordUsername?.value || "",
+              avatarUrl: notificationsDiscordAvatarUrl?.value || ""
             },
             instagram: {
               enabled: notificationsInstagramEnabled?.checked,
