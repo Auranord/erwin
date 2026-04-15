@@ -67,6 +67,7 @@ const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = envTrim("SESSION_SECRET", "erwin-dev-secret");
 const DB_URL = envTrim("DB_URL", "./data/erwin.sqlite");
 const AUDIO_DIR = envTrim("ERWIN_AUDIO_DIR", "./data/audio");
+const NOTIFICATION_UPLOAD_DIR = envTrim("ERWIN_NOTIFICATION_UPLOAD_DIR", "/data/notifications");
 const LOG_LEVEL = envTrim("LOG_LEVEL", "info");
 const YTDL_COOKIE_FILE = envTrim("ERWIN_YTDL_COOKIE_FILE", "/app/data/youtube.cookie");
 const YTDL_COOKIE = envTrim("ERWIN_YTDL_COOKIE", "");
@@ -2329,7 +2330,6 @@ function formatUrlTemplate(template, values) {
 }
 
 const NOTIFICATION_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
-const NOTIFICATION_UPLOAD_DIR = path.join(PUBLIC_DIR, "uploads", "notifications");
 const ALLOWED_NOTIFICATION_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 function buildPublicBaseUrl(req) {
@@ -4904,6 +4904,7 @@ app.post("/api/overlay/hype/test", requireAuth, (req, res) => {
   });
 });
 
+app.use("/assets/uploads/notifications", express.static(NOTIFICATION_UPLOAD_DIR));
 app.use("/assets", express.static(PUBLIC_DIR));
 
 app.get("/dashboard", requireAuth, (req, res) => {
