@@ -269,7 +269,7 @@ All routes require authentication.
 - `ERWIN_DOWNLOAD_CONCURRENCY` (default 1)
 - `ERWIN_AUDIO_RETENTION_DAYS` (default 0, disabled)
 - `ERWIN_AUDIO_RETENTION_MAX_GB` (default 0, disabled)
-- `ERWIN_NOTIFICATION_UPLOAD_DIR` (default `/data/notifications`)
+- `ERWIN_NOTIFICATION_UPLOAD_DIR` (default `/app/data`)
 
 ### YouTube / yt-dlp integration
 - `ERWIN_YTDL_COOKIE` (default empty)
