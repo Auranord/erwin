@@ -63,6 +63,10 @@ OAuth callback errors are redirected to `/login?error=<code>`.
 - `ERWIN_AUDIO_RETENTION_DAYS`
 - `ERWIN_AUDIO_RETENTION_MAX_GB`
 
+### Notification assets
+
+- `ERWIN_NOTIFICATION_UPLOAD_DIR` (default: `/data/notifications`)
+
 ## Roles
 
 Resolved in this order:
