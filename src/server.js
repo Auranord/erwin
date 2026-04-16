@@ -67,7 +67,10 @@ const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = envTrim("SESSION_SECRET", "erwin-dev-secret");
 const DB_URL = envTrim("DB_URL", "./data/erwin.sqlite");
 const AUDIO_DIR = envTrim("ERWIN_AUDIO_DIR", "./data/audio");
-const NOTIFICATION_UPLOAD_DIR = envTrim("ERWIN_NOTIFICATION_UPLOAD_DIR", "/app/data");
+const NOTIFICATION_UPLOAD_DIR = envTrim(
+  "ERWIN_NOTIFICATION_UPLOAD_DIR",
+  "/app/data/assets/uploads/notifications"
+);
 const LOG_LEVEL = envTrim("LOG_LEVEL", "info");
 const YTDL_COOKIE_FILE = envTrim("ERWIN_YTDL_COOKIE_FILE", "/app/data/youtube.cookie");
 const YTDL_COOKIE = envTrim("ERWIN_YTDL_COOKIE", "");

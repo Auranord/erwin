@@ -23,7 +23,7 @@ services:
       TWITCH_OAUTH_TOKEN: ${TWITCH_OAUTH_TOKEN:-oauth:token}
       TWITCH_IRC_HOST: ${TWITCH_IRC_HOST:-raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com}
       ERWIN_YTDL_COOKIE_FILE: ${ERWIN_YTDL_COOKIE_FILE:-/app/data/youtube.cookie}
-      ERWIN_NOTIFICATION_UPLOAD_DIR: ${ERWIN_NOTIFICATION_UPLOAD_DIR:-/app/data}
+      ERWIN_NOTIFICATION_UPLOAD_DIR: ${ERWIN_NOTIFICATION_UPLOAD_DIR:-/app/data/assets/uploads/notifications}
       ERWIN_YTDL_COOKIE: ${ERWIN_YTDL_COOKIE:-}
       ERWIN_YTDL_JS_RUNTIME: ${ERWIN_YTDL_JS_RUNTIME:-node:/usr/local/bin/node}
       ERWIN_YTDL_REMOTE_COMPONENTS: ${ERWIN_YTDL_REMOTE_COMPONENTS:-ejs:github}

@@ -65,7 +65,7 @@ OAuth callback errors are redirected to `/login?error=<code>`.
 
 ### Notification assets
 
-- `ERWIN_NOTIFICATION_UPLOAD_DIR` (default: `/app/data`)
+- `ERWIN_NOTIFICATION_UPLOAD_DIR` (default: `/app/data/assets/uploads/notifications`)
 
 ## Roles
 
