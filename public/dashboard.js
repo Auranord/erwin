@@ -110,6 +110,86 @@ const nowPlaying = document.getElementById("now-playing");
       const hypeExtensionRatioInput = document.getElementById("hype-extension-ratio");
       const hypeUserCooldownSecondsInput = document.getElementById("hype-user-cooldown-seconds");
       let currentUser = null;
+      const tabLinks = Array.from(document.querySelectorAll(".tab-link"));
+      const playerDashboardCard = document.getElementById("player-dashboard-card");
+      const votingCard = document.getElementById("voting-card");
+      const downloadTracksCard = document.getElementById("download-tracks-card");
+      function canAccessDashboardFeatures() {
+        return Boolean(currentUser?.role && currentUser.role !== "viewer");
+      }
+      function canEditSettings() {
+        return Boolean(currentUser?.isAdmin || currentUser?.isChannelMember);
+      }
+      function canManageLibrary() {
+        return canAccessDashboardFeatures();
+      }
+      function canManageNotifications() {
+        return canEditSettings();
+      }
+      function canImportOrExportLibrary() {
+        return Boolean(currentUser?.isAdmin);
+      }
+      function canDownloadTracks() {
+        return Boolean(currentUser?.isAdmin || currentUser?.isChannelMember);
+      }
+      function canDeleteLibraryTracks() {
+        return Boolean(currentUser?.isAdmin || currentUser?.isChannelMember);
+      }
+      function canStartVotes() {
+        return Boolean(currentUser?.role && currentUser.role !== "guest");
+      }
+      function canControlPlayback() {
+        return Boolean(currentUser?.role && currentUser.role !== "guest");
+      }
+      function canManagePool() {
+        return canControlPlayback();
+      }
+      function canEnqueueTracks() {
+        return canControlPlayback();
+      }
+      function applyRoleBasedVisibility() {
+        const role = currentUser?.role || "viewer";
+        const hiddenTabs = new Set();
+        if (role === "guest") {
+          hiddenTabs.add("overlay");
+          hiddenTabs.add("playlists");
+          hiddenTabs.add("track-manager");
+          hiddenTabs.add("chat");
+          hiddenTabs.add("custom-commands");
+          hiddenTabs.add("settings");
+          votingCard?.classList.remove("hidden");
+          startVoteButton.disabled = true;
+          autoVoteToggle.disabled = true;
+        } else {
+          votingCard?.classList.remove("hidden");
+          startVoteButton.disabled = !canStartVotes();
+          autoVoteToggle.disabled = !canEditSettings();
+        }
+        if (role === "mod") {
+          hiddenTabs.add("settings");
+        }
+        tabLinks.forEach((link) => {
+          const tab = link.dataset.tab;
+          const shouldHide = hiddenTabs.has(tab);
+          link.classList.toggle("hidden", shouldHide);
+        });
+        if (hiddenTabs.has("settings")) {
+          document.querySelector('[data-tab-panel="settings"]')?.classList.add("hidden");
+        } else {
+          document.querySelector('[data-tab-panel="settings"]')?.classList.remove("hidden");
+        }
+        if (role === "guest") {
+          document.querySelectorAll(".tab-panel").forEach((panel) => {
+            const isPlayerPanel = panel.dataset.tabPanel === "player";
+            panel.classList.toggle("active", isPlayerPanel);
+          });
+          document.querySelectorAll(".tab-link").forEach((tab) => {
+            tab.classList.toggle("active", tab.dataset.tab === "player");
+          });
+          playerDashboardCard?.classList.remove("hidden");
+        }
+        downloadTracksCard?.classList.toggle("hidden", !canDownloadTracks());
+      }
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
       let libraryTracksCache = [];
@@ -375,13 +455,20 @@ const nowPlaying = document.getElementById("now-playing");
             const poolAction = inPool ? "pool-remove" : "pool-add";
             const poolLabel = inPool ? "Remove from pool" : "Add to pool";
             const poolIcon = iconHtml(inPool ? "poolRemove" : "poolAdd");
+            const enqueueDisabled = !canEnqueueTracks();
+            const poolActionDisabled = actionDisabled(poolAction);
+            function actionDisabled(itemAction) {
+              if (itemAction === "enqueue") return !canEnqueueTracks();
+              if (itemAction === "pool-remove" || itemAction === "pool-add") return !canManagePool();
+              return false;
+            }
             return `<div class="list-item draggable-item ${disabled ? "disabled" : ""}" draggable="true" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
                   <div style="display: flex; gap: 8px; align-items: center;"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${label} ${disabledLabel}</div>
                 </div>
                 <div class="actions">
-                  <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">${iconHtml("enqueue")}</button>
-                  <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
+                  <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end" ${enqueueDisabled ? "disabled" : ""}>${iconHtml("enqueue")}</button>
+                  <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}" ${poolActionDisabled ? "disabled" : ""}>${poolIcon}</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${iconHtml(disabled ? "enable" : "disable")}</button>
                   <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">${iconHtml("delete")}</button>
                 </div>
@@ -496,15 +583,33 @@ const nowPlaying = document.getElementById("now-playing");
           usersList.innerHTML = '<div class="list-item">No users found.</div>';
           return;
         }
+        const canManageAsAdmin = currentUser?.role === "admin";
+        const canManageAsChannelMember = currentUser?.role === "channel_member";
+        const assignableRoles = canManageAsAdmin
+          ? ["admin", "channel_member", "viewer", "mod", "guest"]
+          : canManageAsChannelMember
+            ? ["viewer", "mod", "guest"]
+            : [];
         usersList.innerHTML = users
           .map((user) => {
-            const adminBadge = `<span class="badge">${user.role || "viewer"}</span>`;
-            const adminLocked = `<button class="ghost" data-action="user-delete">Delete</button>`;
+            const roleValue = user.role || "viewer";
+            const roleControl = assignableRoles.length
+              ? `<label class="sr-only" for="role-${user.id}">Role</label>
+                 <select id="role-${user.id}" data-action="user-role" ${user.id === currentUser?.id && !canManageAsAdmin ? "disabled" : ""}>
+                   ${assignableRoles
+                     .map((role) => `<option value="${role}" ${role === roleValue ? "selected" : ""}>${role}</option>`)
+                     .join("")}
+                 </select>
+                 <button class="ghost" data-action="user-role-save">Save</button>`
+              : `<span class="badge">${roleValue}</span>`;
+            const adminLocked = canManageAsAdmin
+              ? `<button class="ghost" data-action="user-delete">Delete</button>`
+              : "";
             return `
               <div class="list-item" data-user-id="${user.id}" data-username="${user.username}" data-role="${user.role || "viewer"}">
                 <span>${user.username}</span>
                 <div class="actions">
-                  ${adminBadge}
+                  ${roleControl}
                   ${adminLocked}
                 </div>
               </div>`;
@@ -527,23 +632,22 @@ const nowPlaying = document.getElementById("now-playing");
         currentUser = await response.json();
         localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
         currentUserBadge.textContent = `${currentUser.username || "guest"} • ${currentUser.role || "viewer"}`;
-        if (!currentUser.isAdmin) {
-          usersCard.classList.add("hidden");
-          if (libraryManagementCard) libraryManagementCard.classList.add("hidden");
-          notificationsForm?.classList.add("hidden");
-          notificationsStatus?.classList.add("hidden");
-        } else {
-          usersCard.classList.remove("hidden");
-          oauthLoginsBox?.classList.remove("hidden");
-          if (libraryManagementCard) libraryManagementCard.classList.remove("hidden");
-          notificationsForm?.classList.remove("hidden");
-          notificationsStatus?.classList.remove("hidden");
+        const canManageUsers = currentUser.isAdmin || currentUser.isChannelMember;
+        usersCard.classList.toggle("hidden", !canManageUsers);
+        oauthLoginsBox?.classList.toggle("hidden", !currentUser.isAdmin);
+        if (libraryManagementCard) {
+          libraryManagementCard.classList.toggle("hidden", !canManageLibrary());
         }
+        notificationsForm?.classList.toggle("hidden", !canManageNotifications());
+        notificationsStatus?.classList.toggle("hidden", !canManageNotifications());
+        exportLibraryJsonButton?.classList.toggle("hidden", !canImportOrExportLibrary());
+        importLibraryJsonButton?.classList.toggle("hidden", !canImportOrExportLibrary());
+        applyRoleBasedVisibility();
         return currentUser;
       }
 
       async function fetchUsers() {
-        if (!currentUser?.isAdmin) {
+        if (!currentUser?.isAdmin && !currentUser?.isChannelMember) {
           usersStatus.textContent = "Not permitted.";
           usersList.classList.add("hidden");
           connectChannelButton.classList.add("hidden");
@@ -552,8 +656,8 @@ const nowPlaying = document.getElementById("now-playing");
         }
         usersStatus.textContent = "";
         usersList.classList.remove("hidden");
-        connectChannelButton.classList.remove("hidden");
-        connectMetaInstagramButton?.classList.remove("hidden");
+        connectChannelButton.classList.toggle("hidden", !currentUser?.isAdmin);
+        connectMetaInstagramButton?.classList.toggle("hidden", !currentUser?.isAdmin);
         const response = await fetch("/api/users");
         if (!response.ok) {
           usersStatus.textContent = "Failed to load users.";
@@ -561,11 +665,33 @@ const nowPlaying = document.getElementById("now-playing");
         }
         const users = await response.json();
         renderUsers(users);
-        fetchChannelAuthStatus();
-        fetchMetaAuthStatus();
+        if (currentUser?.isAdmin) {
+          fetchChannelAuthStatus();
+          fetchMetaAuthStatus();
+        }
       }
 
       usersList.addEventListener("click", async (event) => {
+        const saveButton = event.target.closest("button[data-action='user-role-save']");
+        if (saveButton) {
+          const row = saveButton.closest("[data-user-id]");
+          const select = row?.querySelector("select[data-action='user-role']");
+          if (!row || !select) return;
+          const userId = row.dataset.userId;
+          const response = await fetch(`/api/users/${userId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role: select.value })
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            usersStatus.textContent = payload.error || "Failed to update role.";
+            return;
+          }
+          usersStatus.textContent = "Role updated.";
+          fetchUsers();
+          return;
+        }
         const button = event.target.closest("button[data-action='user-delete']");
         if (!button) return;
         const row = button.closest("[data-user-id]");
@@ -720,8 +846,8 @@ const nowPlaying = document.getElementById("now-playing");
               `<div class="list-item" data-track-id="${item.track_id}">
                 <span>${item.title || item.track_id}</span>
                 <div class="actions">
-                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track">${iconHtml("enqueue")}</button>
-                  <button class="ghost icon-only" data-action="pool-remove" title="Remove from pool" aria-label="Remove from pool">${iconHtml("delete")}</button>
+                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track" ${!canEnqueueTracks() ? "disabled" : ""}>${iconHtml("enqueue")}</button>
+                  <button class="ghost icon-only" data-action="pool-remove" title="Remove from pool" aria-label="Remove from pool" ${!canManagePool() ? "disabled" : ""}>${iconHtml("delete")}</button>
                 </div>
               </div>`
           )
@@ -818,6 +944,7 @@ const nowPlaying = document.getElementById("now-playing");
       }
 
       async function fetchSettings() {
+        if (!canEditSettings()) return;
         const response = await fetch("/api/settings");
         if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
@@ -856,13 +983,13 @@ const nowPlaying = document.getElementById("now-playing");
           hypeExtensionRatioInput.value = Number(settings.overlay_hype_extension_ratio ?? HYPE_DEFAULTS.extensionRatio);
           hypeUserCooldownSecondsInput.value = Number(settings.overlay_hype_user_cooldown_seconds ?? HYPE_DEFAULTS.userCooldownSeconds);
         }
-        if (currentUser?.isAdmin) {
+        if (canManageNotifications()) {
           fetchNotificationSettings();
         }
       }
 
       async function fetchNotificationSettings() {
-        if (!currentUser?.isAdmin) return;
+        if (!canManageNotifications()) return;
         const response = await fetch("/api/notifications/settings");
         if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) {
@@ -1148,7 +1275,7 @@ const nowPlaying = document.getElementById("now-playing");
                 <button class="secondary icon-only" data-action="library-trim" title="Set intro/outro" aria-label="Set intro/outro">${iconHtml("trim")}</button>
                 ${currentUser?.role === "admin" ? `<button class="secondary icon-only" data-action="library-calibrate-score" title="Calibrate score" aria-label="Calibrate score">${iconHtml("score")}</button>` : ""}
                 <button class="secondary icon-only" data-action="library-add-playlist" title="Add to playlists" aria-label="Add to playlists">${iconHtml("playlistAdd")}</button>
-                <button class="ghost icon-only" data-action="library-delete" title="Delete" aria-label="Delete">${iconHtml("delete")}</button>
+                ${canDeleteLibraryTracks() ? `<button class="ghost icon-only" data-action="library-delete" title="Delete" aria-label="Delete">${iconHtml("delete")}</button>` : ""}
               </td>
             </tr>`;
           })
@@ -1156,7 +1283,7 @@ const nowPlaying = document.getElementById("now-playing");
 
         libraryTracksEl.innerHTML = `<table class="library-table"><thead><tr>${headerHtml}<th>Actions</th></tr></thead><tbody>${rowsHtml}</tbody></table>`;
       }
-async function fetchDownloads() {
+      async function fetchDownloads() {
         const response = await fetch("/api/downloads");
         if (!response.ok) return;
         const downloads = await response.json();
@@ -1169,7 +1296,10 @@ async function fetchDownloads() {
             const label = item.title || item.youtube_id;
             const status = item.status;
             const details = item.error ? ` - ${item.error}` : "";
-            return `<div class="list-item"><span>${label} (${item.playlist_name || "Library"})${details}</span><span class="badge">${status}</span></div>`;
+            const canAbort = ["pending", "failed", "waiting", "blocked"].includes(
+              String(status || "").toLowerCase()
+            );
+            return `<div class="list-item"><span>${label} (${item.playlist_name || "Library"})${details}</span><span class="actions"><span class="badge">${status}</span>${canAbort ? `<button class="ghost" data-action="download-abort" data-download-id="${item.id}" type="button">Abort</button>` : ""}</span></div>`;
           })
           .join("");
       }
@@ -1234,6 +1364,8 @@ async function fetchDownloads() {
         const trackId = wrapper?.dataset.trackId;
         const isDisabled = wrapper?.dataset.trackDisabled === "true";
         if (!trackId || !selectedPlaylistId) return;
+        if (action === "enqueue" && !canEnqueueTracks()) return;
+        if ((action === "pool-add" || action === "pool-remove") && !canManagePool()) return;
         if (action === "enqueue") {
           await fetch("/api/queue/enqueue", {
             method: "POST",
@@ -1357,6 +1489,8 @@ async function fetchDownloads() {
         const wrapper = button.closest(".list-item");
         const trackId = wrapper?.dataset.trackId;
         if (!trackId) return;
+        if (action === "pool-enqueue" && !canEnqueueTracks()) return;
+        if (action === "pool-remove" && !canManagePool()) return;
         if (action === "pool-enqueue") {
           await fetch("/api/pool/enqueue", {
             method: "POST",
@@ -1514,6 +1648,7 @@ async function fetchDownloads() {
       });
 
       startVoteButton.addEventListener("click", async () => {
+        if (!canStartVotes()) return;
         await fetch("/api/votes/start", { method: "POST" });
         fetchActiveVote();
       });
@@ -1537,6 +1672,7 @@ async function fetchDownloads() {
 
       trackForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!canDownloadTracks()) return;
         const playlistId = trackForm["track-playlist"].value;
         const url = trackForm["track-url"].value;
         if (!url) return;
@@ -1627,6 +1763,7 @@ async function fetchDownloads() {
           return;
         }
         if (action === "library-delete") {
+          if (!canDeleteLibraryTracks()) return;
           if (window.confirm("Delete track from library and all playlists?")) {
             await fetch(`/api/library/tracks/${trackId}`, { method: "DELETE" });
           }
@@ -1710,16 +1847,19 @@ async function fetchDownloads() {
       });
 
       exportLibraryJsonButton.addEventListener("click", () => {
+        if (!canImportOrExportLibrary()) return;
         const a = document.createElement("a");
         a.href = "/api/library/export";
         a.click();
       });
 
       importLibraryJsonButton.addEventListener("click", () => {
+        if (!canImportOrExportLibrary()) return;
         libraryImportFile.click();
       });
 
       libraryImportFile.addEventListener("change", async () => {
+        if (!canImportOrExportLibrary()) return;
         const file = libraryImportFile.files?.[0];
         if (!file) return;
         if (libraryImportStatus) {
@@ -1781,7 +1921,21 @@ document.getElementById("logout").addEventListener("click", async () => {
         fetchDownloads();
       });
 
+      downloadQueueEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action='download-abort']");
+        if (!button) return;
+        const downloadId = button.dataset.downloadId;
+        if (!downloadId) return;
+        const response = await fetch(`/api/downloads/${downloadId}/abort`, { method: "POST" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          window.alert(payload.error || "Unable to abort download.");
+        }
+        fetchDownloads();
+      });
+
       autoVoteToggle.addEventListener("change", async () => {
+        if (!canEditSettings()) return;
         await fetch("/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1791,6 +1945,7 @@ document.getElementById("logout").addEventListener("click", async () => {
 
       settingsForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!canEditSettings()) return;
         settingsStatus.textContent = "Saving...";
         await fetch("/api/settings", {
           method: "PUT",
@@ -1821,7 +1976,7 @@ document.getElementById("logout").addEventListener("click", async () => {
 
       notificationsForm?.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!currentUser?.isAdmin) return;
+        if (!canManageNotifications()) return;
         if (notificationsStatus) notificationsStatus.textContent = "Saving notification settings...";
         const response = await fetch("/api/notifications/settings", {
           method: "PUT",
@@ -1903,7 +2058,7 @@ document.getElementById("logout").addEventListener("click", async () => {
       });
 
       notificationsTestButton?.addEventListener("click", async () => {
-        if (!currentUser?.isAdmin) return;
+        if (!canManageNotifications()) return;
         if (notificationsStatus) notificationsStatus.textContent = "Sending test notification...";
         const response = await fetch("/api/notifications/test", {
           method: "POST",
@@ -2017,7 +2172,7 @@ document.getElementById("logout").addEventListener("click", async () => {
           return;
         }
         if (message.event === "SETTINGS_UPDATE") {
-          fetchSettings();
+          if (canEditSettings()) fetchSettings();
           return;
         }
         if (message.event === "TWITCH_COMMANDS_UPDATE") {
@@ -2065,7 +2220,9 @@ document.getElementById("logout").addEventListener("click", async () => {
         fetchPlaylists();
         fetchDownloads();
         fetchLibraryTracks();
-        fetchSettings();
+        if (canEditSettings()) {
+          fetchSettings();
+        }
         fetchActiveVote();
         fetchPool();
         fetchCustomCommands();

@@ -21,12 +21,10 @@ OAuth callback errors are redirected to `/login?error=<code>`.
 - `TWITCH_CLIENT_SECRET`
 - `TWITCH_CHANNEL`
 
-### Optional Twitch auth/role variables
+### Optional Twitch auth variable
 
 - `TWITCH_REDIRECT_URI` (explicit callback URI override)
-- `TWITCH_ADMINS` (comma-separated Twitch logins and/or IDs)
-- `TWITCH_CHANNEL_MEMBERS` (comma-separated Twitch logins and/or IDs)
-- `TWITCH_CHANNEL_MEMBERS_ROLE` (default: `channel_member`)
+- `TWITCH_BOOTSTRAP_ADMIN` (single Twitch login or Twitch ID that is forced to `admin`)
 
 ### Existing Twitch bot variables
 
@@ -69,15 +67,15 @@ OAuth callback errors are redirected to `/login?error=<code>`.
 
 ## Roles
 
-Resolved in this order:
+Users are only created through Twitch OAuth login.
 
-1. `admin` (from `TWITCH_ADMINS`)
-2. `channel_member` (from `TWITCH_CHANNEL_MEMBERS`)
-3. `mod` (Twitch moderator lookup)
-4. `vip` (Twitch VIP lookup)
-5. `viewer` (default)
+Default role behavior:
 
-`admin` has full access. `channel_member` has broad dashboard access. `mod`/`vip`/`viewer` are currently routed to `/dashboard/public`.
+1. If Twitch login/ID matches `TWITCH_BOOTSTRAP_ADMIN`, role is `admin`.
+2. Otherwise, new users default to `viewer`.
+3. Existing users keep their role from the DB and are managed in the dashboard admin panel.
+
+`admin` has full access. `channel_member` can access dashboard + user management and can assign only `viewer`, `mod`, and `guest`. New `mod` and `guest` roles currently have no additional privileges.
 
 ## OAuth callback troubleshooting (`/login?error=...`)
 

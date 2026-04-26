@@ -54,15 +54,6 @@ function envTrim(name, fallback = "") {
   return String(raw).trim();
 }
 
-function parseCsvSet(value) {
-  return new Set(
-    String(value || "")
-      .split(",")
-      .map((entry) => entry.trim().toLowerCase())
-      .filter(Boolean)
-  );
-}
-
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = envTrim("SESSION_SECRET", "erwin-dev-secret");
 const DB_URL = envTrim("DB_URL", "./data/erwin.sqlite");
@@ -101,9 +92,7 @@ const NOTIFY_TEMPLATE_DISCORD = envTrim(
 );
 const NOTIF_DISCORD_USERNAME = envTrim("NOTIF_DISCORD_USERNAME", "");
 const NOTIF_DISCORD_AVATAR_URL = envTrim("NOTIF_DISCORD_AVATAR_URL", "");
-const TWITCH_ADMINS = parseCsvSet(envTrim("TWITCH_ADMINS", ""));
-const TWITCH_CHANNEL_MEMBERS = parseCsvSet(envTrim("TWITCH_CHANNEL_MEMBERS", ""));
-const TWITCH_CHANNEL_MEMBERS_ROLE = envTrim("TWITCH_CHANNEL_MEMBERS_ROLE", "channel_member");
+const TWITCH_BOOTSTRAP_ADMIN = envTrim("TWITCH_BOOTSTRAP_ADMIN", "");
 const TWITCH_IRC_HOST =
   envTrim("TWITCH_IRC_HOST", "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com");
 const DOWNLOAD_CONCURRENCY = Math.max(
@@ -441,6 +430,8 @@ function initDb() {
     db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
   }
   db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_twitch_id ON users(twitch_id)").run();
+  db.prepare("UPDATE users SET role = ? WHERE role = ?").run("mod", "mods");
+  db.prepare("UPDATE users SET role = ? WHERE role = ?").run("viewer", "vip");
 
   const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
   const hasPausedAt = playStateColumns.some((column) => column.name === "paused_at_ms");
@@ -805,8 +796,48 @@ function isChannelMemberUser(user) {
   return user?.role === "channel_member";
 }
 
-function hasDashboardAccess(user) {
+function isGuestUser(user) {
+  return user?.role === "guest";
+}
+
+function canManageUsers(user) {
   return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function hasDashboardAccess(user) {
+  return Boolean(user) && user.role !== "viewer";
+}
+
+function canEditSettings(user) {
+  return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function canManageLibraryDownloads(user) {
+  return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function canDeleteLibraryTracks(user) {
+  return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function canStartVotes(user) {
+  return !isGuestUser(user);
+}
+
+function canControlPlayback(user) {
+  return !isGuestUser(user);
+}
+
+function canManagePool(user) {
+  return !isGuestUser(user);
+}
+
+function canEnqueueTracks(user) {
+  return !isGuestUser(user);
+}
+
+function canSubmitScoreFeedback(user) {
+  return !isGuestUser(user);
 }
 
 function requireAuth(req, res, next) {
@@ -838,6 +869,20 @@ function requireAdmin(req, res, next) {
     return next();
   }
   res.status(403).json({ error: "Forbidden" });
+}
+
+function requireUserManager(req, res, next) {
+  if (canManageUsers(req.session?.user)) {
+    return next();
+  }
+  res.status(403).json({ error: "Forbidden" });
+}
+
+function requireSettingsEditor(req, res, next) {
+  if (canEditSettings(req.session?.user)) {
+    return next();
+  }
+  return res.status(403).json({ error: "Forbidden" });
 }
 
 function parseYouTubeId(input) {
@@ -2932,19 +2977,13 @@ const META_CALLBACK_ERROR_MESSAGES = {
   meta_login_failed: "Meta login failed. Please try again."
 };
 
-function getUserRole({ login, twitchId, isModerator = false, isVip = false }) {
+function resolveBootstrapAdminRole({ login, twitchId }) {
+  const configured = TWITCH_BOOTSTRAP_ADMIN.trim().toLowerCase();
+  if (!configured) return null;
   const normalizedLogin = String(login || "").trim().toLowerCase();
   const normalizedId = String(twitchId || "").trim().toLowerCase();
-  const inAdmins = TWITCH_ADMINS.has(normalizedLogin) || TWITCH_ADMINS.has(normalizedId);
-  const inMembers =
-    TWITCH_CHANNEL_MEMBERS.has(normalizedLogin) || TWITCH_CHANNEL_MEMBERS.has(normalizedId);
-  if (inAdmins) return "admin";
-  if (inMembers) {
-    return TWITCH_CHANNEL_MEMBERS_ROLE === "admin" ? "admin" : "channel_member";
-  }
-  if (isModerator) return "mod";
-  if (isVip) return "vip";
-  return "viewer";
+  if (configured === normalizedLogin || configured === normalizedId) return "admin";
+  return null;
 }
 
 function resolveTwitchRedirectUri(req) {
@@ -3027,59 +3066,6 @@ async function fetchTwitchUser(accessToken) {
   }
   const payload = await response.json();
   return payload?.data?.[0] || null;
-}
-
-async function fetchMembershipFlags({ accessToken, channelLogin, userId }) {
-  if (!channelLogin || !userId) return { isModerator: false, isVip: false };
-  try {
-    const broadcasterResponse = await fetch(
-      `https://api.twitch.tv/helix/users?login=${encodeURIComponent(channelLogin)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Client-Id": TWITCH_CLIENT_ID
-        }
-      }
-    );
-    if (!broadcasterResponse.ok) return { isModerator: false, isVip: false };
-    const broadcasterPayload = await broadcasterResponse.json();
-    const broadcasterId = broadcasterPayload?.data?.[0]?.id;
-    if (!broadcasterId) return { isModerator: false, isVip: false };
-
-    const [modsResponse, vipsResponse] = await Promise.all([
-      fetch(
-        `https://api.twitch.tv/helix/moderation/moderators?broadcaster_id=${encodeURIComponent(
-          broadcasterId
-        )}&user_id=${encodeURIComponent(userId)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Client-Id": TWITCH_CLIENT_ID
-          }
-        }
-      ),
-      fetch(
-        `https://api.twitch.tv/helix/channels/vips?broadcaster_id=${encodeURIComponent(
-          broadcasterId
-        )}&user_id=${encodeURIComponent(userId)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Client-Id": TWITCH_CLIENT_ID
-          }
-        }
-      )
-    ]);
-
-    const modsPayload = modsResponse.ok ? await modsResponse.json() : { data: [] };
-    const vipsPayload = vipsResponse.ok ? await vipsResponse.json() : { data: [] };
-    return {
-      isModerator: Array.isArray(modsPayload?.data) && modsPayload.data.length > 0,
-      isVip: Array.isArray(vipsPayload?.data) && vipsPayload.data.length > 0
-    };
-  } catch {
-    return { isModerator: false, isVip: false };
-  }
 }
 
 function beginTwitchAuth(req, res, mode = "login") {
@@ -3216,23 +3202,17 @@ app.get("/auth/twitch/callback", async (req, res) => {
       setSettingValue("twitch_channel_auth_scope", scopeList.join(" "));
     }
 
-    const membership = await fetchMembershipFlags({
-      accessToken: getSettingString("twitch_channel_auth_access_token", accessToken),
-      channelLogin: TWITCH_CHANNEL,
-      userId: twitchUser.id
-    });
-    const role = getUserRole({
+    const bootstrapRole = resolveBootstrapAdminRole({
       login: twitchUser.login,
-      twitchId: twitchUser.id,
-      isModerator: membership.isModerator,
-      isVip: membership.isVip
+      twitchId: twitchUser.id
     });
 
     const now = new Date().toISOString();
     const existing = db
-      .prepare("SELECT id, password_hash FROM users WHERE twitch_id = ? OR username = ?")
+      .prepare("SELECT id, password_hash, role FROM users WHERE twitch_id = ? OR username = ?")
       .get(twitchUser.id, twitchUser.login);
     const userId = existing?.id || nanoid();
+    const role = bootstrapRole || existing?.role || "viewer";
     const passwordHashValue = existing?.password_hash ?? "";
     try {
       if (existing) {
@@ -3279,7 +3259,7 @@ app.get("/auth/twitch/callback", async (req, res) => {
       isChannelMember: role === "channel_member"
     };
     req.session.save(() => {
-      res.redirect(role === "admin" || role === "channel_member" ? "/dashboard" : "/dashboard/public");
+      res.redirect(role === "viewer" ? "/dashboard/public" : "/dashboard");
     });
   } catch (error) {
     return redirectLoginError(res, "token_exchange_failed", {
@@ -3371,7 +3351,7 @@ app.get("/api/me", requireAuth, (req, res) => {
   });
 });
 
-app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/users", requireAuth, requireUserManager, (req, res) => {
   const users = db
     .prepare("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
     .all();
@@ -3422,8 +3402,38 @@ app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "User creation is disabled in Twitch auth mode" });
 });
 
-app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
-  res.status(410).json({ error: "User updates are disabled in Twitch auth mode" });
+app.put("/api/users/:id", requireAuth, requireUserManager, (req, res) => {
+  const actor = req.session?.user;
+  const userId = String(req.params?.id || "").trim();
+  const role = String(req.body?.role || "").trim().toLowerCase();
+  if (!userId) {
+    return res.status(400).json({ error: "user id required" });
+  }
+  if (!role) {
+    return res.status(400).json({ error: "role required" });
+  }
+  if (isChannelMemberUser(actor)) {
+    if (!["viewer", "mod", "guest"].includes(role)) {
+      return res.status(403).json({ error: "Channel members can only assign viewer, mod, or guest." });
+    }
+  } else if (isAdminUser(actor)) {
+    if (!["admin", "channel_member", "viewer", "mod", "guest"].includes(role)) {
+      return res.status(400).json({ error: "Invalid role." });
+    }
+  } else {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE id = ?").get(userId);
+  if (!existing) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, userId);
+  if (req.session?.user?.id === userId) {
+    req.session.user.role = role;
+    req.session.user.isAdmin = role === "admin";
+    req.session.user.isChannelMember = role === "channel_member";
+  }
+  return res.json({ ok: true, id: userId, role });
 });
 
 app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
@@ -3463,16 +3473,25 @@ app.post("/api/session/start", requireAuth, (req, res) => {
 });
 
 app.post("/api/session/pause", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { playState } = pauseSession();
   res.json({ playState });
 });
 
 app.post("/api/session/resume", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { playState } = resumeSession();
   res.json({ playState });
 });
 
 app.post("/api/session/seek", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { positionSeconds } = req.body || {};
   if (typeof positionSeconds !== "number" || Number.isNaN(positionSeconds)) {
     return res.status(400).json({ error: "positionSeconds must be a number" });
@@ -3502,6 +3521,9 @@ app.post("/api/session/stop", requireAuth, (req, res) => {
 });
 
 app.post("/api/queue/skip", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const expectedTrackId = typeof req.body?.currentTrackId === "string" ? req.body.currentTrackId : null;
   const { playState, queue, skipped } = skipQueueIfCurrentTrack(expectedTrackId);
   res.json({ playState, queue, skipped });
@@ -3560,6 +3582,9 @@ app.get("/api/overlay/audio/:trackId", (req, res) => {
 });
 
 app.post("/api/queue/enqueue", requireAuth, (req, res) => {
+  if (!canEnqueueTracks(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { trackId, source } = req.body || {};
   const track = db
     .prepare("SELECT id, download_status, audio_path FROM tracks WHERE id = ?")
@@ -3625,6 +3650,9 @@ app.get("/api/pool", requireAuth, (req, res) => {
 });
 
 app.post("/api/pool/enqueue", requireAuth, (req, res) => {
+  if (!canEnqueueTracks(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { trackId } = req.body || {};
   if (!trackId) {
     return res.status(400).json({ error: "trackId required" });
@@ -3645,6 +3673,9 @@ app.post("/api/pool/enqueue", requireAuth, (req, res) => {
 });
 
 app.post("/api/pool/add", requireAuth, (req, res) => {
+  if (!canManagePool(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { trackId } = req.body || {};
   if (!trackId) {
     return res.status(400).json({ error: "trackId required" });
@@ -3658,6 +3689,9 @@ app.post("/api/pool/add", requireAuth, (req, res) => {
 });
 
 app.delete("/api/pool/:trackId", requireAuth, (req, res) => {
+  if (!canManagePool(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const removed = removeFromPool(req.params.trackId);
   res.json({ removed });
 });
@@ -3687,7 +3721,39 @@ app.get("/api/downloads", requireAuth, (req, res) => {
   res.json(downloads);
 });
 
+app.post("/api/downloads/:id/abort", requireAuth, (req, res) => {
+  if (!canManageLibraryDownloads(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const entry = db
+    .prepare("SELECT id, track_id, status FROM download_queue WHERE id = ?")
+    .get(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: "Download entry not found." });
+  }
+  if (entry.status === "downloading") {
+    return res.status(409).json({ error: "This download is already in progress and cannot be aborted." });
+  }
+  db.prepare("DELETE FROM download_queue WHERE id = ?").run(entry.id);
+  const remaining = db
+    .prepare(
+      "SELECT 1 FROM download_queue WHERE track_id = ? AND status IN ('pending', 'waiting', 'failed', 'blocked', 'downloading') LIMIT 1"
+    )
+    .get(entry.track_id);
+  if (!remaining) {
+    db.prepare(
+      "UPDATE tracks SET download_status = CASE WHEN audio_path IS NOT NULL THEN download_status ELSE 'pending' END, download_error = NULL WHERE id = ?"
+    ).run(entry.track_id);
+  }
+  log("info", "download aborted", { queueId: entry.id, trackId: entry.track_id, status: entry.status });
+  broadcast("DOWNLOAD_UPDATE", { action: "aborted", queueId: entry.id, trackId: entry.track_id });
+  res.json({ ok: true });
+});
+
 app.post("/api/downloads/clear", requireAuth, (req, res) => {
+  if (!canManageLibraryDownloads(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const result = db
     .prepare("DELETE FROM download_queue WHERE status IN ('ready', 'failed', 'blocked')")
     .run();
@@ -3964,7 +4030,7 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
   });
 });
 
-app.get("/api/library/tracks", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/library/tracks", requireAuth, (req, res) => {
   const tracks = db
     .prepare(
       "SELECT tracks.id, tracks.youtube_id, tracks.url, tracks.title, tracks.duration_sec, tracks.channel, tracks.thumbnail, tracks.audio_path, tracks.download_status, tracks.download_error, tracks.downloaded_at, tracks.volume_adjust_db, tracks.intro_sec, tracks.outro_sec, tracks.tags, tracks.disabled, tracks.added_by_user_id, tracks.created_at, users.username AS added_by_username FROM tracks LEFT JOIN users ON users.id = tracks.added_by_user_id ORDER BY COALESCE(tracks.title, tracks.youtube_id) ASC"
@@ -4091,7 +4157,10 @@ app.post("/api/library/import-json", requireAuth, requireAdmin, (req, res) => {
   res.json({ updated, missing });
 });
 
-app.post("/api/library/tracks", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/library/tracks", requireAuth, async (req, res) => {
+  if (!canManageLibraryDownloads(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { url, playlistId } = req.body || {};
   if (!url) {
     return res.status(400).json({ error: "url required" });
@@ -4136,7 +4205,7 @@ app.post("/api/library/tracks", requireAuth, requireAdmin, async (req, res) => {
   return res.status(201).json({ id: trackId, youtubeId, url: trimmedUrl, status: "pending" });
 });
 
-app.put("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
   const payload = req.body || {};
   const updates = [];
   const values = [];
@@ -4194,7 +4263,10 @@ app.put("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true, id: req.params.id });
 });
 
-app.delete("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
+app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+  if (!canDeleteLibraryTracks(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -4215,7 +4287,7 @@ app.delete("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/tracks", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/tracks", requireAuth, (req, res) => {
   const { playlistId, url } = req.body || {};
   if (!playlistId || !url) {
     return res.status(400).json({ error: "playlistId and url required" });
@@ -4250,7 +4322,7 @@ app.post("/api/tracks", requireAuth, requireAdmin, (req, res) => {
     });
 });
 
-app.put("/api/library/tracks/:id/rename", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
 
   const { title } = req.body || {};
   if (!title || !title.trim()) {
@@ -4265,13 +4337,16 @@ app.put("/api/library/tracks/:id/rename", requireAuth, requireAdmin, (req, res) 
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/library/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 
 
 
 app.post("/api/tracks/:id/score-feedback", requireAuth, (req, res) => {
+  if (!canSubmitScoreFeedback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const signal = Number(req.body?.signal);
   if (![1, -1].includes(signal)) {
     return res.status(400).json({ error: "signal must be 1 or -1" });
@@ -4297,7 +4372,7 @@ app.post("/api/tracks/:id/score-feedback", requireAuth, (req, res) => {
   res.json({ ok: true, trackId: track.id, score: updated?.score ?? clampTrackScore(track.score ?? 0) });
 });
 
-app.put("/api/tracks/:id/score", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/tracks/:id/score", requireAuth, (req, res) => {
   const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(req.params.id);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -4308,7 +4383,7 @@ app.put("/api/tracks/:id/score", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true, trackId: track.id, score: nextScore });
 });
 
-app.put("/api/tracks/:id", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/tracks/:id", requireAuth, (req, res) => {
   const { title } = req.body || {};
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "title required" });
@@ -4322,7 +4397,7 @@ app.put("/api/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 
@@ -4475,7 +4550,7 @@ app.post(
   }
 );
 
-app.put("/api/settings", requireAuth, (req, res) => {
+app.put("/api/settings", requireAuth, requireSettingsEditor, (req, res) => {
   const settings = req.body || {};
   const insert = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
   const transaction = db.transaction((entries) => {
@@ -4488,7 +4563,7 @@ app.put("/api/settings", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/settings", requireAuth, (req, res) => {
+app.get("/api/settings", requireAuth, requireSettingsEditor, (req, res) => {
   const rows = db.prepare("SELECT key, value FROM settings").all();
   const settings = rows.reduce((acc, row) => {
     acc[row.key] = row.value;
@@ -4497,11 +4572,11 @@ app.get("/api/settings", requireAuth, (req, res) => {
   res.json(settings);
 });
 
-app.get("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/notifications/settings", requireAuth, requireSettingsEditor, (req, res) => {
   res.json(getNotificationSettings({ includeSecrets: false }));
 });
 
-app.post("/api/notifications/upload-image", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/notifications/upload-image", requireAuth, requireSettingsEditor, async (req, res) => {
   try {
     const filenameRaw = String(req.body?.filename || "").trim();
     const mimeTypeRaw = String(req.body?.mimeType || "").trim().toLowerCase();
@@ -4544,7 +4619,7 @@ app.post("/api/notifications/upload-image", requireAuth, requireAdmin, async (re
   }
 });
 
-app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/notifications/settings", requireAuth, requireSettingsEditor, (req, res) => {
   const payload = req.body || {};
   const discord = payload.discord || {};
   const instagram = payload.instagram || {};
@@ -4654,7 +4729,7 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
   res.json({ ok: true, settings: getNotificationSettings({ includeSecrets: false }) });
 });
 
-app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/notifications/test", requireAuth, requireSettingsEditor, async (req, res) => {
   const notificationSettings = getNotificationSettings({ includeSecrets: true });
   const now = new Date().toISOString();
   const payload = {
@@ -4840,6 +4915,9 @@ app.get("/api/votes/active", requireAuth, (req, res) => {
 });
 
 app.post("/api/votes/start", requireAuth, (req, res) => {
+  if (!canStartVotes(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const active = getLatestOpenVoteRound();
   if (active && new Date(active.endsAt).getTime() > Date.now()) {
     return res.status(409).json({ error: "Vote already active" });
@@ -4916,7 +4994,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
 
 app.get("/dashboard/public", requireAuth, (req, res) => {
   const user = req.session?.user || {};
-  res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"/><title>Erwin Public Dashboard</title><link rel="stylesheet" href="/assets/styles.css"></head><body class="login"><main class="card login-card"><h1>Dashboard Access Limited</h1><p class="notice">Hi ${String(user.displayName || user.username || "viewer")}. Your role is <strong>${String(user.role || "viewer")}</strong>.</p><p class="notice">This placeholder is currently the only dashboard surface for viewer/mod/vip users.</p><p><a href="/login">Back to login</a></p></main></body></html>`);
+  res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"/><title>Erwin Public Dashboard</title><link rel="stylesheet" href="/assets/styles.css"></head><body class="login"><main class="card login-card"><h1>Dashboard Access Limited</h1><p class="notice">Hi ${String(user.displayName || user.username || "viewer")}. Your role is <strong>${String(user.role || "viewer")}</strong>.</p><p class="notice">This placeholder is currently the only dashboard surface for viewer/mod users.</p><p><a href="/login">Back to login</a></p></main></body></html>`);
 });
 
 app.get("/login", (req, res) => {

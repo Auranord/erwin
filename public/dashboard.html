@@ -35,7 +35,7 @@
     <main>
       <section class="tab-panel active" data-tab-panel="player">
         <div class="grid two">
-          <div class="card">
+          <div id="player-dashboard-card" class="card">
             <div class="card-header">
               <h2>Music Player Dashboard</h2>
               <div class="card-header-actions">
@@ -59,7 +59,7 @@
             </div>
           </div>
 
-          <div class="card">
+          <div id="voting-card" class="card">
             <div class="card-header">
               <h2>Voting</h2>
               <div class="card-header-actions">
@@ -179,7 +179,7 @@
       <section class="tab-panel" data-tab-panel="track-manager">
         <div class="grid track-manager-grid">
           <div class="grid track-manager-top-row">
-            <div class="card">
+            <div id="download-tracks-card" class="card">
               <h2>Download Tracks</h2>
               <p class="notice">Add a single video URL/ID or a full playlist link. Playlist links queue every video found.</p>
               <form id="track-form" class="grid" method="post">
