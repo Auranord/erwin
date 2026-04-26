@@ -3964,7 +3964,7 @@ app.post("/api/playlists/:id/import", requireAuth, async (req, res) => {
   });
 });
 
-app.get("/api/library/tracks", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/library/tracks", requireAuth, (req, res) => {
   const tracks = db
     .prepare(
       "SELECT tracks.id, tracks.youtube_id, tracks.url, tracks.title, tracks.duration_sec, tracks.channel, tracks.thumbnail, tracks.audio_path, tracks.download_status, tracks.download_error, tracks.downloaded_at, tracks.volume_adjust_db, tracks.intro_sec, tracks.outro_sec, tracks.tags, tracks.disabled, tracks.added_by_user_id, tracks.created_at, users.username AS added_by_username FROM tracks LEFT JOIN users ON users.id = tracks.added_by_user_id ORDER BY COALESCE(tracks.title, tracks.youtube_id) ASC"
@@ -4091,7 +4091,7 @@ app.post("/api/library/import-json", requireAuth, requireAdmin, (req, res) => {
   res.json({ updated, missing });
 });
 
-app.post("/api/library/tracks", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/library/tracks", requireAuth, async (req, res) => {
   const { url, playlistId } = req.body || {};
   if (!url) {
     return res.status(400).json({ error: "url required" });
@@ -4136,7 +4136,7 @@ app.post("/api/library/tracks", requireAuth, requireAdmin, async (req, res) => {
   return res.status(201).json({ id: trackId, youtubeId, url: trimmedUrl, status: "pending" });
 });
 
-app.put("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
   const payload = req.body || {};
   const updates = [];
   const values = [];
@@ -4194,7 +4194,7 @@ app.put("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true, id: req.params.id });
 });
 
-app.delete("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
+app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
   const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -4215,7 +4215,7 @@ app.delete("/api/library/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/tracks", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/tracks", requireAuth, (req, res) => {
   const { playlistId, url } = req.body || {};
   if (!playlistId || !url) {
     return res.status(400).json({ error: "playlistId and url required" });
@@ -4250,7 +4250,7 @@ app.post("/api/tracks", requireAuth, requireAdmin, (req, res) => {
     });
 });
 
-app.put("/api/library/tracks/:id/rename", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/library/tracks/:id/rename", requireAuth, (req, res) => {
 
   const { title } = req.body || {};
   if (!title || !title.trim()) {
@@ -4265,7 +4265,7 @@ app.put("/api/library/tracks/:id/rename", requireAuth, requireAdmin, (req, res) 
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/library/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 
@@ -4297,7 +4297,7 @@ app.post("/api/tracks/:id/score-feedback", requireAuth, (req, res) => {
   res.json({ ok: true, trackId: track.id, score: updated?.score ?? clampTrackScore(track.score ?? 0) });
 });
 
-app.put("/api/tracks/:id/score", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/tracks/:id/score", requireAuth, (req, res) => {
   const track = db.prepare("SELECT id FROM tracks WHERE id = ?").get(req.params.id);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -4308,7 +4308,7 @@ app.put("/api/tracks/:id/score", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true, trackId: track.id, score: nextScore });
 });
 
-app.put("/api/tracks/:id", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/tracks/:id", requireAuth, (req, res) => {
   const { title } = req.body || {};
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "title required" });
@@ -4322,7 +4322,7 @@ app.put("/api/tracks/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ id: req.params.id, title: trimmed });
 });
 
-app.put("/api/tracks/:id/disable", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/tracks/:id/disable", requireAuth, (req, res) => {
   res.status(410).json({ error: "Track disable is playlist-specific. Use /api/playlists/:playlistId/tracks/:trackId/disable" });
 });
 
@@ -4497,11 +4497,11 @@ app.get("/api/settings", requireAuth, (req, res) => {
   res.json(settings);
 });
 
-app.get("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/notifications/settings", requireAuth, (req, res) => {
   res.json(getNotificationSettings({ includeSecrets: false }));
 });
 
-app.post("/api/notifications/upload-image", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/notifications/upload-image", requireAuth, async (req, res) => {
   try {
     const filenameRaw = String(req.body?.filename || "").trim();
     const mimeTypeRaw = String(req.body?.mimeType || "").trim().toLowerCase();
@@ -4544,7 +4544,7 @@ app.post("/api/notifications/upload-image", requireAuth, requireAdmin, async (re
   }
 });
 
-app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => {
+app.put("/api/notifications/settings", requireAuth, (req, res) => {
   const payload = req.body || {};
   const discord = payload.discord || {};
   const instagram = payload.instagram || {};
@@ -4654,7 +4654,7 @@ app.put("/api/notifications/settings", requireAuth, requireAdmin, (req, res) => 
   res.json({ ok: true, settings: getNotificationSettings({ includeSecrets: false }) });
 });
 
-app.post("/api/notifications/test", requireAuth, requireAdmin, async (req, res) => {
+app.post("/api/notifications/test", requireAuth, async (req, res) => {
   const notificationSettings = getNotificationSettings({ includeSecrets: true });
   const now = new Date().toISOString();
   const payload = {
