@@ -796,12 +796,32 @@ function isChannelMemberUser(user) {
   return user?.role === "channel_member";
 }
 
+function isGuestUser(user) {
+  return user?.role === "guest";
+}
+
 function canManageUsers(user) {
   return isAdminUser(user) || isChannelMemberUser(user);
 }
 
 function hasDashboardAccess(user) {
+  return Boolean(user) && user.role !== "viewer";
+}
+
+function canEditSettings(user) {
   return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function canManageLibraryDownloads(user) {
+  return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function canDeleteLibraryTracks(user) {
+  return isAdminUser(user) || isChannelMemberUser(user);
+}
+
+function canStartVotes(user) {
+  return !isGuestUser(user);
 }
 
 function requireAuth(req, res, next) {
@@ -840,6 +860,13 @@ function requireUserManager(req, res, next) {
     return next();
   }
   res.status(403).json({ error: "Forbidden" });
+}
+
+function requireSettingsEditor(req, res, next) {
+  if (canEditSettings(req.session?.user)) {
+    return next();
+  }
+  return res.status(403).json({ error: "Forbidden" });
 }
 
 function parseYouTubeId(input) {
@@ -3216,7 +3243,7 @@ app.get("/auth/twitch/callback", async (req, res) => {
       isChannelMember: role === "channel_member"
     };
     req.session.save(() => {
-      res.redirect(role === "admin" || role === "channel_member" ? "/dashboard" : "/dashboard/public");
+      res.redirect(role === "viewer" ? "/dashboard/public" : "/dashboard");
     });
   } catch (error) {
     return redirectLoginError(res, "token_exchange_failed", {
@@ -3655,6 +3682,9 @@ app.get("/api/downloads", requireAuth, (req, res) => {
 });
 
 app.post("/api/downloads/:id/abort", requireAuth, (req, res) => {
+  if (!canManageLibraryDownloads(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const entry = db
     .prepare("SELECT id, track_id, status FROM download_queue WHERE id = ?")
     .get(req.params.id);
@@ -3681,6 +3711,9 @@ app.post("/api/downloads/:id/abort", requireAuth, (req, res) => {
 });
 
 app.post("/api/downloads/clear", requireAuth, (req, res) => {
+  if (!canManageLibraryDownloads(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const result = db
     .prepare("DELETE FROM download_queue WHERE status IN ('ready', 'failed', 'blocked')")
     .run();
@@ -4085,6 +4118,9 @@ app.post("/api/library/import-json", requireAuth, requireAdmin, (req, res) => {
 });
 
 app.post("/api/library/tracks", requireAuth, async (req, res) => {
+  if (!canManageLibraryDownloads(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { url, playlistId } = req.body || {};
   if (!url) {
     return res.status(400).json({ error: "url required" });
@@ -4188,6 +4224,9 @@ app.put("/api/library/tracks/:id", requireAuth, (req, res) => {
 });
 
 app.delete("/api/library/tracks/:id", requireAuth, (req, res) => {
+  if (!canDeleteLibraryTracks(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const track = db.prepare("SELECT id, audio_path FROM tracks WHERE id = ?").get(req.params.id);
   if (!track) {
     return res.status(404).json({ error: "Track not found" });
@@ -4468,7 +4507,7 @@ app.post(
   }
 );
 
-app.put("/api/settings", requireAuth, (req, res) => {
+app.put("/api/settings", requireAuth, requireSettingsEditor, (req, res) => {
   const settings = req.body || {};
   const insert = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
   const transaction = db.transaction((entries) => {
@@ -4481,7 +4520,7 @@ app.put("/api/settings", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/settings", requireAuth, (req, res) => {
+app.get("/api/settings", requireAuth, requireSettingsEditor, (req, res) => {
   const rows = db.prepare("SELECT key, value FROM settings").all();
   const settings = rows.reduce((acc, row) => {
     acc[row.key] = row.value;
@@ -4490,11 +4529,11 @@ app.get("/api/settings", requireAuth, (req, res) => {
   res.json(settings);
 });
 
-app.get("/api/notifications/settings", requireAuth, (req, res) => {
+app.get("/api/notifications/settings", requireAuth, requireSettingsEditor, (req, res) => {
   res.json(getNotificationSettings({ includeSecrets: false }));
 });
 
-app.post("/api/notifications/upload-image", requireAuth, async (req, res) => {
+app.post("/api/notifications/upload-image", requireAuth, requireSettingsEditor, async (req, res) => {
   try {
     const filenameRaw = String(req.body?.filename || "").trim();
     const mimeTypeRaw = String(req.body?.mimeType || "").trim().toLowerCase();
@@ -4537,7 +4576,7 @@ app.post("/api/notifications/upload-image", requireAuth, async (req, res) => {
   }
 });
 
-app.put("/api/notifications/settings", requireAuth, (req, res) => {
+app.put("/api/notifications/settings", requireAuth, requireSettingsEditor, (req, res) => {
   const payload = req.body || {};
   const discord = payload.discord || {};
   const instagram = payload.instagram || {};
@@ -4647,7 +4686,7 @@ app.put("/api/notifications/settings", requireAuth, (req, res) => {
   res.json({ ok: true, settings: getNotificationSettings({ includeSecrets: false }) });
 });
 
-app.post("/api/notifications/test", requireAuth, async (req, res) => {
+app.post("/api/notifications/test", requireAuth, requireSettingsEditor, async (req, res) => {
   const notificationSettings = getNotificationSettings({ includeSecrets: true });
   const now = new Date().toISOString();
   const payload = {
@@ -4833,6 +4872,9 @@ app.get("/api/votes/active", requireAuth, (req, res) => {
 });
 
 app.post("/api/votes/start", requireAuth, (req, res) => {
+  if (!canStartVotes(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const active = getLatestOpenVoteRound();
   if (active && new Date(active.endsAt).getTime() > Date.now()) {
     return res.status(409).json({ error: "Vote already active" });

@@ -110,17 +110,76 @@ const nowPlaying = document.getElementById("now-playing");
       const hypeExtensionRatioInput = document.getElementById("hype-extension-ratio");
       const hypeUserCooldownSecondsInput = document.getElementById("hype-user-cooldown-seconds");
       let currentUser = null;
+      const tabLinks = Array.from(document.querySelectorAll(".tab-link"));
+      const playerDashboardCard = document.getElementById("player-dashboard-card");
+      const votingCard = document.getElementById("voting-card");
+      const downloadTracksCard = document.getElementById("download-tracks-card");
       function canAccessDashboardFeatures() {
+        return Boolean(currentUser?.role && currentUser.role !== "viewer");
+      }
+      function canEditSettings() {
         return Boolean(currentUser?.isAdmin || currentUser?.isChannelMember);
       }
       function canManageLibrary() {
         return canAccessDashboardFeatures();
       }
       function canManageNotifications() {
-        return canAccessDashboardFeatures();
+        return canEditSettings();
       }
       function canImportOrExportLibrary() {
         return Boolean(currentUser?.isAdmin);
+      }
+      function canDownloadTracks() {
+        return Boolean(currentUser?.isAdmin || currentUser?.isChannelMember);
+      }
+      function canDeleteLibraryTracks() {
+        return Boolean(currentUser?.isAdmin || currentUser?.isChannelMember);
+      }
+      function canStartVotes() {
+        return Boolean(currentUser?.role && currentUser.role !== "guest");
+      }
+      function applyRoleBasedVisibility() {
+        const role = currentUser?.role || "viewer";
+        const hiddenTabs = new Set();
+        if (role === "guest") {
+          hiddenTabs.add("overlay");
+          hiddenTabs.add("playlists");
+          hiddenTabs.add("track-manager");
+          hiddenTabs.add("chat");
+          hiddenTabs.add("custom-commands");
+          hiddenTabs.add("settings");
+          votingCard?.classList.add("hidden");
+          startVoteButton.disabled = true;
+          autoVoteToggle.disabled = true;
+        } else {
+          votingCard?.classList.remove("hidden");
+          startVoteButton.disabled = !canStartVotes();
+          autoVoteToggle.disabled = !canEditSettings();
+        }
+        if (role === "mod") {
+          hiddenTabs.add("settings");
+        }
+        tabLinks.forEach((link) => {
+          const tab = link.dataset.tab;
+          const shouldHide = hiddenTabs.has(tab);
+          link.classList.toggle("hidden", shouldHide);
+        });
+        if (hiddenTabs.has("settings")) {
+          document.querySelector('[data-tab-panel="settings"]')?.classList.add("hidden");
+        } else {
+          document.querySelector('[data-tab-panel="settings"]')?.classList.remove("hidden");
+        }
+        if (role === "guest") {
+          document.querySelectorAll(".tab-panel").forEach((panel) => {
+            const isPlayerPanel = panel.dataset.tabPanel === "player";
+            panel.classList.toggle("active", isPlayerPanel);
+          });
+          document.querySelectorAll(".tab-link").forEach((tab) => {
+            tab.classList.toggle("active", tab.dataset.tab === "player");
+          });
+          playerDashboardCard?.classList.remove("hidden");
+        }
+        downloadTracksCard?.classList.toggle("hidden", !canDownloadTracks());
       }
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
@@ -567,6 +626,7 @@ const nowPlaying = document.getElementById("now-playing");
         notificationsStatus?.classList.toggle("hidden", !canManageNotifications());
         exportLibraryJsonButton?.classList.toggle("hidden", !canImportOrExportLibrary());
         importLibraryJsonButton?.classList.toggle("hidden", !canImportOrExportLibrary());
+        applyRoleBasedVisibility();
         return currentUser;
       }
 
@@ -868,6 +928,7 @@ const nowPlaying = document.getElementById("now-playing");
       }
 
       async function fetchSettings() {
+        if (!canEditSettings()) return;
         const response = await fetch("/api/settings");
         if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) return;
@@ -1198,7 +1259,7 @@ const nowPlaying = document.getElementById("now-playing");
                 <button class="secondary icon-only" data-action="library-trim" title="Set intro/outro" aria-label="Set intro/outro">${iconHtml("trim")}</button>
                 ${currentUser?.role === "admin" ? `<button class="secondary icon-only" data-action="library-calibrate-score" title="Calibrate score" aria-label="Calibrate score">${iconHtml("score")}</button>` : ""}
                 <button class="secondary icon-only" data-action="library-add-playlist" title="Add to playlists" aria-label="Add to playlists">${iconHtml("playlistAdd")}</button>
-                <button class="ghost icon-only" data-action="library-delete" title="Delete" aria-label="Delete">${iconHtml("delete")}</button>
+                ${canDeleteLibraryTracks() ? `<button class="ghost icon-only" data-action="library-delete" title="Delete" aria-label="Delete">${iconHtml("delete")}</button>` : ""}
               </td>
             </tr>`;
           })
@@ -1567,6 +1628,7 @@ const nowPlaying = document.getElementById("now-playing");
       });
 
       startVoteButton.addEventListener("click", async () => {
+        if (!canStartVotes()) return;
         await fetch("/api/votes/start", { method: "POST" });
         fetchActiveVote();
       });
@@ -1590,6 +1652,7 @@ const nowPlaying = document.getElementById("now-playing");
 
       trackForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!canDownloadTracks()) return;
         const playlistId = trackForm["track-playlist"].value;
         const url = trackForm["track-url"].value;
         if (!url) return;
@@ -1680,6 +1743,7 @@ const nowPlaying = document.getElementById("now-playing");
           return;
         }
         if (action === "library-delete") {
+          if (!canDeleteLibraryTracks()) return;
           if (window.confirm("Delete track from library and all playlists?")) {
             await fetch(`/api/library/tracks/${trackId}`, { method: "DELETE" });
           }
@@ -1851,6 +1915,7 @@ document.getElementById("logout").addEventListener("click", async () => {
       });
 
       autoVoteToggle.addEventListener("change", async () => {
+        if (!canEditSettings()) return;
         await fetch("/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -1860,6 +1925,7 @@ document.getElementById("logout").addEventListener("click", async () => {
 
       settingsForm.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (!canEditSettings()) return;
         settingsStatus.textContent = "Saving...";
         await fetch("/api/settings", {
           method: "PUT",
@@ -2086,7 +2152,7 @@ document.getElementById("logout").addEventListener("click", async () => {
           return;
         }
         if (message.event === "SETTINGS_UPDATE") {
-          fetchSettings();
+          if (canEditSettings()) fetchSettings();
           return;
         }
         if (message.event === "TWITCH_COMMANDS_UPDATE") {
@@ -2134,7 +2200,9 @@ document.getElementById("logout").addEventListener("click", async () => {
         fetchPlaylists();
         fetchDownloads();
         fetchLibraryTracks();
-        fetchSettings();
+        if (canEditSettings()) {
+          fetchSettings();
+        }
         fetchActiveVote();
         fetchPool();
         fetchCustomCommands();
