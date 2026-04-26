@@ -508,15 +508,33 @@ const nowPlaying = document.getElementById("now-playing");
           usersList.innerHTML = '<div class="list-item">No users found.</div>';
           return;
         }
+        const canManageAsAdmin = currentUser?.role === "admin";
+        const canManageAsChannelMember = currentUser?.role === "channel_member";
+        const assignableRoles = canManageAsAdmin
+          ? ["admin", "channel_member", "viewer", "vip", "mod", "mods", "guest"]
+          : canManageAsChannelMember
+            ? ["viewer", "mods", "guest"]
+            : [];
         usersList.innerHTML = users
           .map((user) => {
-            const adminBadge = `<span class="badge">${user.role || "viewer"}</span>`;
-            const adminLocked = `<button class="ghost" data-action="user-delete">Delete</button>`;
+            const roleValue = user.role || "viewer";
+            const roleControl = assignableRoles.length
+              ? `<label class="sr-only" for="role-${user.id}">Role</label>
+                 <select id="role-${user.id}" data-action="user-role" ${user.id === currentUser?.id && !canManageAsAdmin ? "disabled" : ""}>
+                   ${assignableRoles
+                     .map((role) => `<option value="${role}" ${role === roleValue ? "selected" : ""}>${role}</option>`)
+                     .join("")}
+                 </select>
+                 <button class="ghost" data-action="user-role-save">Save</button>`
+              : `<span class="badge">${roleValue}</span>`;
+            const adminLocked = canManageAsAdmin
+              ? `<button class="ghost" data-action="user-delete">Delete</button>`
+              : "";
             return `
               <div class="list-item" data-user-id="${user.id}" data-username="${user.username}" data-role="${user.role || "viewer"}">
                 <span>${user.username}</span>
                 <div class="actions">
-                  ${adminBadge}
+                  ${roleControl}
                   ${adminLocked}
                 </div>
               </div>`;
@@ -539,12 +557,9 @@ const nowPlaying = document.getElementById("now-playing");
         currentUser = await response.json();
         localStorage.setItem(themeUserKeyBase, currentUser.username || "guest");
         currentUserBadge.textContent = `${currentUser.username || "guest"} • ${currentUser.role || "viewer"}`;
-        if (!currentUser.isAdmin) {
-          usersCard.classList.add("hidden");
-        } else {
-          usersCard.classList.remove("hidden");
-          oauthLoginsBox?.classList.remove("hidden");
-        }
+        const canManageUsers = currentUser.isAdmin || currentUser.isChannelMember;
+        usersCard.classList.toggle("hidden", !canManageUsers);
+        oauthLoginsBox?.classList.toggle("hidden", !currentUser.isAdmin);
         if (libraryManagementCard) {
           libraryManagementCard.classList.toggle("hidden", !canManageLibrary());
         }
@@ -556,7 +571,7 @@ const nowPlaying = document.getElementById("now-playing");
       }
 
       async function fetchUsers() {
-        if (!currentUser?.isAdmin) {
+        if (!currentUser?.isAdmin && !currentUser?.isChannelMember) {
           usersStatus.textContent = "Not permitted.";
           usersList.classList.add("hidden");
           connectChannelButton.classList.add("hidden");
@@ -565,8 +580,8 @@ const nowPlaying = document.getElementById("now-playing");
         }
         usersStatus.textContent = "";
         usersList.classList.remove("hidden");
-        connectChannelButton.classList.remove("hidden");
-        connectMetaInstagramButton?.classList.remove("hidden");
+        connectChannelButton.classList.toggle("hidden", !currentUser?.isAdmin);
+        connectMetaInstagramButton?.classList.toggle("hidden", !currentUser?.isAdmin);
         const response = await fetch("/api/users");
         if (!response.ok) {
           usersStatus.textContent = "Failed to load users.";
@@ -574,11 +589,33 @@ const nowPlaying = document.getElementById("now-playing");
         }
         const users = await response.json();
         renderUsers(users);
-        fetchChannelAuthStatus();
-        fetchMetaAuthStatus();
+        if (currentUser?.isAdmin) {
+          fetchChannelAuthStatus();
+          fetchMetaAuthStatus();
+        }
       }
 
       usersList.addEventListener("click", async (event) => {
+        const saveButton = event.target.closest("button[data-action='user-role-save']");
+        if (saveButton) {
+          const row = saveButton.closest("[data-user-id]");
+          const select = row?.querySelector("select[data-action='user-role']");
+          if (!row || !select) return;
+          const userId = row.dataset.userId;
+          const response = await fetch(`/api/users/${userId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role: select.value })
+          });
+          if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            usersStatus.textContent = payload.error || "Failed to update role.";
+            return;
+          }
+          usersStatus.textContent = "Role updated.";
+          fetchUsers();
+          return;
+        }
         const button = event.target.closest("button[data-action='user-delete']");
         if (!button) return;
         const row = button.closest("[data-user-id]");

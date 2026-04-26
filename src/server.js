@@ -54,15 +54,6 @@ function envTrim(name, fallback = "") {
   return String(raw).trim();
 }
 
-function parseCsvSet(value) {
-  return new Set(
-    String(value || "")
-      .split(",")
-      .map((entry) => entry.trim().toLowerCase())
-      .filter(Boolean)
-  );
-}
-
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = envTrim("SESSION_SECRET", "erwin-dev-secret");
 const DB_URL = envTrim("DB_URL", "./data/erwin.sqlite");
@@ -101,9 +92,7 @@ const NOTIFY_TEMPLATE_DISCORD = envTrim(
 );
 const NOTIF_DISCORD_USERNAME = envTrim("NOTIF_DISCORD_USERNAME", "");
 const NOTIF_DISCORD_AVATAR_URL = envTrim("NOTIF_DISCORD_AVATAR_URL", "");
-const TWITCH_ADMINS = parseCsvSet(envTrim("TWITCH_ADMINS", ""));
-const TWITCH_CHANNEL_MEMBERS = parseCsvSet(envTrim("TWITCH_CHANNEL_MEMBERS", ""));
-const TWITCH_CHANNEL_MEMBERS_ROLE = envTrim("TWITCH_CHANNEL_MEMBERS_ROLE", "channel_member");
+const TWITCH_BOOTSTRAP_ADMIN = envTrim("TWITCH_BOOTSTRAP_ADMIN", "");
 const TWITCH_IRC_HOST =
   envTrim("TWITCH_IRC_HOST", "raw-1.us-west-2.prod.twitchircedge.twitch.a2z.com");
 const DOWNLOAD_CONCURRENCY = Math.max(
@@ -805,6 +794,10 @@ function isChannelMemberUser(user) {
   return user?.role === "channel_member";
 }
 
+function canManageUsers(user) {
+  return isAdminUser(user) || isChannelMemberUser(user);
+}
+
 function hasDashboardAccess(user) {
   return isAdminUser(user) || isChannelMemberUser(user);
 }
@@ -835,6 +828,13 @@ function requireAuth(req, res, next) {
 
 function requireAdmin(req, res, next) {
   if (isAdminUser(req.session?.user)) {
+    return next();
+  }
+  res.status(403).json({ error: "Forbidden" });
+}
+
+function requireUserManager(req, res, next) {
+  if (canManageUsers(req.session?.user)) {
     return next();
   }
   res.status(403).json({ error: "Forbidden" });
@@ -2932,19 +2932,13 @@ const META_CALLBACK_ERROR_MESSAGES = {
   meta_login_failed: "Meta login failed. Please try again."
 };
 
-function getUserRole({ login, twitchId, isModerator = false, isVip = false }) {
+function resolveBootstrapAdminRole({ login, twitchId }) {
+  const configured = TWITCH_BOOTSTRAP_ADMIN.trim().toLowerCase();
+  if (!configured) return null;
   const normalizedLogin = String(login || "").trim().toLowerCase();
   const normalizedId = String(twitchId || "").trim().toLowerCase();
-  const inAdmins = TWITCH_ADMINS.has(normalizedLogin) || TWITCH_ADMINS.has(normalizedId);
-  const inMembers =
-    TWITCH_CHANNEL_MEMBERS.has(normalizedLogin) || TWITCH_CHANNEL_MEMBERS.has(normalizedId);
-  if (inAdmins) return "admin";
-  if (inMembers) {
-    return TWITCH_CHANNEL_MEMBERS_ROLE === "admin" ? "admin" : "channel_member";
-  }
-  if (isModerator) return "mod";
-  if (isVip) return "vip";
-  return "viewer";
+  if (configured === normalizedLogin || configured === normalizedId) return "admin";
+  return null;
 }
 
 function resolveTwitchRedirectUri(req) {
@@ -3027,59 +3021,6 @@ async function fetchTwitchUser(accessToken) {
   }
   const payload = await response.json();
   return payload?.data?.[0] || null;
-}
-
-async function fetchMembershipFlags({ accessToken, channelLogin, userId }) {
-  if (!channelLogin || !userId) return { isModerator: false, isVip: false };
-  try {
-    const broadcasterResponse = await fetch(
-      `https://api.twitch.tv/helix/users?login=${encodeURIComponent(channelLogin)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Client-Id": TWITCH_CLIENT_ID
-        }
-      }
-    );
-    if (!broadcasterResponse.ok) return { isModerator: false, isVip: false };
-    const broadcasterPayload = await broadcasterResponse.json();
-    const broadcasterId = broadcasterPayload?.data?.[0]?.id;
-    if (!broadcasterId) return { isModerator: false, isVip: false };
-
-    const [modsResponse, vipsResponse] = await Promise.all([
-      fetch(
-        `https://api.twitch.tv/helix/moderation/moderators?broadcaster_id=${encodeURIComponent(
-          broadcasterId
-        )}&user_id=${encodeURIComponent(userId)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Client-Id": TWITCH_CLIENT_ID
-          }
-        }
-      ),
-      fetch(
-        `https://api.twitch.tv/helix/channels/vips?broadcaster_id=${encodeURIComponent(
-          broadcasterId
-        )}&user_id=${encodeURIComponent(userId)}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Client-Id": TWITCH_CLIENT_ID
-          }
-        }
-      )
-    ]);
-
-    const modsPayload = modsResponse.ok ? await modsResponse.json() : { data: [] };
-    const vipsPayload = vipsResponse.ok ? await vipsResponse.json() : { data: [] };
-    return {
-      isModerator: Array.isArray(modsPayload?.data) && modsPayload.data.length > 0,
-      isVip: Array.isArray(vipsPayload?.data) && vipsPayload.data.length > 0
-    };
-  } catch {
-    return { isModerator: false, isVip: false };
-  }
 }
 
 function beginTwitchAuth(req, res, mode = "login") {
@@ -3216,23 +3157,17 @@ app.get("/auth/twitch/callback", async (req, res) => {
       setSettingValue("twitch_channel_auth_scope", scopeList.join(" "));
     }
 
-    const membership = await fetchMembershipFlags({
-      accessToken: getSettingString("twitch_channel_auth_access_token", accessToken),
-      channelLogin: TWITCH_CHANNEL,
-      userId: twitchUser.id
-    });
-    const role = getUserRole({
+    const bootstrapRole = resolveBootstrapAdminRole({
       login: twitchUser.login,
-      twitchId: twitchUser.id,
-      isModerator: membership.isModerator,
-      isVip: membership.isVip
+      twitchId: twitchUser.id
     });
 
     const now = new Date().toISOString();
     const existing = db
-      .prepare("SELECT id, password_hash FROM users WHERE twitch_id = ? OR username = ?")
+      .prepare("SELECT id, password_hash, role FROM users WHERE twitch_id = ? OR username = ?")
       .get(twitchUser.id, twitchUser.login);
     const userId = existing?.id || nanoid();
+    const role = bootstrapRole || existing?.role || "viewer";
     const passwordHashValue = existing?.password_hash ?? "";
     try {
       if (existing) {
@@ -3371,7 +3306,7 @@ app.get("/api/me", requireAuth, (req, res) => {
   });
 });
 
-app.get("/api/users", requireAuth, requireAdmin, (req, res) => {
+app.get("/api/users", requireAuth, requireUserManager, (req, res) => {
   const users = db
     .prepare("SELECT id, username, role, created_at FROM users ORDER BY created_at ASC")
     .all();
@@ -3422,8 +3357,38 @@ app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
   res.status(410).json({ error: "User creation is disabled in Twitch auth mode" });
 });
 
-app.put("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
-  res.status(410).json({ error: "User updates are disabled in Twitch auth mode" });
+app.put("/api/users/:id", requireAuth, requireUserManager, (req, res) => {
+  const actor = req.session?.user;
+  const userId = String(req.params?.id || "").trim();
+  const role = String(req.body?.role || "").trim().toLowerCase();
+  if (!userId) {
+    return res.status(400).json({ error: "user id required" });
+  }
+  if (!role) {
+    return res.status(400).json({ error: "role required" });
+  }
+  if (isChannelMemberUser(actor)) {
+    if (!["viewer", "mods", "guest"].includes(role)) {
+      return res.status(403).json({ error: "Channel members can only assign viewer, mods, or guest." });
+    }
+  } else if (isAdminUser(actor)) {
+    if (!["admin", "channel_member", "viewer", "vip", "mod", "mods", "guest"].includes(role)) {
+      return res.status(400).json({ error: "Invalid role." });
+    }
+  } else {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE id = ?").get(userId);
+  if (!existing) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, userId);
+  if (req.session?.user?.id === userId) {
+    req.session.user.role = role;
+    req.session.user.isAdmin = role === "admin";
+    req.session.user.isChannelMember = role === "channel_member";
+  }
+  return res.json({ ok: true, id: userId, role });
 });
 
 app.delete("/api/users/:id", requireAuth, requireAdmin, (req, res) => {
