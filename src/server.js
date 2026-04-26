@@ -824,6 +824,22 @@ function canStartVotes(user) {
   return !isGuestUser(user);
 }
 
+function canControlPlayback(user) {
+  return !isGuestUser(user);
+}
+
+function canManagePool(user) {
+  return !isGuestUser(user);
+}
+
+function canEnqueueTracks(user) {
+  return !isGuestUser(user);
+}
+
+function canSubmitScoreFeedback(user) {
+  return !isGuestUser(user);
+}
+
 function requireAuth(req, res, next) {
   const user = req.session?.user;
   if (!user) {
@@ -3457,16 +3473,25 @@ app.post("/api/session/start", requireAuth, (req, res) => {
 });
 
 app.post("/api/session/pause", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { playState } = pauseSession();
   res.json({ playState });
 });
 
 app.post("/api/session/resume", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { playState } = resumeSession();
   res.json({ playState });
 });
 
 app.post("/api/session/seek", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { positionSeconds } = req.body || {};
   if (typeof positionSeconds !== "number" || Number.isNaN(positionSeconds)) {
     return res.status(400).json({ error: "positionSeconds must be a number" });
@@ -3496,6 +3521,9 @@ app.post("/api/session/stop", requireAuth, (req, res) => {
 });
 
 app.post("/api/queue/skip", requireAuth, (req, res) => {
+  if (!canControlPlayback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const expectedTrackId = typeof req.body?.currentTrackId === "string" ? req.body.currentTrackId : null;
   const { playState, queue, skipped } = skipQueueIfCurrentTrack(expectedTrackId);
   res.json({ playState, queue, skipped });
@@ -3554,6 +3582,9 @@ app.get("/api/overlay/audio/:trackId", (req, res) => {
 });
 
 app.post("/api/queue/enqueue", requireAuth, (req, res) => {
+  if (!canEnqueueTracks(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { trackId, source } = req.body || {};
   const track = db
     .prepare("SELECT id, download_status, audio_path FROM tracks WHERE id = ?")
@@ -3619,6 +3650,9 @@ app.get("/api/pool", requireAuth, (req, res) => {
 });
 
 app.post("/api/pool/enqueue", requireAuth, (req, res) => {
+  if (!canEnqueueTracks(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { trackId } = req.body || {};
   if (!trackId) {
     return res.status(400).json({ error: "trackId required" });
@@ -3639,6 +3673,9 @@ app.post("/api/pool/enqueue", requireAuth, (req, res) => {
 });
 
 app.post("/api/pool/add", requireAuth, (req, res) => {
+  if (!canManagePool(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const { trackId } = req.body || {};
   if (!trackId) {
     return res.status(400).json({ error: "trackId required" });
@@ -3652,6 +3689,9 @@ app.post("/api/pool/add", requireAuth, (req, res) => {
 });
 
 app.delete("/api/pool/:trackId", requireAuth, (req, res) => {
+  if (!canManagePool(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const removed = removeFromPool(req.params.trackId);
   res.json({ removed });
 });
@@ -4304,6 +4344,9 @@ app.put("/api/library/tracks/:id/disable", requireAuth, (req, res) => {
 
 
 app.post("/api/tracks/:id/score-feedback", requireAuth, (req, res) => {
+  if (!canSubmitScoreFeedback(req.session?.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const signal = Number(req.body?.signal);
   if (![1, -1].includes(signal)) {
     return res.status(400).json({ error: "signal must be 1 or -1" });

@@ -138,6 +138,15 @@ const nowPlaying = document.getElementById("now-playing");
       function canStartVotes() {
         return Boolean(currentUser?.role && currentUser.role !== "guest");
       }
+      function canControlPlayback() {
+        return Boolean(currentUser?.role && currentUser.role !== "guest");
+      }
+      function canManagePool() {
+        return canControlPlayback();
+      }
+      function canEnqueueTracks() {
+        return canControlPlayback();
+      }
       function applyRoleBasedVisibility() {
         const role = currentUser?.role || "viewer";
         const hiddenTabs = new Set();
@@ -148,7 +157,7 @@ const nowPlaying = document.getElementById("now-playing");
           hiddenTabs.add("chat");
           hiddenTabs.add("custom-commands");
           hiddenTabs.add("settings");
-          votingCard?.classList.add("hidden");
+          votingCard?.classList.remove("hidden");
           startVoteButton.disabled = true;
           autoVoteToggle.disabled = true;
         } else {
@@ -446,13 +455,20 @@ const nowPlaying = document.getElementById("now-playing");
             const poolAction = inPool ? "pool-remove" : "pool-add";
             const poolLabel = inPool ? "Remove from pool" : "Add to pool";
             const poolIcon = iconHtml(inPool ? "poolRemove" : "poolAdd");
+            const enqueueDisabled = !canEnqueueTracks();
+            const poolActionDisabled = actionDisabled(poolAction);
+            function actionDisabled(itemAction) {
+              if (itemAction === "enqueue") return !canEnqueueTracks();
+              if (itemAction === "pool-remove" || itemAction === "pool-add") return !canManagePool();
+              return false;
+            }
             return `<div class="list-item draggable-item ${disabled ? "disabled" : ""}" draggable="true" data-track-id="${track.id}" data-track-title="${track.title || ""}" data-track-disabled="${disabled}">
                 <div style="flex: 1;">
                   <div style="display: flex; gap: 8px; align-items: center;"><span class="drag-handle" aria-hidden="true">⋮⋮</span>${label} ${disabledLabel}</div>
                 </div>
                 <div class="actions">
-                  <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end">${iconHtml("enqueue")}</button>
-                  <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}">${poolIcon}</button>
+                  <button class="secondary icon-only" data-action="enqueue" title="Add to queue end" aria-label="Add to queue end" ${enqueueDisabled ? "disabled" : ""}>${iconHtml("enqueue")}</button>
+                  <button class="secondary icon-only" data-action="${poolAction}" title="${poolLabel}" aria-label="${poolLabel}" ${poolActionDisabled ? "disabled" : ""}>${poolIcon}</button>
                   <button class="secondary icon-only" data-action="toggle-disabled" title="${toggleLabel}" aria-label="${toggleLabel}">${iconHtml(disabled ? "enable" : "disable")}</button>
                   <button class="ghost icon-only" data-action="remove" title="Remove track" aria-label="Remove track">${iconHtml("delete")}</button>
                 </div>
@@ -830,8 +846,8 @@ const nowPlaying = document.getElementById("now-playing");
               `<div class="list-item" data-track-id="${item.track_id}">
                 <span>${item.title || item.track_id}</span>
                 <div class="actions">
-                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track">${iconHtml("enqueue")}</button>
-                  <button class="ghost icon-only" data-action="pool-remove" title="Remove from pool" aria-label="Remove from pool">${iconHtml("delete")}</button>
+                  <button class="secondary icon-only" data-action="pool-enqueue" title="Enqueue track" aria-label="Enqueue track" ${!canEnqueueTracks() ? "disabled" : ""}>${iconHtml("enqueue")}</button>
+                  <button class="ghost icon-only" data-action="pool-remove" title="Remove from pool" aria-label="Remove from pool" ${!canManagePool() ? "disabled" : ""}>${iconHtml("delete")}</button>
                 </div>
               </div>`
           )
@@ -1348,6 +1364,8 @@ const nowPlaying = document.getElementById("now-playing");
         const trackId = wrapper?.dataset.trackId;
         const isDisabled = wrapper?.dataset.trackDisabled === "true";
         if (!trackId || !selectedPlaylistId) return;
+        if (action === "enqueue" && !canEnqueueTracks()) return;
+        if ((action === "pool-add" || action === "pool-remove") && !canManagePool()) return;
         if (action === "enqueue") {
           await fetch("/api/queue/enqueue", {
             method: "POST",
@@ -1471,6 +1489,8 @@ const nowPlaying = document.getElementById("now-playing");
         const wrapper = button.closest(".list-item");
         const trackId = wrapper?.dataset.trackId;
         if (!trackId) return;
+        if (action === "pool-enqueue" && !canEnqueueTracks()) return;
+        if (action === "pool-remove" && !canManagePool()) return;
         if (action === "pool-enqueue") {
           await fetch("/api/pool/enqueue", {
             method: "POST",
