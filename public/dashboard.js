@@ -511,9 +511,9 @@ const nowPlaying = document.getElementById("now-playing");
         const canManageAsAdmin = currentUser?.role === "admin";
         const canManageAsChannelMember = currentUser?.role === "channel_member";
         const assignableRoles = canManageAsAdmin
-          ? ["admin", "channel_member", "viewer", "vip", "mod", "mods", "guest"]
+          ? ["admin", "channel_member", "viewer", "mod", "guest"]
           : canManageAsChannelMember
-            ? ["viewer", "mods", "guest"]
+            ? ["viewer", "mod", "guest"]
             : [];
         usersList.innerHTML = users
           .map((user) => {
