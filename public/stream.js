@@ -11,6 +11,7 @@
       let isMuted = false;
       let isPaused = true;
       let currentTrackId = null;
+      let currentUser = null;
 
       const STREAM_ICON_FALLBACKS = {
         play: "⯈",
@@ -40,6 +41,32 @@
           return `<img src="/assets/icons/${name}.png" class="button-icon" alt="" aria-hidden="true" />`;
         }
         return `<span class="button-icon-fallback" aria-hidden="true">${STREAM_ICON_FALLBACKS[name] || "•"}</span>`;
+      }
+
+      function canControlPlayback() {
+        return Boolean(currentUser?.role && currentUser.role !== "guest");
+      }
+
+      function canUseScoreFeedback() {
+        return Boolean(currentUser?.role && currentUser.role !== "guest");
+      }
+
+      function applyRolePermissions() {
+        const disablePlaybackControls = !canControlPlayback();
+        document.getElementById("play-toggle").disabled = disablePlaybackControls;
+        document.getElementById("restart-track").disabled = disablePlaybackControls;
+        document.getElementById("skip-track").disabled = disablePlaybackControls;
+        document.getElementById("playback-progress").disabled = disablePlaybackControls;
+        const disableScoreControls = !canUseScoreFeedback();
+        document.getElementById("score-up").disabled = disableScoreControls;
+        document.getElementById("score-down").disabled = disableScoreControls;
+      }
+
+      async function fetchCurrentUser() {
+        const response = await fetch("/api/me");
+        if (!response.ok) return;
+        currentUser = await response.json();
+        applyRolePermissions();
       }
 
 
@@ -75,7 +102,7 @@
         playToggle.title = isPaused ? "Play" : "Pause";
       }
 
-      loadStreamIcons().then(() => {
+      Promise.all([loadStreamIcons(), fetchCurrentUser()]).then(() => {
         muteToggle.innerHTML = streamIcon("mute");
         document.getElementById("restart-track").innerHTML = streamIcon("restart");
         document.getElementById("skip-track").innerHTML = streamIcon("skip");
@@ -94,6 +121,7 @@
       }
 
       document.getElementById("play-toggle").addEventListener("click", () => {
+        if (!canControlPlayback()) return;
         if (isPaused) {
           fetch("/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json" } }).then(
             refresh
@@ -105,6 +133,7 @@
         }
       });
       document.getElementById("restart-track").addEventListener("click", () => {
+        if (!canControlPlayback()) return;
         fetch("/api/session/seek", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -112,6 +141,7 @@
         }).then(refresh);
       });
       document.getElementById("skip-track").addEventListener("click", async () => {
+        if (!canControlPlayback()) return;
         await fetch("/api/queue/skip", { method: "POST", headers: { "Content-Type": "application/json" } });
         refresh();
       });
@@ -132,6 +162,7 @@
         player.setVolume(value);
       });
       async function sendScoreFeedback(signal) {
+        if (!canUseScoreFeedback()) return;
         if (!currentTrackId) return;
         const response = await fetch(`/api/tracks/${currentTrackId}/score-feedback`, {
           method: "POST",
@@ -152,6 +183,7 @@
       document.getElementById("score-up").addEventListener("click", () => sendScoreFeedback(1));
       document.getElementById("score-down").addEventListener("click", () => sendScoreFeedback(-1));
       progressEl.addEventListener("change", () => {
+        if (!canControlPlayback()) return;
         const duration = player.getDuration();
         if (!duration) return;
         const target = (Number(progressEl.value) / 100) * duration;
