@@ -3687,6 +3687,32 @@ app.get("/api/downloads", requireAuth, (req, res) => {
   res.json(downloads);
 });
 
+app.post("/api/downloads/:id/abort", requireAuth, (req, res) => {
+  const entry = db
+    .prepare("SELECT id, track_id, status FROM download_queue WHERE id = ?")
+    .get(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: "Download entry not found." });
+  }
+  if (entry.status === "downloading") {
+    return res.status(409).json({ error: "This download is already in progress and cannot be aborted." });
+  }
+  db.prepare("DELETE FROM download_queue WHERE id = ?").run(entry.id);
+  const remaining = db
+    .prepare(
+      "SELECT 1 FROM download_queue WHERE track_id = ? AND status IN ('pending', 'waiting', 'failed', 'blocked', 'downloading') LIMIT 1"
+    )
+    .get(entry.track_id);
+  if (!remaining) {
+    db.prepare(
+      "UPDATE tracks SET download_status = CASE WHEN audio_path IS NOT NULL THEN download_status ELSE 'pending' END, download_error = NULL WHERE id = ?"
+    ).run(entry.track_id);
+  }
+  log("info", "download aborted", { queueId: entry.id, trackId: entry.track_id, status: entry.status });
+  broadcast("DOWNLOAD_UPDATE", { action: "aborted", queueId: entry.id, trackId: entry.track_id });
+  res.json({ ok: true });
+});
+
 app.post("/api/downloads/clear", requireAuth, (req, res) => {
   const result = db
     .prepare("DELETE FROM download_queue WHERE status IN ('ready', 'failed', 'blocked')")
