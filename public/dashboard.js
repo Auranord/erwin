@@ -1169,7 +1169,7 @@ const nowPlaying = document.getElementById("now-playing");
 
         libraryTracksEl.innerHTML = `<table class="library-table"><thead><tr>${headerHtml}<th>Actions</th></tr></thead><tbody>${rowsHtml}</tbody></table>`;
       }
-async function fetchDownloads() {
+      async function fetchDownloads() {
         const response = await fetch("/api/downloads");
         if (!response.ok) return;
         const downloads = await response.json();
@@ -1182,7 +1182,10 @@ async function fetchDownloads() {
             const label = item.title || item.youtube_id;
             const status = item.status;
             const details = item.error ? ` - ${item.error}` : "";
-            return `<div class="list-item"><span>${label} (${item.playlist_name || "Library"})${details}</span><span class="badge">${status}</span></div>`;
+            const canAbort = ["pending", "failed", "waiting", "blocked"].includes(
+              String(status || "").toLowerCase()
+            );
+            return `<div class="list-item"><span>${label} (${item.playlist_name || "Library"})${details}</span><span class="actions"><span class="badge">${status}</span>${canAbort ? `<button class="ghost" data-action="download-abort" data-download-id="${item.id}" type="button">Abort</button>` : ""}</span></div>`;
           })
           .join("");
       }
@@ -1794,6 +1797,19 @@ document.getElementById("logout").addEventListener("click", async () => {
 
       document.getElementById("clear-downloads").addEventListener("click", async () => {
         await fetch("/api/downloads/clear", { method: "POST" });
+        fetchDownloads();
+      });
+
+      downloadQueueEl.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action='download-abort']");
+        if (!button) return;
+        const downloadId = button.dataset.downloadId;
+        if (!downloadId) return;
+        const response = await fetch(`/api/downloads/${downloadId}/abort`, { method: "POST" });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          window.alert(payload.error || "Unable to abort download.");
+        }
         fetchDownloads();
       });
 
