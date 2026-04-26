@@ -291,6 +291,30 @@ const nowPlaying = document.getElementById("now-playing");
         overlayTabLinks.slice(0, -1).forEach((tab) => tab.remove());
       }
 
+      function showToast(message, type = "info") {
+        if (!toastRegion) return;
+        const toast = document.createElement("div");
+        toast.className = `toast ${type}`;
+        toast.textContent = message;
+        toastRegion.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add("visible"));
+        const closeToast = () => {
+          toast.classList.remove("visible");
+          window.setTimeout(() => toast.remove(), 180);
+        };
+        window.setTimeout(closeToast, 2400);
+      }
+
+      const overlayEndpoint = `${window.location.origin}/overlay/canvas`;
+      if (overlayEndpointInput) {
+        overlayEndpointInput.value = overlayEndpoint;
+      }
+
+      const overlayTabLinks = Array.from(document.querySelectorAll('.tab-link[data-tab="overlay"]'));
+      if (overlayTabLinks.length > 1) {
+        overlayTabLinks.slice(0, -1).forEach((tab) => tab.remove());
+      }
+
       document.querySelectorAll(".tab-link").forEach((link) => {
         link.addEventListener("click", (event) => {
           event.preventDefault();
