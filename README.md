@@ -75,7 +75,7 @@ Default role behavior:
 2. Otherwise, new users default to `viewer`.
 3. Existing users keep their role from the DB and are managed in the dashboard admin panel.
 
-`admin` has full access. `channel_member` can access dashboard + user management and can assign only `viewer`, `mods`, and `guest`. New `mods` and `guest` roles currently have no additional privileges.
+`admin` has full access. `channel_member` can access dashboard + user management and can assign only `viewer`, `mod`, and `guest`. New `mod` and `guest` roles currently have no additional privileges.
 
 ## OAuth callback troubleshooting (`/login?error=...`)
 

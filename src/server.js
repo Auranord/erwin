@@ -430,6 +430,8 @@ function initDb() {
     db.prepare("ALTER TABLE users ADD COLUMN display_name TEXT").run();
   }
   db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_twitch_id ON users(twitch_id)").run();
+  db.prepare("UPDATE users SET role = ? WHERE role = ?").run("mod", "mods");
+  db.prepare("UPDATE users SET role = ? WHERE role = ?").run("viewer", "vip");
 
   const playStateColumns = db.prepare("PRAGMA table_info(play_state)").all();
   const hasPausedAt = playStateColumns.some((column) => column.name === "paused_at_ms");
@@ -3368,11 +3370,11 @@ app.put("/api/users/:id", requireAuth, requireUserManager, (req, res) => {
     return res.status(400).json({ error: "role required" });
   }
   if (isChannelMemberUser(actor)) {
-    if (!["viewer", "mods", "guest"].includes(role)) {
-      return res.status(403).json({ error: "Channel members can only assign viewer, mods, or guest." });
+    if (!["viewer", "mod", "guest"].includes(role)) {
+      return res.status(403).json({ error: "Channel members can only assign viewer, mod, or guest." });
     }
   } else if (isAdminUser(actor)) {
-    if (!["admin", "channel_member", "viewer", "vip", "mod", "mods", "guest"].includes(role)) {
+    if (!["admin", "channel_member", "viewer", "mod", "guest"].includes(role)) {
       return res.status(400).json({ error: "Invalid role." });
     }
   } else {
@@ -4907,7 +4909,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
 
 app.get("/dashboard/public", requireAuth, (req, res) => {
   const user = req.session?.user || {};
-  res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"/><title>Erwin Public Dashboard</title><link rel="stylesheet" href="/assets/styles.css"></head><body class="login"><main class="card login-card"><h1>Dashboard Access Limited</h1><p class="notice">Hi ${String(user.displayName || user.username || "viewer")}. Your role is <strong>${String(user.role || "viewer")}</strong>.</p><p class="notice">This placeholder is currently the only dashboard surface for viewer/mod/vip users.</p><p><a href="/login">Back to login</a></p></main></body></html>`);
+  res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"/><title>Erwin Public Dashboard</title><link rel="stylesheet" href="/assets/styles.css"></head><body class="login"><main class="card login-card"><h1>Dashboard Access Limited</h1><p class="notice">Hi ${String(user.displayName || user.username || "viewer")}. Your role is <strong>${String(user.role || "viewer")}</strong>.</p><p class="notice">This placeholder is currently the only dashboard surface for viewer/mod users.</p><p><a href="/login">Back to login</a></p></main></body></html>`);
 });
 
 app.get("/login", (req, res) => {
