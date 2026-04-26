@@ -110,6 +110,18 @@ const nowPlaying = document.getElementById("now-playing");
       const hypeExtensionRatioInput = document.getElementById("hype-extension-ratio");
       const hypeUserCooldownSecondsInput = document.getElementById("hype-user-cooldown-seconds");
       let currentUser = null;
+      function canAccessDashboardFeatures() {
+        return Boolean(currentUser?.isAdmin || currentUser?.isChannelMember);
+      }
+      function canManageLibrary() {
+        return canAccessDashboardFeatures();
+      }
+      function canManageNotifications() {
+        return canAccessDashboardFeatures();
+      }
+      function canImportOrExportLibrary() {
+        return Boolean(currentUser?.isAdmin);
+      }
       const themeUserKeyBase = "erwin_last_user";
       let playlistsCache = [];
       let libraryTracksCache = [];
@@ -529,16 +541,17 @@ const nowPlaying = document.getElementById("now-playing");
         currentUserBadge.textContent = `${currentUser.username || "guest"} • ${currentUser.role || "viewer"}`;
         if (!currentUser.isAdmin) {
           usersCard.classList.add("hidden");
-          if (libraryManagementCard) libraryManagementCard.classList.add("hidden");
-          notificationsForm?.classList.add("hidden");
-          notificationsStatus?.classList.add("hidden");
         } else {
           usersCard.classList.remove("hidden");
           oauthLoginsBox?.classList.remove("hidden");
-          if (libraryManagementCard) libraryManagementCard.classList.remove("hidden");
-          notificationsForm?.classList.remove("hidden");
-          notificationsStatus?.classList.remove("hidden");
         }
+        if (libraryManagementCard) {
+          libraryManagementCard.classList.toggle("hidden", !canManageLibrary());
+        }
+        notificationsForm?.classList.toggle("hidden", !canManageNotifications());
+        notificationsStatus?.classList.toggle("hidden", !canManageNotifications());
+        exportLibraryJsonButton?.classList.toggle("hidden", !canImportOrExportLibrary());
+        importLibraryJsonButton?.classList.toggle("hidden", !canImportOrExportLibrary());
         return currentUser;
       }
 
@@ -856,13 +869,13 @@ const nowPlaying = document.getElementById("now-playing");
           hypeExtensionRatioInput.value = Number(settings.overlay_hype_extension_ratio ?? HYPE_DEFAULTS.extensionRatio);
           hypeUserCooldownSecondsInput.value = Number(settings.overlay_hype_user_cooldown_seconds ?? HYPE_DEFAULTS.userCooldownSeconds);
         }
-        if (currentUser?.isAdmin) {
+        if (canManageNotifications()) {
           fetchNotificationSettings();
         }
       }
 
       async function fetchNotificationSettings() {
-        if (!currentUser?.isAdmin) return;
+        if (!canManageNotifications()) return;
         const response = await fetch("/api/notifications/settings");
         if (handleUnauthorizedResponse(response)) return;
         if (!response.ok) {
@@ -1710,16 +1723,19 @@ async function fetchDownloads() {
       });
 
       exportLibraryJsonButton.addEventListener("click", () => {
+        if (!canImportOrExportLibrary()) return;
         const a = document.createElement("a");
         a.href = "/api/library/export";
         a.click();
       });
 
       importLibraryJsonButton.addEventListener("click", () => {
+        if (!canImportOrExportLibrary()) return;
         libraryImportFile.click();
       });
 
       libraryImportFile.addEventListener("change", async () => {
+        if (!canImportOrExportLibrary()) return;
         const file = libraryImportFile.files?.[0];
         if (!file) return;
         if (libraryImportStatus) {
@@ -1821,7 +1837,7 @@ document.getElementById("logout").addEventListener("click", async () => {
 
       notificationsForm?.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!currentUser?.isAdmin) return;
+        if (!canManageNotifications()) return;
         if (notificationsStatus) notificationsStatus.textContent = "Saving notification settings...";
         const response = await fetch("/api/notifications/settings", {
           method: "PUT",
@@ -1903,7 +1919,7 @@ document.getElementById("logout").addEventListener("click", async () => {
       });
 
       notificationsTestButton?.addEventListener("click", async () => {
-        if (!currentUser?.isAdmin) return;
+        if (!canManageNotifications()) return;
         if (notificationsStatus) notificationsStatus.textContent = "Sending test notification...";
         const response = await fetch("/api/notifications/test", {
           method: "POST",
